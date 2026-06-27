@@ -29,9 +29,10 @@ Explicitly out of scope, deferred to later specs (see section 12):
 
 Three domain types, all immutable once built:
 
-- `Edge(target_ref: str, target_id: str, seen: str | None)`. One `derives_from` entry.
-  `target_ref` is the raw string as written. `target_id` is the resolved stable id.
-  `seen` is the locked content hash, or `None` when the edge has never been reconciled.
+- `Edge(target_ref: str, target_id: str | None, seen: str | None)`. One `derives_from` entry.
+  `target_ref` is the raw string as written. `target_id` is the resolved stable id, or `None`
+  when the ref resolves to no id in the index (a broken edge). `seen` is the locked content
+  hash, or `None` when the edge has never been reconciled.
 - `Node(id, title, layer, authority, path, body, derives_from: list[Edge], tickets: list[str])`.
   One tracked file.
 - `Lattice(nodes_by_id, index, dependents)`. The whole derived graph.
@@ -122,9 +123,15 @@ immediately before writing, and writes atomically.
 
 `orchestrate.load_lattice(config)` does the following:
 
-1. `discovery.discover_doc_paths(roots, ignore_globs)` returns every candidate `.md` path.
-   Every path is run through `safe_resolve()` against its docs root. A path that escapes the
-   root (via `..` or a symlink) raises an error and is never read. Ignore globs are an
+1. Each configured docs root is first resolved against the project root (the directory holding
+   `.game-lattice.yml`, or the current working directory when config is absent) and must stay
+   inside it; a root that escapes via `..`, a symlink, or an absolute path outside the project
+   is rejected with a `ConfigError` before any file is touched. This stops a repo-controlled
+   config from steering reads or `reconcile` writes outside the worktree, which matters because
+   `check` runs in CI against potentially untrusted repository contents.
+   `discovery.discover_doc_paths(roots, ignore_globs)` then returns every candidate `.md` path,
+   each run through `safe_resolve()` against its project-bounded docs root; a path that escapes
+   its root (via `..` or a symlink) raises an error and is never read. Ignore globs are an
    optimization and a safety net; correctness does not depend on them, because a file with no
    lattice frontmatter is ignored regardless.
 2. Each file is read as UTF-8. A decode failure or `OSError` raises `UnreadableDocError` with
@@ -139,8 +146,12 @@ immediately before writing, and writes atomically.
    `UnreadableDocError` with the path and the parser message.
 5. `loader.build_lattice(parsed_docs)` (pure) constructs `Node`s, registers each file `id`,
    scans each body for headings with `{#anchor}` markers and registers those anchor ids, and
-   enforces uniqueness across the whole namespace. It then resolves every edge `target_ref`
-   to a `target_id` and builds the reverse adjacency `dependents`.
+   enforces uniqueness across the whole namespace. It then resolves each edge `target_ref`
+   against the index, setting `target_id` to the resolved id or leaving it `None` when the ref
+   matches nothing. A failed resolution is not a load error: a broken edge is a normal lattice
+   state that `check` reports as BROKEN (exit 1), distinct from a `DuplicateIdError` that makes
+   the index itself incoherent (exit 2). The reverse adjacency `dependents` is built from
+   resolved edges only.
 
 ## 5. Section extraction and hashing
 
@@ -215,7 +226,11 @@ Discovery. `token` is a bare id or a `namespace#id` ref. It may name a section a
 whole file.
 
 - If `token` resolves to a file id, the target set is that file id plus every anchor id the
-  file contains. If it resolves to a section anchor, the target set is just that anchor.
+  file contains. If it resolves to a section anchor, the target set is that anchor plus every
+  anchored ancestor section whose span contains it. This mirrors the hashing model in section
+  5.1: editing a nested section also changes every enclosing section's hash, so dependents of
+  those ancestors are genuinely affected and must appear in the impact set. Omitting them would
+  under-report exactly the edit the Discovery guarantee exists to cover.
 - Reverse-walk `dependents`: any source whose edge resolves to a target in the set is a
   direct dependent; follow transitively. A visited set guards against cycles.
 - Output per downstream node: `id`, `title`, `path`, and its `tickets`. Tickets are raw
@@ -269,7 +284,11 @@ binding_layers: null   # reserved; this slice checks all edges regardless of lay
 
 Validated through pydantic with `extra="forbid"`. Located in the current working directory or
 repo root; `--config PATH` overrides; absent config falls back to `docs_roots: [docs]` with no
-ignore globs. All doc paths pass through `safe_resolve()`.
+ignore globs. Every `docs_roots` entry must resolve to a path inside the project root (the
+config's directory, or cwd when defaulting); roots outside it are rejected with a `ConfigError`.
+Confining roots to the project is the MVP behavior; an explicit opt-in for external roots is a
+deferred enhancement, not built until a real cross-tree layout needs it. All doc paths pass
+through `safe_resolve()`.
 
 ## 8. Error handling
 
@@ -278,7 +297,9 @@ gx-linear-skills precedent:
 
 - `ConfigError`: missing or invalid config, or a forbidden or malformed frontmatter key.
 - `DuplicateIdError`: two ids collide in the namespace. Lists both locations. Exit 2.
-- `BrokenRefError`: surfaced as a BROKEN edge by `check`; raised by `reconcile`.
+- `BrokenRefError`: a broken edge is recorded at load time as `target_id = None` (not raised)
+  and reported as a BROKEN edge by `check`; `reconcile` raises it when asked to reconcile such
+  an edge.
 - `UnreadableDocError`: non-UTF-8 content, `OSError`, or unparseable YAML. Names the path.
 
 No bare `except Exception`. No `datetime.now()` outside `datetime_utils.py`. Error messages
@@ -291,6 +312,9 @@ network and no secret material.
 
 - YAML is parsed in a safe mode so no arbitrary Python objects are constructed and YAML
   anchor or alias expansion cannot execute code. Validation into pydantic follows.
+- Configured `docs_roots` must resolve inside the project root, so a repo-controlled
+  `.game-lattice.yml` cannot steer reads or `reconcile` writes outside the worktree. This
+  matters in CI, where `check` runs against potentially untrusted repository contents.
 - Every doc path passes through `safe_resolve()` against its docs root, so traversal and
   symlink escape outside the root are refused before any read.
 - Only the heading-TOC and section-span logic from `binding_slicer` is ported; the prose
@@ -320,6 +344,13 @@ Test-driven, per the project conventions, with tests mirroring source one to one
   and the write is preserved in the output, proving the in-place fresh-read rewrite does not
   reattach a stale body.
 - A pure-loader uniqueness test: a fixture with a colliding id raises `DuplicateIdError`.
+- An `impact` ancestor-expansion test: `impact <nested-anchor>` includes dependents of the
+  enclosing parent section, not just the nested anchor's own dependents.
+- A broken-ref reporting test: a fixture edge whose ref resolves to nothing loads without error
+  (`target_id = None`), and `check --json` reports it as BROKEN with exit code 1, not a tool
+  error.
+- A docs-root containment test: a config whose `docs_roots` points outside the project root is
+  rejected with a `ConfigError` before any file is read.
 - Coverage at or above the existing 80 percent gate. The existing `test_conventions.py` stays
   green.
 
