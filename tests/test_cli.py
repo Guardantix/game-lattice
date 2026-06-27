@@ -45,6 +45,12 @@ def test_graph_emits_mermaid(lattice_dir: Path, monkeypatch):
     assert result.stdout.startswith("graph TD")
 
 
+def test_reconcile_unknown_id_exits_2(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["reconcile", "does-not-exist"])
+    assert result.exit_code == 2
+
+
 def test_reconcile_then_check_clean(lattice_dir: Path, monkeypatch):
     monkeypatch.chdir(lattice_dir)
     assert runner.invoke(app, ["reconcile", "pc-design"]).exit_code == 0

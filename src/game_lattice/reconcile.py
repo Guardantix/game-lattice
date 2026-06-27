@@ -6,17 +6,23 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
-from .error_types import BrokenRefError
+from .error_types import BrokenRefError, ValidationError
 from .frontmatter_parser import split_frontmatter
 from .hashing import content_hash
 from .model import Lattice
-from .resolve import target_content
+from .resolve import split_ref, target_content
 
 
 def reconcile(
     lattice: Lattice, downstream_id: str, *, ref: str | None, reconcile_all: bool
 ) -> dict[Path, dict[str, str]]:
     """Plan the seen-scalar updates needed to clear drift for the selection.
+
+    Selection: when ``reconcile_all`` is True, every STALE and UNRECONCILED edge across
+    the lattice is updated; BROKEN and already-OK edges are skipped.  When targeting a
+    specific node, all of that node's non-broken edges are updated (or the single ref
+    if ``ref`` is given); the match uses the resolved trailing id so a bare ref and a
+    namespaced ref select the same edge.
 
     Args:
         lattice: The built lattice (its upstream content is the reconcile snapshot).
@@ -29,22 +35,30 @@ def reconcile(
         caller applies these via ``apply_reconcile`` and an atomic write (the CLI does).
 
     Raises:
-        BrokenRefError: If a selected edge has no resolvable target.
+        ValidationError: If ``downstream_id`` is not in the lattice (only when not
+            ``reconcile_all``).
+        BrokenRefError: If a targeted edge (not ``reconcile_all``) has no resolvable
+            target.
     """
+    if not reconcile_all and downstream_id not in lattice.nodes_by_id:
+        raise ValidationError(f"unknown downstream id {downstream_id!r}; run check to list ids")
     node_ids = sorted(lattice.nodes_by_id) if reconcile_all else [downstream_id]
     plan: dict[Path, dict[str, str]] = defaultdict(dict)
     for node_id in node_ids:
         node = lattice.nodes_by_id[node_id]
         for edge in node.derives_from:
-            if ref is not None and edge.target_ref != ref:
+            if ref is not None and split_ref(edge.target_ref) != split_ref(ref):
                 continue
             if edge.target_id is None:
-                msg = (
+                if reconcile_all:
+                    continue
+                raise BrokenRefError(
                     f"cannot reconcile broken ref {edge.target_ref!r} on {node_id};"
                     " fix the ref first"
                 )
-                raise BrokenRefError(msg)
             new_seen = content_hash(target_content(lattice, edge.target_id))
+            if reconcile_all and edge.seen is not None and new_seen == edge.seen:
+                continue
             plan[node.path][edge.target_ref] = new_seen
     return dict(plan)
 

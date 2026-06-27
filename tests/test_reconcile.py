@@ -6,7 +6,7 @@ import pytest
 
 from game_lattice.check import check_lattice
 from game_lattice.config import load_config
-from game_lattice.error_types import BrokenRefError
+from game_lattice.error_types import BrokenRefError, ProjectError, ValidationError
 from game_lattice.orchestrate import load_lattice
 from game_lattice.reconcile import apply_reconcile, reconcile
 
@@ -53,3 +53,33 @@ def test_reconcile_refuses_broken(lattice_dir: Path):
     lat = load_lattice(load_config(None, lattice_dir))
     with pytest.raises(BrokenRefError):
         reconcile(lat, "gdd", ref=None, reconcile_all=False)
+
+
+def test_reconcile_unknown_id_raises(lattice_dir: Path):
+    lat = load_lattice(load_config(None, lattice_dir))
+    with pytest.raises(ValidationError) as exc_info:
+        reconcile(lat, "does-not-exist", ref=None, reconcile_all=False)
+    assert isinstance(exc_info.value, ProjectError)
+
+
+def test_reconcile_ref_bare_matches_namespaced(lattice_dir: Path):
+    lat = load_lattice(load_config(None, lattice_dir))
+    # "accent" (bare) should match the stored ref "art-direction#accent" (namespaced)
+    plan = reconcile(lat, "pc-design", ref="accent", reconcile_all=False)
+    assert plan, "plan must be non-empty"
+    # The plan is keyed by path; collect all target_refs across all files
+    all_refs = {ref for updates in plan.values() for ref in updates}
+    assert "art-direction#accent" in all_refs
+
+
+def test_reconcile_all_skips_broken_and_ok(lattice_dir: Path):
+    lat = load_lattice(load_config(None, lattice_dir))
+    # Must not raise despite gdd's BROKEN edge
+    plan = reconcile(lat, "", ref=None, reconcile_all=True)
+    # Collect all target_refs across all files in the plan
+    all_refs = {ref for updates in plan.values() for ref in updates}
+    # pc-design's two drifting edges should be in the plan
+    assert "art-direction#accent" in all_refs
+    assert "art-direction#motion" in all_refs
+    # gdd's broken ghost ref must NOT be in the plan
+    assert "ghost" not in all_refs

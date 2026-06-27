@@ -38,3 +38,18 @@ def test_read_doc_non_utf8_raises(tmp_path: Path):
     p.write_bytes(b"\xff\xfe\x00bad")
     with pytest.raises(UnreadableDocError):
         read_doc(p)
+
+
+def test_discovery_skips_symlink_escaping_root(tmp_path: Path):
+    root = tmp_path / "docs"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.md"
+    secret.write_text("secret content", encoding="utf-8")
+    (root / "leak.md").symlink_to(secret)
+    (root / "keep.md").write_text("safe content", encoding="utf-8")
+    found = discover_doc_paths([root], [])
+    names = [p.name for p in found]
+    assert "keep.md" in names
+    assert "leak.md" not in names

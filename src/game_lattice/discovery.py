@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .error_types import UnreadableDocError
+from .path_utils import safe_resolve
 
 
 def discover_doc_paths(roots: Sequence[Path], ignore_globs: Sequence[str]) -> list[Path]:
@@ -24,6 +25,10 @@ def discover_doc_paths(roots: Sequence[Path], ignore_globs: Sequence[str]) -> li
             if not path.is_file():
                 continue
             if _ignored(path, root, ignore_globs):
+                continue
+            try:
+                safe_resolve(path, root)
+            except ValueError:
                 continue
             found.add(path)
     return sorted(found)
