@@ -61,7 +61,8 @@ def test_discovery_skips_symlink_escaping_root(tmp_path: Path):
     secret.write_text("secret content", encoding="utf-8")
     (root / "leak.md").symlink_to(secret)
     (root / "keep.md").write_text("safe content", encoding="utf-8")
-    found = discover_doc_paths([root], [])
+    with pytest.warns(UserWarning, match="escapes the project root"):
+        found = discover_doc_paths([root], [])
     names = [p.name for p in found]
     assert "keep.md" in names
-    assert "leak.md" not in names
+    assert "leak.md" not in names  # skipped, but loudly (not silently)

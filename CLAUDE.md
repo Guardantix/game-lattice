@@ -43,12 +43,12 @@ config -> discovery -> frontmatter parse -> loader.build_lattice -> { check, imp
 
 **The `Lattice` (model.py) is the central structure** and every command reads from it:
 
-- `nodes_by_id` — each tracked file as a `Node` (frontmatter + verbatim body).
-- `index` — every stable id mapped to a `Location`. File ids and `{#anchor}` section ids share one
+- `nodes_by_id`: each tracked file as a `Node` (frontmatter + verbatim body).
+- `index`: every stable id mapped to a `Location`. File ids and `{#anchor}` section ids share one
   flat namespace; a collision anywhere is a `DuplicateIdError` (a load failure, exit 2).
-- `dependents` — reverse adjacency (target id -> source ids that derive from it), built from
+- `dependents`: reverse adjacency (target id -> source ids that derive from it), built from
   resolved edges only.
-- `ancestors` — for a section anchor, the enclosing anchored sections (outermost to innermost), so
+- `ancestors`: for a section anchor, the enclosing anchored sections (outermost to innermost), so
   editing a nested sub-section propagates impact to dependents of its parent.
 
 **Refs and edge state.** A `derives_from` ref resolves on the trailing segment after the last `#`
@@ -62,7 +62,7 @@ distinguishes a broken edge (exit 1, drift) from a duplicate id (exit 2, incoher
 `content_hash(target_content(...))`, where the hash is `sha256(canonicalize(text))` truncated to 32
 hex chars (128 bits) and `canonicalize` strips cosmetic differences (line endings, trailing
 whitespace, edge blank lines). `impact` reverse-walks `dependents` transitively (with ancestor
-expansion) to list everything a change touches.
+and enclosing-file expansion) to list everything a change touches.
 
 **Reconcile is the only mutating command.** It plans new `seen` values from the loaded snapshot,
 then at write time **re-reads each downstream file fresh**, rewrites only the targeted `seen`

@@ -8,6 +8,7 @@ from game_lattice.hashing import content_hash
 from game_lattice.loader import build_lattice
 from game_lattice.model import NodeMeta, ParsedDoc, RawEdge
 from game_lattice.orchestrate import load_lattice
+from game_lattice.resolve import target_content
 from game_lattice.sections import build_toc, section_span, section_text
 
 
@@ -26,6 +27,28 @@ def test_has_drift_true_when_any_non_ok(lattice_dir: Path):
     assert has_drift(check_lattice(lat)) is True
 
 
+def test_check_populates_expected_and_actual_per_state(lattice_dir: Path):
+    lat = load_lattice(load_config(None, lattice_dir))
+    by_ref = {(s.source_id, s.target_ref): s for s in check_lattice(lat)}
+
+    stale = by_ref[("pc-design", "art-direction#accent")]
+    assert stale.state == "STALE"
+    assert stale.target_id is not None  # a STALE edge always has a resolved target
+    assert stale.expected == "staleseenhashstaleseenhashstale00"  # the locked seen
+    assert stale.actual == content_hash(target_content(lat, stale.target_id))
+    assert stale.expected != stale.actual
+
+    unrec = by_ref[("pc-design", "art-direction#motion")]
+    assert unrec.state == "UNRECONCILED"
+    assert unrec.expected is None  # never reconciled, so no locked hash
+    assert unrec.actual is not None
+
+    broken = by_ref[("gdd", "ghost")]
+    assert broken.state == "BROKEN"
+    assert broken.target_id is None
+    assert broken.actual is None  # nothing to hash for an unresolved target
+
+
 def test_has_drift_false_when_all_ok():
     up_body = "# Up {#accent}\naccent\n"
     span = section_span(build_toc(up_body), 0, len(up_body.splitlines()))
@@ -40,4 +63,5 @@ def test_has_drift_false_when_all_ok():
     ]
     statuses = check_lattice(build_lattice(docs))
     assert all(s.state == "OK" for s in statuses)
+    assert all(s.expected == s.actual for s in statuses)  # OK means locked == current
     assert has_drift(statuses) is False

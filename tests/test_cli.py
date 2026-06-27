@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 import game_lattice.cli as cli_mod
@@ -124,3 +125,48 @@ def test_graph_dot_retains_bracketed_attributes(lattice_dir: Path, monkeypatch):
     assert result.exit_code == 0
     assert result.stdout.startswith("digraph lattice")
     assert "[label=" in result.stdout  # rich markup must not strip DOT attributes
+
+
+def _clean_docs(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "up.md").write_text("---\nid: up\n---\n# Up {#sec}\nsec body\n", encoding="utf-8")
+    (docs / "down.md").write_text(
+        "---\nid: down\nderives_from:\n  - ref: up#sec\n---\n# Down\nbody\n",
+        encoding="utf-8",
+    )
+
+
+def test_check_exits_0_when_fully_reconciled(tmp_path: Path, monkeypatch):
+    _clean_docs(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    assert runner.invoke(app, ["reconcile", "down"]).exit_code == 0
+    # No broken refs and every edge reconciled, so check reports clean.
+    assert runner.invoke(app, ["check"]).exit_code == 0
+
+
+def test_reconcile_ref_typo_exits_2(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["reconcile", "pc-design", "--ref", "accnt"])
+    assert result.exit_code == 2
+
+
+def test_reconcile_noop_reports_nothing_to_reconcile(tmp_path: Path, monkeypatch):
+    _clean_docs(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    runner.invoke(app, ["reconcile", "down"])  # first run clears the UNRECONCILED edge
+    result = runner.invoke(app, ["reconcile", "down"])  # nothing left to do
+    assert result.exit_code == 0
+    assert "nothing to reconcile" in result.stdout
+
+
+def test_main_maps_unexpected_error_to_exit_2(monkeypatch):
+    # An unexpected (non-ProjectError) failure must not exit 1 and collide with check's
+    # drift code; main() maps it to the tool-error code 2.
+    def boom():
+        raise RuntimeError("symlink loop")
+
+    monkeypatch.setattr(cli_mod, "app", boom)
+    with pytest.raises(SystemExit) as exc_info:
+        cli_mod.main()
+    assert exc_info.value.code == 2

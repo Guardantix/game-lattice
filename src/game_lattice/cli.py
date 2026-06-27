@@ -130,16 +130,30 @@ def reconcile(
     try:
         lattice = _load(config)
         plan = plan_reconcile(lattice, downstream_id, ref=ref, reconcile_all=reconcile_all)
+        # Phase 1: compute every rewrite from a fresh read before touching disk, so a
+        # malformed concurrent edit aborts the whole command instead of leaving an
+        # earlier file already rewritten (no cross-file half-reconcile).
+        rewrites: list[tuple[Path, str, set[str]]] = []
         for path, updates in plan.items():
             try:
                 fresh = path.read_text(encoding="utf-8")
-                new_text, applied = apply_reconcile(fresh, updates)
-                _atomic_write(path, new_text)
             except (OSError, UnicodeDecodeError) as exc:
-                msg = f"cannot reconcile {path}: {exc}"
+                msg = f"cannot read {path} to reconcile: {exc}"
+                raise UnreadableDocError(msg) from exc
+            new_text, applied = apply_reconcile(fresh, updates)
+            if applied:
+                rewrites.append((path, new_text, applied))
+        # Phase 2: only after all rewrites computed cleanly, write them.
+        for path, new_text, applied in rewrites:
+            try:
+                _atomic_write(path, new_text)
+            except OSError as exc:
+                msg = f"cannot write {path}: {exc}"
                 raise UnreadableDocError(msg) from exc
             for target_ref in sorted(applied):
                 _out.print(f"reconciled {escape(path.name)}: {escape(target_ref)}")
+        if not rewrites:
+            _out.print("nothing to reconcile")
     except ProjectError as exc:
         _err.print(f"[red]error[/red]: {exc} ({exc.code})")
         raise typer.Exit(2) from exc
@@ -167,10 +181,27 @@ def graph(
 
 def _atomic_write(path: Path, text: str) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def main() -> None:
-    """Console-script entry point."""
-    app()
+    """Console-script entry point.
+
+    Wraps ``app()`` so an unexpected filesystem or path error (for example a symlink
+    loop surfacing as ``RuntimeError`` from ``Path.resolve()``) exits with the tool-error
+    code 2 instead of Python's default 1, which ``check`` reserves to mean "drift
+    detected". Intended exits raised by typer (``SystemExit``) propagate unchanged.
+    """
+    try:
+        app()
+    except ProjectError as exc:
+        _err.print(f"[red]error[/red]: {exc} ({exc.code})")
+        raise SystemExit(2) from exc
+    except (OSError, RuntimeError, ValueError) as exc:
+        _err.print(f"[red]internal error[/red]: {type(exc).__name__}: {exc}")
+        raise SystemExit(2) from exc

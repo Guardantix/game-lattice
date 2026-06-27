@@ -51,6 +51,16 @@ def test_anchor_collides_with_file_id_raises():
         build_lattice(docs)
 
 
+def test_anchor_collides_with_anchor_in_other_file_raises():
+    # The same {#shared} anchor in two files collides in the flat namespace.
+    docs = [
+        _doc("a.md", "# A {#a-top}\n\n## Shared {#shared}\nx\n", id="a"),
+        _doc("b.md", "# B {#b-top}\n\n## Shared {#shared}\nx\n", id="b"),
+    ]
+    with pytest.raises(DuplicateIdError):
+        build_lattice(docs)
+
+
 def test_ancestors_computed_for_nested_anchor():
     body = "# Parent {#parent}\n\n## Child {#child}\nx\n"
     lat = build_lattice([_doc("a.md", body, id="a")])

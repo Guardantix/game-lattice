@@ -1,5 +1,6 @@
 """Discover candidate markdown docs under contained roots, and read them as UTF-8."""
 
+import warnings
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -17,7 +18,9 @@ def discover_doc_paths(roots: Sequence[Path], ignore_globs: Sequence[str]) -> li
             a same-named subdirectory; use ``**`` to match at any depth.
 
     Returns:
-        A sorted, de-duplicated list of markdown file paths.
+        A sorted, de-duplicated list of markdown file paths. A file that resolves outside
+        the project root (via a symlink or absolute path) is skipped with a warning rather
+        than read, so a silently missing doc does not masquerade as a broken ref later.
     """
     found: set[Path] = set()
     for root in roots:
@@ -31,6 +34,11 @@ def discover_doc_paths(roots: Sequence[Path], ignore_globs: Sequence[str]) -> li
             try:
                 safe_resolve(path, root)
             except ValueError:
+                warnings.warn(
+                    f"skipping {path}: it escapes the project root via a symlink or "
+                    "absolute path and was not read",
+                    stacklevel=2,
+                )
                 continue
             found.add(path)
     return sorted(found)

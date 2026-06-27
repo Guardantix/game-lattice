@@ -22,11 +22,13 @@ def reconcile(
 
     Selection: when ``reconcile_all`` is True, every STALE and UNRECONCILED edge across
     the lattice is updated; BROKEN and already-OK edges are skipped.  When targeting a
-    specific node, all of that node's non-broken edges are updated (or the single ref
-    if ``ref`` is given); the match uses the resolved trailing id so a bare ref and a
-    namespaced ref select the same edge.  A node's BROKEN edge is skipped (it does not
-    block the node's reconcilable edges); only a ``--ref`` aimed directly at a broken
-    edge is refused.
+    specific node, all of that node's STALE or UNRECONCILED edges are updated (or just
+    the matching edge if ``ref`` is given); an already-OK edge is skipped in both modes,
+    since restamping it to the same hash is a no-op.  The match uses the resolved trailing
+    id so a bare ref and a namespaced ref select the same edge.  A node's BROKEN edge is
+    skipped (it does not block the node's reconcilable edges); only a ``--ref`` aimed
+    directly at a broken edge is refused, and a ``--ref`` that matches no edge on the node
+    is reported rather than silently doing nothing.
 
     Args:
         lattice: The built lattice (its upstream content is the reconcile snapshot).
@@ -39,19 +41,21 @@ def reconcile(
         caller applies these via ``apply_reconcile`` and an atomic write (the CLI does).
 
     Raises:
-        ValidationError: If ``downstream_id`` is not in the lattice (only when not
-            ``reconcile_all``).
+        ValidationError: If ``downstream_id`` is not in the lattice, or if ``ref`` is
+            given but matches no edge on the node (both only when not ``reconcile_all``).
         BrokenRefError: If ``ref`` targets an edge that has no resolvable target.
     """
     if not reconcile_all and downstream_id not in lattice.nodes_by_id:
         raise ValidationError(f"unknown downstream id {downstream_id!r}; run check to list ids")
     node_ids = sorted(lattice.nodes_by_id) if reconcile_all else [downstream_id]
     plan: dict[Path, dict[str, str]] = defaultdict(dict)
+    ref_matched = False
     for node_id in node_ids:
         node = lattice.nodes_by_id[node_id]
         for edge in node.derives_from:
             if ref is not None and split_ref(edge.target_ref) != split_ref(ref):
                 continue
+            ref_matched = True
             if edge.target_id is None:
                 if ref is not None and not reconcile_all:
                     raise BrokenRefError(
@@ -60,9 +64,13 @@ def reconcile(
                     )
                 continue
             new_seen = content_hash(target_content(lattice, edge.target_id))
-            if reconcile_all and edge.seen is not None and new_seen == edge.seen:
+            if edge.seen is not None and new_seen == edge.seen:
                 continue
             plan[node.path][edge.target_ref] = new_seen
+    if ref is not None and not reconcile_all and not ref_matched:
+        raise ValidationError(
+            f"node {downstream_id!r} has no edge matching ref {ref!r}; run check to list its edges"
+        )
     return dict(plan)
 
 
@@ -79,11 +87,13 @@ def apply_reconcile(current_file_text: str, updates: dict[str, str]) -> tuple[st
         updates: ``{target_ref: new_seen}`` for edges in this file.
 
     Returns:
-        A pair of the rewritten file text and the set of refs whose ``seen`` was actually
-        changed. When nothing matched (for example a ref was edited away between load and
-        write) the original text is returned unchanged and the set is empty, so the caller
-        does not report a write that did not happen. The body after the closing fence is
-        reattached verbatim from ``current_file_text``.
+        A pair of the rewritten file text and the set of refs from ``updates`` whose
+        ``seen`` was changed; a ref already holding its planned value is left untouched
+        and excluded from the set. When nothing changed (for example a ref was edited
+        away between load and write, or already held the planned hash) the original text
+        is returned unchanged and the set is empty, so the caller does not report a write
+        that did not happen. The body after the closing fence is reattached verbatim from
+        ``current_file_text``.
 
     Raises:
         UnreadableDocError: If the fresh frontmatter cannot be parsed or is malformed.
@@ -111,7 +121,7 @@ def apply_reconcile(current_file_text: str, updates: dict[str, str]) -> tuple[st
         if not isinstance(entry, MutableMapping):
             raise UnreadableDocError("frontmatter derives_from entry is not a mapping")
         ref = entry.get("ref")
-        if ref in updates:
+        if ref in updates and entry.get("seen") != updates[ref]:
             entry["seen"] = updates[ref]
             applied.add(ref)
     if not applied:

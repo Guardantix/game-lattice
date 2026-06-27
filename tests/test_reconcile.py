@@ -147,3 +147,68 @@ def test_reconcile_all_skips_broken_and_ok(lattice_dir: Path):
     assert "art-direction#motion" in all_refs
     # gdd's broken ghost ref must NOT be in the plan
     assert "ghost" not in all_refs
+
+
+def test_apply_reconcile_preserves_comments_key_order_and_untargeted_edges():
+    # The only mutating command must rewrite just the targeted seen, leaving comments,
+    # key order, and a second (untargeted) edge's seen intact. Guards against a regression
+    # to a non-round-trip YAML dump.
+    text = (
+        "---\n"
+        "id: d  # the node id\n"
+        "derives_from:\n"
+        "  - ref: a#x\n    seen: oldx\n"
+        "  - ref: b#y\n    seen: oldy\n"
+        "tickets: [T-1]\n"
+        "---\n# Body\nkeep\n"
+    )
+    out, applied = apply_reconcile(text, {"a#x": "newx"})
+    assert applied == {"a#x"}
+    assert "seen: newx" in out
+    assert "seen: oldy" in out  # the untargeted edge is untouched
+    assert "# the node id" in out  # the comment survives
+    assert out.index("id: d") < out.index("derives_from") < out.index("tickets")  # key order
+    assert out.endswith("# Body\nkeep\n")
+
+
+def test_apply_reconcile_no_change_when_seen_already_matches():
+    # A planned ref whose seen already equals the new value is a no-op: not reported,
+    # text returned unchanged.
+    text = "---\nid: d\nderives_from:\n  - ref: a#x\n    seen: same\n---\nbody\n"
+    out, applied = apply_reconcile(text, {"a#x": "same"})
+    assert applied == set()
+    assert out == text
+
+
+def test_reconcile_ref_no_match_raises(lattice_dir: Path):
+    # A --ref that names no edge on the node is reported, not a silent exit-0 no-op.
+    lat = load_lattice(load_config(None, lattice_dir))
+    with pytest.raises(ValidationError):
+        reconcile(lat, "pc-design", ref="does-not-exist", reconcile_all=False)
+
+
+def _apply_plan(plan: dict[Path, dict[str, str]]) -> None:
+    for path, updates in plan.items():
+        new_text, _ = apply_reconcile(path.read_text(encoding="utf-8"), updates)
+        path.write_text(new_text, encoding="utf-8")
+
+
+def test_reconcile_node_second_run_skips_already_ok_edges(lattice_dir: Path):
+    # After a node is reconciled, a second single-node reconcile plans nothing, since
+    # restamping an already-OK edge to the same hash is a no-op.
+    project = load_config(None, lattice_dir)
+    _apply_plan(reconcile(load_lattice(project), "pc-design", ref=None, reconcile_all=False))
+    relat = load_lattice(load_config(None, lattice_dir))
+    assert reconcile(relat, "pc-design", ref=None, reconcile_all=False) == {}
+
+
+def test_reconcile_all_skips_already_ok_edge(lattice_dir: Path):
+    # Make pc-design's accent edge OK, leave motion UNRECONCILED, then --all must plan
+    # only motion (the OK edge is skipped at reconcile.py's new_seen == seen guard).
+    project = load_config(None, lattice_dir)
+    _apply_plan(reconcile(load_lattice(project), "pc-design", ref="accent", reconcile_all=False))
+    relat = load_lattice(load_config(None, lattice_dir))
+    plan = reconcile(relat, "", ref=None, reconcile_all=True)
+    refs = {ref for updates in plan.values() for ref in updates}
+    assert "art-direction#accent" not in refs  # already OK -> skipped
+    assert "art-direction#motion" in refs  # still UNRECONCILED -> planned

@@ -46,3 +46,19 @@ def test_unknown_key_rejected(tmp_path: Path):
 def test_missing_explicit_config_path_raises(tmp_path: Path):
     with pytest.raises(ConfigError):
         load_config(tmp_path / "nope.yml", tmp_path)
+
+
+def test_explicit_config_path_loads_and_resolves_roots(tmp_path: Path):
+    (tmp_path / "design").mkdir()
+    cfg = tmp_path / "custom.yml"
+    cfg.write_text("docs_roots: [design]\n", encoding="utf-8")
+    project = load_config(cfg, tmp_path)
+    assert project.project_root == tmp_path.resolve()
+    assert project.resolved_roots == (tmp_path.resolve() / "design",)
+
+
+def test_malformed_config_yaml_raises_config_error(tmp_path: Path):
+    # A syntactically broken config surfaces as a clean ConfigError, not a raw YAMLError.
+    (tmp_path / ".game-lattice.yml").write_text("docs_roots: [unclosed\n", encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config(None, tmp_path)

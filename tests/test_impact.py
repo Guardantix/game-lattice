@@ -74,3 +74,26 @@ def test_impact_unknown_token_raises():
 def test_impact_known_id_with_no_dependents_is_empty():
     lat = build_lattice([_doc("a.md", "# A {#a-top}\nx\n", id="a")])
     assert impact(lat, "a") == []
+
+
+def test_impact_diamond_reaches_each_node_once():
+    # 'd' derives from both the file 'a' and its section 'a-sec'; editing 'a' reaches d
+    # via two targets, but it must appear exactly once.
+    lat = build_lattice(
+        [
+            _doc("a.md", "# A {#a-top}\n\n## Sec {#a-sec}\nx\n", id="a"),
+            _doc("d.md", "x\n", id="d", derives_from=[RawEdge(ref="a"), RawEdge(ref="a-sec")]),
+        ]
+    )
+    assert [n.id for n in impact(lat, "a")] == ["d"]
+
+
+def test_impact_cycle_terminates():
+    # 'a' and 'b' mutually derive from each other; the walk must terminate, not loop.
+    lat = build_lattice(
+        [
+            _doc("a.md", "# A {#a-top}\nx\n", id="a", derives_from=[RawEdge(ref="b")]),
+            _doc("b.md", "# B {#b-top}\nx\n", id="b", derives_from=[RawEdge(ref="a")]),
+        ]
+    )
+    assert {n.id for n in impact(lat, "a")} == {"a", "b"}
