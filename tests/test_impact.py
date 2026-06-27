@@ -2,6 +2,9 @@
 
 from pathlib import Path
 
+import pytest
+
+from game_lattice.error_types import ValidationError
 from game_lattice.impact import expand_targets, impact
 from game_lattice.loader import build_lattice
 from game_lattice.model import NodeMeta, ParsedDoc, RawEdge
@@ -11,10 +14,25 @@ def _doc(path: str, body: str, **meta) -> ParsedDoc:
     return ParsedDoc(Path(path), NodeMeta(**meta), body)
 
 
-def test_section_token_expands_to_ancestors():
+def test_section_token_expands_to_ancestors_and_file():
     body = "# Parent {#parent}\n\n## Child {#child}\nx\n"
     lat = build_lattice([_doc("a.md", body, id="a")])
-    assert expand_targets(lat, "child") == {"child", "parent"}
+    # Editing 'child' also changes the whole-file hash, so the file id 'a' is included.
+    assert expand_targets(lat, "child") == {"child", "parent", "a"}
+
+
+def test_impact_section_reaches_whole_file_dependents():
+    # 'whole' derives from the file 'up'; 'sub' derives from section 'sec' inside up.
+    # Editing 'sec' changes up's whole-file hash, so 'whole' is affected too.
+    parent = "# Up {#up-top}\n\n## Sec {#sec}\nx\n"
+    lat = build_lattice(
+        [
+            _doc("up.md", parent, id="up"),
+            _doc("whole.md", "x\n", id="whole", derives_from=[RawEdge(ref="up")]),
+            _doc("sub.md", "x\n", id="sub", derives_from=[RawEdge(ref="sec")]),
+        ]
+    )
+    assert {n.id for n in impact(lat, "sec")} == {"whole", "sub"}
 
 
 def test_file_token_expands_to_its_anchors():
@@ -45,3 +63,14 @@ def test_impact_is_transitive():
         ]
     )
     assert {n.id for n in impact(lat, "u")} == {"mid", "low"}
+
+
+def test_impact_unknown_token_raises():
+    lat = build_lattice([_doc("a.md", "# A {#a-top}\nx\n", id="a")])
+    with pytest.raises(ValidationError):
+        impact(lat, "nonexistent")
+
+
+def test_impact_known_id_with_no_dependents_is_empty():
+    lat = build_lattice([_doc("a.md", "# A {#a-top}\nx\n", id="a")])
+    assert impact(lat, "a") == []

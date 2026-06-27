@@ -56,3 +56,22 @@ def test_ancestors_computed_for_nested_anchor():
     lat = build_lattice([_doc("a.md", body, id="a")])
     assert lat.ancestors["child"] == ("parent",)
     assert lat.ancestors["parent"] == ()
+
+
+def test_duplicate_resolved_target_is_deduped_with_warning():
+    docs = [
+        _doc("up.md", "# Up {#accent}\nx\n", id="up"),
+        _doc(
+            "down.md",
+            "body\n",
+            id="down",
+            derives_from=[RawEdge(ref="up#accent", seen="h1"), RawEdge(ref="accent", seen="h2")],
+        ),
+    ]
+    with pytest.warns(UserWarning, match="derives from 'accent' more than once"):
+        lat = build_lattice(docs)
+    edges = lat.nodes_by_id["down"].derives_from
+    assert len(edges) == 1  # the two refs resolve to the same id, deduped to one edge
+    assert edges[0].target_id == "accent"
+    assert edges[0].seen == "h2"  # last write wins on seen
+    assert lat.dependents["accent"] == frozenset({"down"})

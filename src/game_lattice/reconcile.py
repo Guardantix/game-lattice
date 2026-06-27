@@ -2,11 +2,13 @@
 
 import io
 from collections import defaultdict
+from collections.abc import MutableMapping
 from pathlib import Path
 
 from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
 
-from .error_types import BrokenRefError, ValidationError
+from .error_types import BrokenRefError, UnreadableDocError, ValidationError
 from .frontmatter_parser import split_frontmatter
 from .hashing import content_hash
 from .model import Lattice
@@ -22,7 +24,9 @@ def reconcile(
     the lattice is updated; BROKEN and already-OK edges are skipped.  When targeting a
     specific node, all of that node's non-broken edges are updated (or the single ref
     if ``ref`` is given); the match uses the resolved trailing id so a bare ref and a
-    namespaced ref select the same edge.
+    namespaced ref select the same edge.  A node's BROKEN edge is skipped (it does not
+    block the node's reconcilable edges); only a ``--ref`` aimed directly at a broken
+    edge is refused.
 
     Args:
         lattice: The built lattice (its upstream content is the reconcile snapshot).
@@ -37,8 +41,7 @@ def reconcile(
     Raises:
         ValidationError: If ``downstream_id`` is not in the lattice (only when not
             ``reconcile_all``).
-        BrokenRefError: If a targeted edge (not ``reconcile_all``) has no resolvable
-            target.
+        BrokenRefError: If ``ref`` targets an edge that has no resolvable target.
     """
     if not reconcile_all and downstream_id not in lattice.nodes_by_id:
         raise ValidationError(f"unknown downstream id {downstream_id!r}; run check to list ids")
@@ -50,12 +53,12 @@ def reconcile(
             if ref is not None and split_ref(edge.target_ref) != split_ref(ref):
                 continue
             if edge.target_id is None:
-                if reconcile_all:
-                    continue
-                raise BrokenRefError(
-                    f"cannot reconcile broken ref {edge.target_ref!r} on {node_id};"
-                    " fix the ref first"
-                )
+                if ref is not None and not reconcile_all:
+                    raise BrokenRefError(
+                        f"cannot reconcile broken ref {edge.target_ref!r} on {node_id};"
+                        " fix the ref first"
+                    )
+                continue
             new_seen = content_hash(target_content(lattice, edge.target_id))
             if reconcile_all and edge.seen is not None and new_seen == edge.seen:
                 continue
@@ -63,25 +66,56 @@ def reconcile(
     return dict(plan)
 
 
-def apply_reconcile(current_file_text: str, updates: dict[str, str]) -> str:
+def apply_reconcile(current_file_text: str, updates: dict[str, str]) -> tuple[str, set[str]]:
     """Return ``current_file_text`` with matching edges' seen scalars set.
+
+    The fresh read is parsed defensively: a concurrent edit that leaves the frontmatter
+    unparseable or in an unexpected shape (not a mapping, a non-list ``derives_from``, a
+    non-mapping entry) raises ``UnreadableDocError`` (a ``ProjectError``) so the CLI exits
+    cleanly instead of crashing with a traceback.
 
     Args:
         current_file_text: A fresh read of the downstream file at write time.
         updates: ``{target_ref: new_seen}`` for edges in this file.
 
     Returns:
-        The file text with only the matching ``seen`` scalars changed; the body after
-        the closing fence is reattached verbatim from ``current_file_text``.
+        A pair of the rewritten file text and the set of refs whose ``seen`` was actually
+        changed. When nothing matched (for example a ref was edited away between load and
+        write) the original text is returned unchanged and the set is empty, so the caller
+        does not report a write that did not happen. The body after the closing fence is
+        reattached verbatim from ``current_file_text``.
+
+    Raises:
+        UnreadableDocError: If the fresh frontmatter cannot be parsed or is malformed.
     """
     raw_meta, body = split_frontmatter(current_file_text)
     if raw_meta is None:
-        return current_file_text
+        return current_file_text, set()
     yaml = YAML(typ="rt")
-    data = yaml.load(raw_meta)
-    for entry in data.get("derives_from", []):
-        if entry.get("ref") in updates:
-            entry["seen"] = updates[entry["ref"]]
+    try:
+        data = yaml.load(raw_meta)
+    except YAMLError as exc:
+        msg = f"cannot parse frontmatter to reconcile: {exc}"
+        raise UnreadableDocError(msg) from exc
+    if data is None:
+        return current_file_text, set()
+    if not isinstance(data, MutableMapping):
+        raise UnreadableDocError("frontmatter is not a mapping; cannot reconcile")
+    entries = data.get("derives_from")
+    if entries is None:
+        return current_file_text, set()
+    if not isinstance(entries, list):
+        raise UnreadableDocError("frontmatter derives_from is not a list; cannot reconcile")
+    applied: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, MutableMapping):
+            raise UnreadableDocError("frontmatter derives_from entry is not a mapping")
+        ref = entry.get("ref")
+        if ref in updates:
+            entry["seen"] = updates[ref]
+            applied.add(ref)
+    if not applied:
+        return current_file_text, applied
     buffer = io.StringIO()
     yaml.dump(data, buffer)
-    return f"---\n{buffer.getvalue()}---\n{body}"
+    return f"---\n{buffer.getvalue()}---\n{body}", applied

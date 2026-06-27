@@ -6,11 +6,12 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 
 from . import __version__
 from .check import check_lattice, has_drift
 from .config import load_config
-from .error_types import ProjectError
+from .error_types import ProjectError, UnreadableDocError
 from .impact import impact as impact_walk
 from .model import Lattice
 from .orchestrate import load_lattice
@@ -80,7 +81,9 @@ def check(config: ConfigOpt = None, json_out: JsonOpt = False) -> None:
         state_colors = {"OK": "green", "STALE": "yellow", "UNRECONCILED": "yellow", "BROKEN": "red"}
         for s in statuses:
             color = state_colors[s.state]
-            _out.print(f"[{color}]{s.state:<13}[/{color}] {s.source_id} -> {s.target_ref}")
+            _out.print(
+                f"[{color}]{s.state:<13}[/{color}] {escape(s.source_id)} -> {escape(s.target_ref)}"
+            )
     raise typer.Exit(1 if has_drift(statuses) else 0)
 
 
@@ -104,12 +107,14 @@ def impact(token: str, config: ConfigOpt = None, json_out: JsonOpt = False) -> N
     else:
         for n in affected:
             tickets = ", ".join(n.tickets) if n.tickets else "-"
-            _out.print(f"{n.id}  ({n.path})  tickets: {tickets}")
+            _out.print(f"{escape(n.id)}  ({escape(str(n.path))})  tickets: {escape(tickets)}")
 
 
 @app.command()
 def reconcile(
-    downstream_id: str,
+    downstream_id: Annotated[
+        str, typer.Argument(help="Node whose edges to reconcile (omit when using --all).")
+    ] = "",
     ref: Annotated[
         str | None, typer.Option("--ref", help="Reconcile only this upstream ref.")
     ] = None,
@@ -119,15 +124,22 @@ def reconcile(
     config: ConfigOpt = None,
 ) -> None:
     """Set seen to current upstream hashes for the selected edges."""
+    if not reconcile_all and not downstream_id:
+        _err.print("[red]error[/red]: provide a downstream id or --all")
+        raise typer.Exit(2)
     try:
         lattice = _load(config)
         plan = plan_reconcile(lattice, downstream_id, ref=ref, reconcile_all=reconcile_all)
         for path, updates in plan.items():
-            fresh = path.read_text(encoding="utf-8")
-            new_text = apply_reconcile(fresh, updates)
-            _atomic_write(path, new_text)
-            for target_ref in updates:
-                _out.print(f"reconciled {path.name}: {target_ref}")
+            try:
+                fresh = path.read_text(encoding="utf-8")
+                new_text, applied = apply_reconcile(fresh, updates)
+                _atomic_write(path, new_text)
+            except (OSError, UnicodeDecodeError) as exc:
+                msg = f"cannot reconcile {path}: {exc}"
+                raise UnreadableDocError(msg) from exc
+            for target_ref in sorted(applied):
+                _out.print(f"reconciled {escape(path.name)}: {escape(target_ref)}")
     except ProjectError as exc:
         _err.print(f"[red]error[/red]: {exc} ({exc.code})")
         raise typer.Exit(2) from exc
@@ -150,7 +162,7 @@ def graph(
         _err.print(f"[red]error[/red]: {exc} ({exc.code})")
         raise typer.Exit(2) from exc
     rendered = to_dot(lattice, stale) if fmt == "dot" else to_mermaid(lattice, stale)
-    _out.print(rendered, end="")
+    typer.echo(rendered, nl=False)
 
 
 def _atomic_write(path: Path, text: str) -> None:

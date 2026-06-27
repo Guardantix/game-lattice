@@ -68,7 +68,8 @@ expansion) to list everything a change touches.
 then at write time **re-reads each downstream file fresh**, rewrites only the targeted `seen`
 scalar(s) through round-trip YAML (preserving body, key order, comments, and any concurrent edit),
 and writes atomically. `--ref` selects on resolved identity; `--all` clears only STALE/UNRECONCILED
-edges (it skips BROKEN and already-OK), while a targeted reconcile of a broken edge is refused.
+edges (it skips BROKEN and already-OK). A node's BROKEN edge is skipped, not fatal, so it never
+blocks the node's reconcilable edges; only a `--ref` aimed directly at a broken edge is refused.
 
 **Pure vs impure split.** All graph logic is pure and filesystem-free: `model`, `hashing`,
 `sections`, `resolve`, `loader`, `check`, `impact`, `render`, and `reconcile.reconcile`/

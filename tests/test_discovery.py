@@ -27,6 +27,18 @@ def test_ignore_globs_exclude(tmp_path: Path):
     assert [p.name for p in found] == ["keep.md"]
 
 
+def test_ignore_glob_is_root_anchored(tmp_path: Path):
+    # A root-relative glob must not bleed into a same-named nested directory.
+    root = tmp_path / "docs"
+    (root / "drafts").mkdir(parents=True)
+    (root / "chapters" / "drafts").mkdir(parents=True)
+    (root / "drafts" / "top.md").write_text("x", encoding="utf-8")
+    (root / "chapters" / "drafts" / "deep.md").write_text("y", encoding="utf-8")
+    found = {p.relative_to(root).as_posix() for p in discover_doc_paths([root], ["drafts/*.md"])}
+    assert "drafts/top.md" not in found  # top-level drafts excluded
+    assert "chapters/drafts/deep.md" in found  # nested same-named dir is kept
+
+
 def test_read_doc_returns_text(tmp_path: Path):
     p = tmp_path / "a.md"
     p.write_text("hello", encoding="utf-8")

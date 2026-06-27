@@ -12,7 +12,9 @@ def discover_doc_paths(roots: Sequence[Path], ignore_globs: Sequence[str]) -> li
 
     Args:
         roots: Already project-contained docs roots (from ``ProjectConfig``).
-        ignore_globs: Glob patterns (relative to each root) to skip.
+        ignore_globs: Glob patterns matched against each file's path relative to its
+            root, anchored at the root. ``drafts/*.md`` skips only top-level drafts, not
+            a same-named subdirectory; use ``**`` to match at any depth.
 
     Returns:
         A sorted, de-duplicated list of markdown file paths.
@@ -36,7 +38,7 @@ def discover_doc_paths(roots: Sequence[Path], ignore_globs: Sequence[str]) -> li
 
 def _ignored(path: Path, root: Path, ignore_globs: Sequence[str]) -> bool:
     rel = path.relative_to(root)
-    return any(rel.match(pattern) or path.match(pattern) for pattern in ignore_globs)
+    return any(rel.full_match(pattern) for pattern in ignore_globs)
 
 
 def read_doc(path: Path) -> str:

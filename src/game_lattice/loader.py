@@ -1,11 +1,12 @@
 """Assemble parsed docs into a Lattice. Pure: no filesystem access."""
 
+import warnings
 from collections import defaultdict
 
 from .error_types import DuplicateIdError
 from .model import Edge, Lattice, Location, Node, ParsedDoc
 from .resolve import split_ref
-from .sections import Heading, build_toc, section_span
+from .sections import Heading, build_toc, section_span, split_body_lines
 
 
 def build_lattice(docs: list[ParsedDoc]) -> Lattice:
@@ -54,13 +55,10 @@ def build_lattice(docs: list[ParsedDoc]) -> Lattice:
     nodes: dict[str, Node] = {}
     dependents: defaultdict[str, set[str]] = defaultdict(set)
     for doc in docs:
-        edges: list[Edge] = []
-        for raw in doc.meta.derives_from:
-            tid = split_ref(raw.ref)
-            target_id = tid if tid in index else None
-            edges.append(Edge(target_ref=raw.ref, target_id=target_id, seen=raw.seen))
-            if target_id is not None:
-                dependents[target_id].add(doc.meta.id)
+        edges = _resolve_edges(doc, index)
+        for edge in edges:
+            if edge.target_id is not None:
+                dependents[edge.target_id].add(doc.meta.id)
         nodes[doc.meta.id] = Node(
             id=doc.meta.id,
             title=doc.meta.title,
@@ -80,8 +78,38 @@ def build_lattice(docs: list[ParsedDoc]) -> Lattice:
     )
 
 
+def _resolve_edges(doc: ParsedDoc, index: dict[str, Location]) -> list[Edge]:
+    """Resolve a node's derives_from entries to edges, deduped by resolved target.
+
+    Edge identity is ``(source_node_id, resolved_target_id)`` (spec 2.2): a node that
+    lists the same resolved target twice (for example a bare ref and the same id written
+    namespaced) keeps only the last occurrence, last write wins on ``seen``, and a
+    warning is raised. Resolution keys on the trailing id even for a broken ref, so two
+    refs to the same unresolved id collapse to one broken edge.
+
+    Args:
+        doc: The parsed source document.
+        index: The id-to-Location index for resolving refs.
+
+    Returns:
+        The node's edges in first-seen order, one per distinct resolved target.
+    """
+    deduped: dict[str, Edge] = {}
+    for raw in doc.meta.derives_from:
+        tid = split_ref(raw.ref)
+        if tid in deduped:
+            warnings.warn(
+                f"node {doc.meta.id!r} derives from {tid!r} more than once;"
+                " keeping the last occurrence",
+                stacklevel=2,
+            )
+        target_id = tid if tid in index else None
+        deduped[tid] = Edge(target_ref=raw.ref, target_id=target_id, seen=raw.seen)
+    return list(deduped.values())
+
+
 def _line_count(body: str) -> int:
-    return max(1, len(body.splitlines()))
+    return max(1, len(split_body_lines(body)))
 
 
 def _register(
