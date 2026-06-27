@@ -6,8 +6,8 @@ The spec is the source of truth; this file is the at-a-glance index.
 
 ## Shipped: local-core (v1)
 
-The deterministic local engine is built and reviewed (currently on branch
-`design/local-core-spec`, not yet merged to main).
+The deterministic local engine is built and reviewed (in review on a feature branch, not yet
+merged to main).
 It parses lattice frontmatter and anchored sections from a tracked doc set, derives the
 id-indexed edge graph on demand, and exposes the `impact`, `check`, `reconcile`, and `graph`
 commands.
