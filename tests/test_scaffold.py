@@ -83,3 +83,4 @@ def test_ci_runs_both_commands_in_one_step():
     assert ci.count("- run:") == 1
     assert "rc_check=$?" in ci
     assert "rc_lint=$?" in ci
+    assert '[ "$rc_check" -eq 0 ] && [ "$rc_lint" -eq 0 ]' in ci

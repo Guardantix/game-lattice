@@ -66,7 +66,7 @@ hex chars (128 bits) and `canonicalize` strips cosmetic differences (line ending
 whitespace, edge blank lines). `impact` reverse-walks `dependents` transitively (with ancestor
 and enclosing-file expansion) to list everything a change touches.
 
-**Lint** is a pure structural check separate from drift: it flags a `derives_from` edge whose source
+`lint` is a pure structural check separate from drift: it flags a `derives_from` edge whose source
 is more authoritative than its target (binding > derived > exploratory), reports edges it cannot rank
 because an endpoint lacks `authority`, and never mutates. It exits 1 on a violation, mirroring `check`.
 Spec: `docs/superpowers/specs/2026-06-28-game-lattice-lint-design.md`.
@@ -94,7 +94,7 @@ publishes each file via temp -> fsync -> `os.link`, so a partial write never lan
 release tag. Spec: `docs/superpowers/specs/2026-06-28-game-lattice-init-design.md`.
 
 **Pure vs impure split.** All graph and report logic is pure and filesystem-free: `model`,
-`hashing`, `sections`, `resolve`, `loader`, `check`, `impact`, `render`, `reconcile.reconcile`/
+`hashing`, `sections`, `resolve`, `loader`, `check`, `lint`, `impact`, `render`, `reconcile.reconcile`/
 `apply_reconcile` (which returns rewritten text rather than writing it), plus the linear pure core
 (`tickets`, `linear_query`, `stale_shipped`, `linear_render`) and `scaffold`. The untyped-to-typed
 boundary modules are `frontmatter_parser` and `linear_parser`. Only `config`, `discovery`,
