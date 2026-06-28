@@ -42,7 +42,7 @@ def test_string_fields_are_control_stripped():
 
 def test_invalid_state_type_rejected():
     with pytest.raises(ValidationError):
-        TicketState(name="Weird", type="archived")  # type: ignore
+        TicketState(name="Weird", type="archived")  # ty: ignore[invalid-argument-type]
 
 
 def test_graded_finding_has_ticket_and_no_reason():

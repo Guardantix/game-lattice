@@ -37,11 +37,13 @@ def parse_tickets(
         raise LinearError(f"Linear response was not valid JSON: {exc}") from exc
     if not isinstance(parsed, dict):
         raise LinearError("Linear response was not a JSON object")
-    if parsed.get("errors"):
+    errors = parsed.get("errors")
+    if errors:
+        items = errors if isinstance(errors, list) else []
         messages = "; ".join(
-            str(e.get("message", "<no message>")) for e in parsed["errors"] if isinstance(e, dict)
+            str(e.get("message", "<no message>")) for e in items if isinstance(e, dict)
         )
-        raise LinearError(f"Linear returned GraphQL errors: {messages}")
+        raise LinearError(f"Linear returned GraphQL errors: {messages or '<malformed errors>'}")
     data = parsed.get("data")
     if not isinstance(data, dict):
         raise LinearError("Linear response is missing its data object")

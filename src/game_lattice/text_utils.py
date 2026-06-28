@@ -1,6 +1,6 @@
 """Small pure text helpers shared across the linear slice."""
 
-from game_lattice.constants import ASCII_CONTROL_MIN, ASCII_DELETE
+from .constants import ASCII_DELETE, ASCII_PRINTABLE_MIN
 
 
 def strip_control_chars(text: str) -> str:
@@ -13,4 +13,4 @@ def strip_control_chars(text: str) -> str:
         The text with every code point below ``0x20`` or equal to ``0x7F`` removed.
         Ordinary printable characters, including non-ASCII letters, are preserved.
     """
-    return "".join(ch for ch in text if ord(ch) >= ASCII_CONTROL_MIN and ord(ch) != ASCII_DELETE)
+    return "".join(ch for ch in text if ord(ch) >= ASCII_PRINTABLE_MIN and ord(ch) != ASCII_DELETE)

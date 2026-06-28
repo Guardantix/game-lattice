@@ -217,6 +217,23 @@ def test_linear_exit_code_gates_on_danger(lattice_dir, monkeypatch):
     assert runner.invoke(app, ["linear", "--exit-code"]).exit_code == 1
 
 
+def test_linear_warn_exit_gates_on_warning(lattice_dir, monkeypatch):
+    from game_lattice.tickets import Ticket, TicketState  # noqa: PLC0415
+
+    ticket = Ticket(
+        identifier="PC-228",
+        title="t",
+        url="https://x/PC-228",
+        state=TicketState(name="In Progress", type="started"),
+        parent=None,
+        children=(),
+    )
+    monkeypatch.setattr(cli_mod, "fetch_tickets", _fake_fetch({"PC-228": ticket}))
+    monkeypatch.chdir(lattice_dir)
+    assert runner.invoke(app, ["linear", "--exit-code"]).exit_code == 0
+    assert runner.invoke(app, ["linear", "--exit-code", "--warn-exit"]).exit_code == 1
+
+
 def test_linear_blocked_ticket_fails_gate(lattice_dir, monkeypatch):
     # The completed ticket is replaced by a typo: gate must still fail (fail-closed).
     monkeypatch.setattr(cli_mod, "fetch_tickets", _fake_fetch({}))

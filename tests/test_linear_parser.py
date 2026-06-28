@@ -88,3 +88,9 @@ def test_malformed_issue_raises():
     text = json.dumps({"data": {"i0": {"identifier": "PC-1"}}})  # missing url/state
     with pytest.raises(LinearError):
         parse_tickets(text, {"i0": "PC-1"})
+
+
+def test_non_list_errors_raise_linear_error():
+    for bad in (json.dumps({"errors": 42}), json.dumps({"errors": "rate limited"})):
+        with pytest.raises(LinearError):
+            parse_tickets(bad, {"i0": "PC-1"})

@@ -84,7 +84,7 @@ class LinearClient:
             method="POST",
         )
         try:
-            with self._opener.open(request, timeout=self._timeout) as resp:  # type: ignore
+            with self._opener.open(request, timeout=self._timeout) as resp:  # ty: ignore[unresolved-attribute]
                 body = resp.read(MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as exc:
             raise LinearError(f"Linear HTTP error {exc.code}") from exc
