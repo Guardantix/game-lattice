@@ -15,7 +15,7 @@ PYTHON_PIN = "3.14"
 
 _CONFIG_HEADER = f"# game-lattice configuration. See {GAME_LATTICE_REPO_URL}\n"
 _COMMENTED_IGNORE = '# ignore_globs:\n#   - "**/superpowers/plans/**"\n'
-_COMMENTED_LINEAR = "# linear_team: my-team-slug\n"
+_COMMENTED_LINEAR = "# linear_team: ENG\n"
 _COMMENTED_BINDING = "# binding_layers: null\n"
 
 
@@ -36,13 +36,13 @@ def _check_invocation(rev: str) -> str:
 def render_config(docs_roots: tuple[str, ...], linear_team: str | None) -> str:
     """Render .game-lattice.yml with active keys serialized and optionals commented.
 
-    The active block is dumped through ruamel.yaml so every value is quoted and
-    typed by the library, never string-interpolated. The header comment and the
-    commented-out example keys are static text.
+    The active block is dumped through ruamel.yaml so hostile scalars are quoted
+    by the library's own emission logic, never by hand or string-interpolated. The
+    header comment and the commented-out example keys are static text.
 
     Args:
         docs_roots: The docs roots to write as the active docs_roots list.
-        linear_team: The team slug to bake in, or None to leave it commented.
+        linear_team: The team key to bake in, or None to leave it commented.
 
     Returns:
         The full text of the config file.
@@ -100,7 +100,7 @@ def build_scaffold(docs_roots: tuple[str, ...], linear_team: str | None, rev: st
 
     Args:
         docs_roots: The docs roots for the config's docs_roots list.
-        linear_team: The team slug to bake in, or None.
+        linear_team: The team key to bake in, or None.
         rev: The git ref the snippets pin, for example "v0.2.0".
 
     Returns:

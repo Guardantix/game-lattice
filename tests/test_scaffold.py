@@ -21,7 +21,7 @@ def test_render_config_default_has_docs_active_and_keys_commented():
     assert "docs_roots:" in text
     assert "- docs" in text
     assert "# ignore_globs:" in text
-    assert "# linear_team: my-team-slug" in text
+    assert "# linear_team: ENG" in text
     assert "# binding_layers: null" in text
     cfg = _load(text)
     assert cfg.docs_roots == ["docs"]
@@ -36,7 +36,7 @@ def test_render_config_lists_multiple_roots():
 def test_render_config_bakes_linear_team_and_drops_comment():
     text = render_config(("docs",), "PC")
     assert "linear_team: PC" in text
-    assert "# linear_team: my-team-slug" not in text
+    assert "# linear_team: ENG" not in text
     assert _load(text).linear_team == "PC"
 
 

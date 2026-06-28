@@ -16,6 +16,7 @@ from .config import DEFAULT_CONFIG_NAME, load_config
 from .error_types import ConfigError, ProjectError, UnreadableDocError
 from .impact import impact as impact_walk
 from .linear_fetch import fetch_tickets
+from .linear_query import is_valid_team_key
 from .linear_render import findings_json, render_findings
 from .model import Lattice
 from .orchestrate import load_lattice
@@ -239,8 +240,9 @@ def _validate_init_flags(docs_roots: tuple[str, ...], linear_team: str | None) -
         linear_team: The --linear-team value, or None.
 
     Raises:
-        ConfigError: If a value is empty or holds a control character, or a docs
-            root is absolute or contains a parent reference.
+        ConfigError: If a value is empty or holds a control character, a docs root
+            is absolute or contains a parent reference, or linear_team is not a valid
+            Linear team key (which the linear command would later reject).
     """
     values = list(docs_roots)
     if linear_team is not None:
@@ -256,6 +258,13 @@ def _validate_init_flags(docs_roots: tuple[str, ...], linear_team: str | None) -
                 "without '..' or a leading slash"
             )
             raise ConfigError(msg)
+    if linear_team is not None and not is_valid_team_key(linear_team):
+        msg = (
+            f"--linear-team {linear_team!r} must be a Linear team key: uppercase letters "
+            "and digits, starting with a letter, for example ENG. The linear command "
+            "rejects any other value."
+        )
+        raise ConfigError(msg)
 
 
 @app.command()
@@ -266,7 +275,10 @@ def init(
     ] = None,
     linear_team: Annotated[
         str | None,
-        typer.Option("--linear-team", help="Linear team slug to bake into the config."),
+        typer.Option(
+            "--linear-team",
+            help="Linear team key (uppercase, for example ENG) to bake into the config.",
+        ),
     ] = None,
 ) -> None:
     """Scaffold .game-lattice.yml and print pre-commit and CI codegen."""
@@ -312,11 +324,13 @@ def _atomic_write(path: Path, text: str) -> None:
 def _atomic_create(path: Path, text: str) -> None:
     """Create path with text, crash-safe and never overwriting an existing file.
 
-    Writes to a unique temp file in the same directory, fsyncs it so the bytes
-    are durable, then publishes by hard-linking the temp onto the final path.
-    os.link is atomic and raises FileExistsError if the target already exists, so
-    the final path only ever appears complete, never empty or partial. The temp
-    is always removed, so a failed run leaves no litter.
+    Writes the full text to a unique temp file in the same directory through a
+    buffered file object (so a short write surfaces as an error rather than a
+    truncated file), fsyncs it so the bytes are durable, then publishes by
+    hard-linking the temp onto the final path. os.link is atomic and raises
+    FileExistsError if the target already exists, so the final path only ever
+    appears complete, never empty or partial. The temp is always removed, so a
+    failed run leaves no litter.
 
     Raises:
         FileExistsError: If path already exists.
@@ -325,11 +339,10 @@ def _atomic_create(path: Path, text: str) -> None:
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
     tmp = Path(tmp_name)
     try:
-        try:
-            os.write(fd, text.encode("utf-8"))
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
         os.link(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)

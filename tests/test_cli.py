@@ -313,6 +313,16 @@ def test_atomic_create_leaves_nothing_on_failure(tmp_path: Path, monkeypatch):
     assert not any(p.name.endswith(".tmp") for p in tmp_path.iterdir())
 
 
+def test_atomic_create_writes_large_payload_intact(tmp_path: Path):
+    target = tmp_path / ".game-lattice.yml"
+    # A payload larger than any single os.write buffer would publish; the helper
+    # must write every byte before linking, never a truncated file.
+    payload = "".join(f"line {i}\n" for i in range(20000))
+    cli_mod._atomic_create(target, payload)
+    assert target.read_text(encoding="utf-8") == payload
+    assert not any(p.name.endswith(".tmp") for p in tmp_path.iterdir())
+
+
 def test_init_writes_config_and_prints_codegen(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["init"])
@@ -358,6 +368,15 @@ def test_init_rejects_unsafe_docs_root(tmp_path: Path, monkeypatch, bad):
 def test_init_rejects_control_character_in_flag(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["init", "--linear-team", "a\nb"])
+    assert result.exit_code == 2
+    assert not (tmp_path / ".game-lattice.yml").exists()
+
+
+def test_init_rejects_invalid_linear_team(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    # A lowercase, hyphenated value is not a valid Linear team key, so init must
+    # refuse it rather than scaffold a config that the linear command rejects.
+    result = runner.invoke(app, ["init", "--linear-team", "my-team-slug"])
     assert result.exit_code == 2
     assert not (tmp_path / ".game-lattice.yml").exists()
 
