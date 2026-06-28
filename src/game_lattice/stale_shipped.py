@@ -22,8 +22,9 @@ def build_audit_trigger(lattice: Lattice, target: str | None) -> dict[str, tuple
 
     Args:
         lattice: The built lattice.
-        target: An optional id; when given, the trigger is narrowed to STALE nodes that also
-            fall in the impact set of ``target``.
+        target: An optional id; when given, the trigger is narrowed to STALE nodes that are
+            ``target`` itself or fall in its impact set, so scoping the audit to a node still
+            grades that node's own shipped tickets, not only its dependents'.
 
     Returns:
         A map of downstream node id to the tuple of its STALE ``target_ref`` values.
@@ -38,6 +39,9 @@ def build_audit_trigger(lattice: Lattice, target: str | None) -> dict[str, tuple
     trigger = {node_id: tuple(refs) for node_id, refs in grouped.items()}
     if target is not None:
         affected = {node.id for node in impact(lattice, target)}
+        # impact() returns strict dependents and excludes target itself; add target's own
+        # node so a CI gate scoped to a node cannot pass while that node ships a stale ticket.
+        affected |= {tid for tid in expand_targets(lattice, target) if tid in lattice.nodes_by_id}
         trigger = {node_id: refs for node_id, refs in trigger.items() if node_id in affected}
     return trigger
 

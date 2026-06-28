@@ -184,7 +184,9 @@ def graph(
 
 @app.command()
 def linear(  # noqa: PLR0913
-    target: Annotated[str, typer.Argument(help="Narrow the audit to this id's subtree.")] = "",
+    target: Annotated[
+        str, typer.Argument(help="Narrow the audit to this id and the nodes that derive from it.")
+    ] = "",
     from_id: Annotated[
         str | None, typer.Option("--from", help="Forward-looking: impact-walk from this id.")
     ] = None,

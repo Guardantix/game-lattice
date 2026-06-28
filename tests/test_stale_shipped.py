@@ -117,6 +117,19 @@ def test_ok_edge_is_not_a_trigger():
     assert trigger == {}
 
 
+def test_target_scoping_includes_the_named_node_itself():
+    # impact() returns strict dependents, so scoping to a STALE leaf must still audit it,
+    # otherwise a gate narrowed to that node would pass while it ships a stale ticket.
+    lattice = _two_node_lattice(seen="staleseenstaleseenstaleseenstale")
+    assert "down" in build_audit_trigger(lattice, "down")
+
+
+def test_target_scoping_includes_dependents():
+    # Scoping to an upstream id still reaches its STALE dependents (existing behavior).
+    lattice = _two_node_lattice(seen="staleseenstaleseenstaleseenstale")
+    assert "down" in build_audit_trigger(lattice, "up")
+
+
 def test_from_mode_transitive_dependent_has_refs():
     # up <- mid <- leaf. A change to up must give leaf non-empty drifted_refs.
     up = _node("up", "# Up {#sec}\nbody\n")

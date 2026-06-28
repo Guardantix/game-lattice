@@ -64,8 +64,10 @@ and rendering are identical.
 
 - **Audit (default).** The trigger set is every node that currently carries a STALE edge, as
   classified by `check`. This answers "what is dangerous right now." An optional positional
-  `TARGET` narrows the trigger set to the currently-STALE nodes that also fall in the impact set of
-  `TARGET`, for a focused look at drift downstream of one id.
+  `TARGET` narrows the trigger set to the currently-STALE nodes that are `TARGET` itself or fall in
+  its impact set, for a focused look at drift at or downstream of one id. Scoping to a node still
+  audits that node's own shipped tickets, so a gate narrowed to a drifted doc cannot pass while that
+  doc itself ships a stale ticket.
 - **Forward-looking (`--from <id>`).** The trigger set is the impact set of `<id>` computed by
   `impact`'s pure walk, regardless of current stale state. This answers "if I change `<id>`, which
   shipped or in-flight tickets does that endanger." It runs before the edit, so the edges are not
@@ -204,8 +206,9 @@ The join is one function; only the trigger map handed to it differs, and each mo
 
 - **Audit.** Call `check.check_lattice(lattice)`, keep the `EdgeStatus`es whose state is `STALE`,
   and group them by `source_id`. Each downstream node maps to the `target_ref`s of its STALE edges:
-  the drift that has already happened. A positional `TARGET` further intersects this with the impact
-  set of `TARGET`.
+  the drift that has already happened. A positional `TARGET` further intersects this with `TARGET`
+  itself together with its impact set (`expand_targets` file ids unioned with `impact`'s dependents),
+  so the named node is audited rather than excluded.
 - **`--from <id>`.** Take the downstream nodes from `impact.impact(lattice, <id>)`. Each such node
   maps to the `target_ref`s of its own edges whose resolved `target_id` lies in the *transitive*
   impacted-id closure, the drift that would propagate if `<id>` changed. The closure is not just
