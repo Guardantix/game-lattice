@@ -67,7 +67,7 @@ def check(config: ConfigOpt = None, json_out: JsonOpt = False) -> None:
         lattice = _load(config)
         statuses = check_lattice(lattice)
     except ProjectError as exc:
-        _err.print(f"[red]error[/red]: {exc} ({exc.code})")
+        _err.print(f"[red]error[/red]: {escape(str(exc))} ({exc.code})")
         raise typer.Exit(2) from exc
     if json_out:
         payload = {
@@ -101,7 +101,7 @@ def impact(token: str, config: ConfigOpt = None, json_out: JsonOpt = False) -> N
         lattice = _load(config)
         affected = impact_walk(lattice, token)
     except ProjectError as exc:
-        _err.print(f"[red]error[/red]: {exc} ({exc.code})")
+        _err.print(f"[red]error[/red]: {escape(str(exc))} ({exc.code})")
         raise typer.Exit(2) from exc
     if json_out:
         payload = {
@@ -162,7 +162,7 @@ def reconcile(
         if not rewrites:
             _out.print("nothing to reconcile")
     except ProjectError as exc:
-        _err.print(f"[red]error[/red]: {exc} ({exc.code})")
+        _err.print(f"[red]error[/red]: {escape(str(exc))} ({exc.code})")
         raise typer.Exit(2) from exc
 
 
@@ -180,7 +180,7 @@ def graph(
             if s.state == "STALE" and s.target_id is not None
         }
     except ProjectError as exc:
-        _err.print(f"[red]error[/red]: {exc} ({exc.code})")
+        _err.print(f"[red]error[/red]: {escape(str(exc))} ({exc.code})")
         raise typer.Exit(2) from exc
     rendered = to_dot(lattice, stale) if fmt == "dot" else to_mermaid(lattice, stale)
     typer.echo(rendered, nl=False)
@@ -218,7 +218,7 @@ def linear(  # noqa: PLR0913
         tickets, rejected = fetch_tickets(refs, project.config.linear_team)
         findings = stale_shipped(lattice, trigger, tickets, rejected)
     except ProjectError as exc:
-        _err.print(f"[red]error[/red]: {exc} ({exc.code})")
+        _err.print(f"[red]error[/red]: {escape(str(exc))} ({exc.code})")
         raise typer.Exit(2) from exc
     if json_out:
         typer.echo(json.dumps(findings_json(findings)))
@@ -346,8 +346,8 @@ def main() -> None:
     try:
         app()
     except ProjectError as exc:
-        _err.print(f"[red]error[/red]: {exc} ({exc.code})")
+        _err.print(f"[red]error[/red]: {escape(str(exc))} ({exc.code})")
         raise SystemExit(2) from exc
     except (OSError, RuntimeError, ValueError) as exc:
-        _err.print(f"[red]internal error[/red]: {type(exc).__name__}: {exc}")
+        _err.print(f"[red]internal error[/red]: {type(exc).__name__}: {escape(str(exc))}")
         raise SystemExit(2) from exc

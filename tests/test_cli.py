@@ -41,6 +41,16 @@ def test_check_exits_2_on_bad_config(tmp_path: Path, monkeypatch):
     assert result.exit_code == 2
 
 
+def test_check_error_handler_escapes_markup_in_message(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    # The not-found message embeds the config path; bracketed metacharacters in it
+    # must be escaped before the error handler prints through rich markup, or it
+    # raises MarkupError and exits 1 (drift) instead of the tool-error code 2.
+    result = runner.invoke(app, ["check", "--config", "missing[/].yml"])
+    assert result.exit_code == 2
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
 def test_impact_lists_dependents(lattice_dir: Path, monkeypatch):
     monkeypatch.chdir(lattice_dir)
     result = runner.invoke(app, ["impact", "accent", "--json"])
