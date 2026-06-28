@@ -12,8 +12,8 @@ The spec is the source of truth; this file is the at-a-glance index.
 - **linear slice** (PR #3). The `linear` command resolves referenced tickets to live status and
   reports shipped-against-stale-spec drift. The first network-touching slice. Spec:
   `docs/superpowers/specs/2026-06-27-game-lattice-linear-design.md`.
-- **init slice** (this PR). The `init` command scaffolds `.game-lattice.yml` and prints pre-commit
-  and CI codegen for an adopting repo. Shipped as the 0.2.0 release. Spec:
+- **init slice** (PR #4). The `init` command scaffolds `.game-lattice.yml` and prints pre-commit
+  and CI codegen for an adopting repo. Shipped as the 0.2.0 release (tag `v0.2.0`). Spec:
   `docs/superpowers/specs/2026-06-28-game-lattice-init-design.md`.
 
 Acceptance (local-core spec section 13), still met:

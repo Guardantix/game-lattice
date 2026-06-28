@@ -509,7 +509,7 @@ third-party dependencies.
 | Module | Purpose | Pure? |
 |---|---|---|
 | `tickets.py` | `TicketState`, `TicketRef`, `Ticket`, `Finding` types | pure |
-| `linear_query.py` | Partition identifiers, build the batched aliased `issue(id:)` document and variables | pure |
+| `linear_query.py` | Partition identifiers, group by team, build the per-team `issues(filter:)` document and variables | pure |
 | `linear_client.py` | Transport: stdlib POST, lazy key, scheme guard, timeout, capped read, error mapping | impure I/O |
 | `linear_parser.py` | Boundary: JSON to typed `Ticket`, envelope and shape validation | boundary |
 | `linear_fetch.py` | Thin wiring: dedupe, skip-when-empty, query, client, parser, into a ticket map | impure |
