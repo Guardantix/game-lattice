@@ -5,7 +5,13 @@ from collections.abc import Iterable
 from .constants import BlockedReason
 from .linear_client import LinearClient
 from .linear_parser import parse_tickets
-from .linear_query import BATCH_SIZE, build_query, chunk_identifiers, partition_identifiers
+from .linear_query import (
+    BATCH_SIZE,
+    build_query,
+    chunk_numbers,
+    group_by_team,
+    partition_identifiers,
+)
 from .tickets import Ticket
 
 
@@ -31,9 +37,9 @@ def fetch_tickets(
         return {}, rejected
     live = client if client is not None else LinearClient()
     tickets: dict[str, Ticket] = {}
-    for chunk in chunk_identifiers(valid, BATCH_SIZE):
-        plan = build_query(chunk)
-        body = live.execute(plan.document, plan.variables)
-        chunk_tickets, _unresolved = parse_tickets(body, plan.alias_to_id)
-        tickets.update(chunk_tickets)
+    for team, numbers in group_by_team(valid):
+        for chunk in chunk_numbers(numbers, BATCH_SIZE):
+            plan = build_query(team, chunk)
+            body = live.execute(plan.document, plan.variables)
+            tickets.update(parse_tickets(body, plan.team))
     return tickets, rejected

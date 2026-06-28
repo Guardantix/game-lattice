@@ -53,7 +53,7 @@ class LinearClient:
         self._timeout = timeout
         self._opener = opener if opener is not None else urllib.request.build_opener(_NoRedirect)
 
-    def execute(self, document: str, variables: dict[str, str]) -> str:
+    def execute(self, document: str, variables: dict[str, str | list[int]]) -> str:
         """POST a GraphQL document and return the raw response text.
 
         Args:

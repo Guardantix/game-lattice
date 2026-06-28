@@ -5,7 +5,6 @@ envelope into typed ``Ticket`` models keyed by the identifier that was queried.
 """
 
 import json
-from collections.abc import Mapping
 from typing import Any
 
 from pydantic import ValidationError
@@ -14,22 +13,20 @@ from .error_types import LinearError
 from .tickets import Ticket, TicketRef, TicketState
 
 
-def parse_tickets(
-    response_text: str, alias_to_id: Mapping[str, str]
-) -> tuple[dict[str, Ticket], set[str]]:
-    """Parse a response into a ticket map keyed by queried id, plus the unresolved ids.
+def parse_tickets(response_text: str, team: str) -> dict[str, Ticket]:
+    """Parse a filtered ``issues`` response into a ticket map keyed by queried identifier.
 
     Args:
         response_text: The raw response body from the transport.
-        alias_to_id: The query's alias-to-identifier map.
+        team: The validated team key the query filtered on, used to reconstruct keys.
 
     Returns:
-        A tuple of the resolved tickets keyed by the queried identifier and the set of
-        identifiers Linear returned ``null`` for.
+        Resolved tickets keyed by ``f"{team}-{number}"`` (the queried identifier), never by the
+        echoed ``identifier``. A queried number with no returned node is simply absent.
 
     Raises:
-        LinearError: On invalid JSON, a GraphQL ``errors`` array, a missing ``data`` object,
-            or a malformed issue node.
+        LinearError: On invalid JSON, a GraphQL ``errors`` array, a missing ``data`` object, a
+            malformed ``issues`` connection, or a malformed issue node.
     """
     try:
         parsed: Any = json.loads(response_text)
@@ -48,15 +45,19 @@ def parse_tickets(
     if not isinstance(data, dict):
         raise LinearError("Linear response is missing its data object")
 
+    issues = data.get("issues")
+    if not isinstance(issues, dict) or not isinstance(issues.get("nodes"), list):
+        raise LinearError("Linear response is missing its issues connection")
+    nodes: list[Any] = issues["nodes"]
+
     tickets: dict[str, Ticket] = {}
-    unresolved: set[str] = set()
-    for alias, identifier in alias_to_id.items():
-        node = data.get(alias)
-        if node is None:
-            unresolved.add(identifier)
-            continue
-        tickets[identifier] = _ticket_from_node(node)
-    return tickets, unresolved
+    for node in nodes:
+        try:
+            key = f"{team}-{int(node['number'])}"
+            tickets[key] = _ticket_from_node(node)
+        except (KeyError, TypeError, AttributeError, ValidationError, ValueError) as exc:
+            raise LinearError(f"Linear issue node was malformed: {exc}") from exc
+    return tickets
 
 
 def _state(raw: Any) -> TicketState:

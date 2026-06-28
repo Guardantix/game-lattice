@@ -18,6 +18,7 @@ _TEAM_RE = re.compile(r"\A[A-Z][A-Z0-9]*\Z", re.ASCII)
 _TICKET_FRAGMENT = """
 fragment T on Issue {
   identifier
+  number
   title
   url
   state { name type }
@@ -29,11 +30,11 @@ fragment T on Issue {
 
 @dataclass(frozen=True, slots=True)
 class QueryPlan:
-    """A built query: the document, its variables, and the alias-to-identifier map."""
+    """A built query: the document, its variables, and the team key its results belong to."""
 
     document: str
-    variables: dict[str, str]
-    alias_to_id: dict[str, str]
+    variables: dict[str, str | list[int]]
+    team: str
 
 
 def partition_identifiers(
@@ -75,40 +76,57 @@ def partition_identifiers(
     return valid, rejected
 
 
-def chunk_identifiers(identifiers: Sequence[str], size: int = BATCH_SIZE) -> list[list[str]]:
-    """Split identifiers into batches of at most ``size``.
+def group_by_team(identifiers: Sequence[str]) -> list[tuple[str, list[int]]]:
+    """Group validated identifiers by team key, preserving first-seen order.
 
     Args:
-        identifiers: The valid identifiers to query.
+        identifiers: Validated ``TEAM-NUMBER`` identifiers from ``partition_identifiers``.
+
+    Returns:
+        ``(team_key, numbers)`` pairs, teams in first-seen order, each team's numbers in
+        first-seen order.
+    """
+    groups: dict[str, list[int]] = {}
+    for identifier in identifiers:
+        team, num = identifier.split("-", 1)
+        groups.setdefault(team, []).append(int(num))
+    return list(groups.items())
+
+
+def chunk_numbers(numbers: Sequence[int], size: int = BATCH_SIZE) -> list[list[int]]:
+    """Split a team's numbers into batches of at most ``size``; empty input yields ``[]``.
+
+    Args:
+        numbers: The issue numbers for one team.
         size: The maximum batch size.
 
     Returns:
         A list of batches; empty input yields an empty list.
     """
-    return [list(identifiers[i : i + size]) for i in range(0, len(identifiers), size)]
+    return [list(numbers[i : i + size]) for i in range(0, len(numbers), size)]
 
 
-def build_query(identifiers: Sequence[str]) -> QueryPlan:
-    """Build one aliased batched query for the given identifiers.
+def build_query(team: str, numbers: Sequence[int]) -> QueryPlan:
+    """Build one filtered connection query for one team's numbers (at most ``BATCH_SIZE``).
 
     Args:
-        identifiers: The identifiers in a single batch (at most ``BATCH_SIZE``).
+        team: The validated team key.
+        numbers: The issue numbers to fetch for that team.
 
     Returns:
-        A QueryPlan whose document fetches each identifier under an index alias, passes the
-        identifiers as variables, and records the alias-to-identifier map for keying results.
+        A QueryPlan whose document filters ``issues`` by team key and number list, passes both
+        as variables (never interpolated), and records the team key for keying results.
     """
-    var_decls: list[str] = []
-    fields: list[str] = []
-    variables: dict[str, str] = {}
-    alias_to_id: dict[str, str] = {}
-    for index, identifier in enumerate(identifiers):
-        var = f"id{index}"
-        alias = f"i{index}"
-        var_decls.append(f"${var}: String!")
-        fields.append(f"  {alias}: issue(id: ${var}) {{ ...T }}")
-        variables[var] = identifier
-        alias_to_id[alias] = identifier
-    document = "query Batch(" + ", ".join(var_decls) + ") {\n" + "\n".join(fields) + "\n}\n"
-    document += _TICKET_FRAGMENT
-    return QueryPlan(document=document, variables=variables, alias_to_id=alias_to_id)
+    filter_clause = (
+        "filter: { team: { key: { eq: $team } }, number: { in: $numbers } },"
+        f" first: {BATCH_SIZE}"
+    )
+    document = (
+        "query Audit($team: String!, $numbers: [Float!]!) {\n"
+        f"  issues({filter_clause}) {{\n"
+        "    nodes { ...T }\n"
+        "  }\n"
+        "}\n" + _TICKET_FRAGMENT
+    )
+    variables: dict[str, str | list[int]] = {"team": team, "numbers": list(numbers)}
+    return QueryPlan(document=document, variables=variables, team=team)

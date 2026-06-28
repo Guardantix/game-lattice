@@ -7,7 +7,8 @@ from game_lattice.linear_query import (
     BATCH_SIZE,
     MAX_IDENTIFIERS,
     build_query,
-    chunk_identifiers,
+    chunk_numbers,
+    group_by_team,
     partition_identifiers,
 )
 
@@ -69,19 +70,35 @@ def test_partition_cap_raises_one_over_but_not_at_cap():
         partition_identifiers(over, None)
 
 
-def test_chunking_boundary():
-    exactly = [f"PC-{i}" for i in range(BATCH_SIZE)]
-    assert len(chunk_identifiers(exactly)) == 1
-    one_more = [f"PC-{i}" for i in range(BATCH_SIZE + 1)]
-    assert len(chunk_identifiers(one_more)) == 2
+def test_group_by_team_preserves_first_seen_order():
+    result = group_by_team(["PC-2", "PC-1", "SEC-9"])
+    assert result == [("PC", [2, 1]), ("SEC", [9])]
 
 
-def test_build_query_is_read_only_and_parameterized():
-    plan = build_query(["PC-1", "PC-2"])
-    assert "query" in plan.document
+def test_chunk_numbers_boundary():
+    exactly = list(range(BATCH_SIZE))
+    assert len(chunk_numbers(exactly)) == 1
+    one_more = list(range(BATCH_SIZE + 1))
+    assert len(chunk_numbers(one_more)) == 2
+
+
+def test_chunk_numbers_empty_yields_empty():
+    assert chunk_numbers([]) == []
+
+
+def test_build_query_filter_shape():
+    plan = build_query("PC", [1, 2])
+    # Connection shape, not alias shape
+    assert "issues(filter:" in plan.document
     assert "mutation" not in plan.document
-    # Identifiers travel as variables, never interpolated into the document text.
-    assert "PC-1" not in plan.document
-    assert set(plan.variables.values()) == {"PC-1", "PC-2"}
-    assert set(plan.alias_to_id.values()) == {"PC-1", "PC-2"}
-    assert len(set(plan.alias_to_id)) == 2  # aliases are unique
+    # Variables carry the team and numbers; neither is interpolated into the document
+    assert plan.variables == {"team": "PC", "numbers": [1, 2]}
+    assert plan.team == "PC"
+    # Document declares both variables
+    assert "$team: String!" in plan.document
+    assert "$numbers: [Float!]!" in plan.document
+    # Filter references both variables by name
+    assert "team: { key: { eq: $team } }" in plan.document
+    assert "number: { in: $numbers }" in plan.document
+    # Fragment carries number as a top-level field for keying results
+    assert "\n  number\n" in plan.document
