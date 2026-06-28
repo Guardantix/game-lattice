@@ -26,6 +26,9 @@ In scope:
   repeatable, and `--linear-team`) that bake values into the generated file.
 - The command is idempotent and re-runnable: with a config already present it leaves it untouched
   and still prints the codegen, so `init` doubles as a way to re-fetch the snippets.
+- Shipping `init` as version 0.2.0: bumping `__version__` across the version locations and adding a
+  `RELEASING.md` checklist that makes the matching `v0.2.0` release tag a non-optional, atomic part
+  of the release (section 8), since the generated gates pin that tag.
 
 Explicitly out of scope, deferred or declined (see section 11):
 
@@ -33,8 +36,9 @@ Explicitly out of scope, deferred or declined (see section 11):
   those two artifacts; it never mutates a file the adopting repo owns.
 - Interactive prompts, `--json` output, a `--force` overwrite, a `--config` write-target override,
   and non-GitHub CI providers.
-- Actually cutting the `v0.1.0` git tag. The snippets pin to a version tag; creating and pushing
-  that tag is a user-performed release step this spec calls out (section 8), not automated here.
+- Automating the release tag. Cutting and pushing `v0.2.0` stays a human step; section 8 makes it an
+  enforced, atomic part of shipping `init`, documented by the `RELEASING.md` checklist. The slice
+  adds no tooling that creates or protects the tag automatically.
 
 ## 2. The mutation boundary
 
@@ -155,7 +159,7 @@ Added by the user under `repos:` in their `.pre-commit-config.yaml`:
     hooks:
       - id: game-lattice-check
         name: game-lattice check
-        entry: uvx --from git+https://github.com/Guardantix/game-lattice@v0.1.0 game-lattice check
+        entry: uvx --from git+https://github.com/Guardantix/game-lattice@v0.2.0 game-lattice check
         language: system
         files: \.md$
         pass_filenames: false
@@ -183,7 +187,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - run: uvx --from git+https://github.com/Guardantix/game-lattice@v0.1.0 game-lattice check
+      - run: uvx --from git+https://github.com/Guardantix/game-lattice@v0.2.0 game-lattice check
 ```
 
 `check` exits 0 on a clean lattice, 1 on drift, and 2 on a tool error; the job fails on 1 or 2,
@@ -198,19 +202,34 @@ zero-install: `uv` fetches and runs the pinned revision on demand, adds no depen
 adopter's project, and works identically in pre-commit and GitHub Actions. It fits because `uv` is
 already the toolchain and there is no PyPI release to install from.
 
-## 8. Versioning prerequisite
+## 8. Release model
 
-The snippets pin `@v{__version__}`, which is `@v0.1.0` for the current version. No release tags
-exist yet, so the generated snippets resolve only once `v0.1.0` is tagged and pushed. This slice
-therefore carries one user-performed companion action, stated here so it is a conscious step rather
-than a surprise:
+The snippets pin `@v{__version__}`. `init` ships as version 0.2.0, so they pin `@v0.2.0`. That tag
+must contain the init commit, because it serves two roles at once: it is the revision the generated
+gates resolve to run `check`, and it is the revision the onboarding docs tell adopters to run `init`
+itself from (`uvx --from git+...@v0.2.0 game-lattice init`). A tag pointing at an init-less commit
+would satisfy the first role but break the second.
 
-- Establish the `vX.Y.Z` release-tag convention and push `v0.1.0` (and each subsequent version),
-  so that `uvx --from git+...@vX.Y.Z` resolves for consumers.
+There is no chicken-and-egg here, because a git tag is created after the commit it names, and `init`
+emits the pin as a literal string, not a resolved ref. The release is one linear sequence:
 
-The code is version-agnostic: it reads `__version__` and pins `v{__version__}`, so future versions
-need no code change, only the matching tag. The slice documents this expectation with a short note
-in the README or release docs; it does not add release tooling or cut the tag automatically.
+1. On the feature branch, set `__version__` to 0.2.0 across the version locations (`__init__.py`,
+   `pyproject.toml`, `.gx-new-version`) and finish `init`.
+2. Merge to main. The merge commit now carries `init`, `check`, and the logic that emits `@v0.2.0`.
+3. Tag that merge commit `v0.2.0` and push the tag.
+
+Step 3 points backward at a commit that already exists, so nothing in steps 1 and 2 ever waits on
+the tag. Verification is decoupled the same way: unit tests assert the emitted string (`@v0.2.0`)
+with no tag required, and the live `uvx` invocation is smoke-tested during development against an
+already-resolvable ref (`@main` or the branch sha). The literal `@v0.2.0` gets its one real smoke
+test right after the tag is pushed; if it is wrong, the fix is to cut `v0.2.1`.
+
+The one real constraint is that the release is atomic: bumping the version, merging, and tagging the
+merge commit are a single "cut the release" step. A half-done release (init merged but no tag, or a
+tag without the version bump) is exactly what produces a broken gate. The slice therefore adds a
+short `RELEASING.md` checklist that makes the tag a non-optional part of shipping `init` and of every
+later version. The code stays version-agnostic: it reads `__version__` and pins `v{__version__}`, so
+future versions need only the matching tag, cut the same way.
 
 ## 9. Conventions and invariants
 
@@ -239,7 +258,8 @@ in the README or release docs; it does not add release tooling or cut the tag au
   - `init` with a config already present does not change the file but still prints both snippets,
     notes the skip on stderr, exit 0;
   - `--docs-root` and `--linear-team` bake their values into the written file;
-  - stdout carries both destination banners and the pinned `@v0.1.0`;
+  - stdout carries both destination banners and the pinned rev, asserted as `f"v{__version__}"`
+    (currently `@v0.2.0`) rather than a hardcoded literal, so the test tracks the version source;
   - an absolute or `..`-bearing `--docs-root` is rejected before any write.
 - `tests/test_conventions.py` stays green (new module obeys the typing-boundary and docstring
   rules). Coverage stays at or above the existing 80 percent gate.
@@ -252,7 +272,7 @@ in the README or release docs; it does not add release tooling or cut the tag au
 | Interactive prompts | declined; non-deterministic, fights the offline/CI posture |
 | `--json`, `--force`, `--config` write target | declined; YAGNI for an onboarding command |
 | Non-GitHub CI providers | out of scope; GitHub Actions only, matching this repo |
-| Cutting and pushing the `v0.1.0` tag | user-performed release step (section 8), not automated |
+| Automating the `v0.2.0` release tag | declined; the tag is an enforced, atomic manual step with a `RELEASING.md` checklist (section 8) |
 | Authority-ladder validation, display-prefix lint | still deferred by the local-core map; unrelated to init |
 
 ## 12. Acceptance
