@@ -1,7 +1,14 @@
 # Linear not-found redesign (Finding 1)
 
-Status: DRAFT for sign-off. Not yet implemented. Supersedes the not-found handling in
-`docs/superpowers/specs/2026-06-27-game-lattice-linear-design.md` sections 5 and 6 once approved.
+Status: IMPLEMENTED. This redesign shipped in PR #3 (commit `fd5ba3f`, the linear slice), the
+same change that added this document, so the not-found handling in
+`docs/superpowers/specs/2026-06-27-game-lattice-linear-design.md` sections 5 and 6 already
+reflects it. The sections below are kept as the design rationale, not pending work. The shipped
+code went slightly past this draft: one filtered request per `(team, number-chunk)` rather than a
+single multi-alias document, plus `includeArchived: true` and leading-zero rejection in the
+identifier shape. The `(team, list[int])` grouping is `group_by_team`; `chunk_identifiers` shipped
+as `chunk_numbers`; `QueryPlan.team` replaces the planned `alias_to_id`. The Finding 1 regression
+is `test_missing_node_absent_not_error` in `tests/test_linear_fetch.py`.
 
 ## Problem
 
