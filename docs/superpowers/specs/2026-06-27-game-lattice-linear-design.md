@@ -128,30 +128,32 @@ stay free of any network-derived domain.
       "node_path": "docs/pc-design.md",
       "drifted_refs": ["art-direction#motion"],
       "ticket_ref": "PC-999",
+      "reason": "not-found",
       "ticket": null
     }
-  ],
-  "unresolved": ["PC-777"],
-  "invalid": ["not-a-ticket"]
+  ]
 }
 ```
 
-`findings` is ordered as in section 5.1; a BLOCKED finding carries the offending `ticket_ref` and a
-`null` ticket. The top-level `unresolved` and `invalid` lists hold only refs on *non-trigger* nodes
-(report-only, no shipped work at risk); the same outcomes on a trigger node are BLOCKED findings
-instead. Under `--exit-code`, DANGER and BLOCKED findings drive exit 1; the two top-level lists never
-do.
+`findings` is the only key; it is ordered as in section 5.1. A BLOCKED finding carries the offending
+`ticket_ref`, a `reason` of `"malformed"` (rejected by the shape check) or `"not-found"` (Linear
+returned `null`), and a `null` ticket. There are no separate top-level lists: the command examines
+only the tickets on trigger nodes, so a malformed or unresolved ref is always either irrelevant
+(its node is not in the trigger map, so it is never collected) or a BLOCKED finding (its node is).
+Under `--exit-code`, DANGER and BLOCKED findings drive exit 1.
 
 ## 5. The stale-shipped join
 
 `stale_shipped.py` is pure. Its entry point takes the built `Lattice`, a trigger map
 `Mapping[node_id, tuple[str, ...]]` (each downstream node id mapped to the upstream refs that justify
-looking at it), a `Mapping[identifier, Ticket]`, and the `invalid` and `unresolved` identifier sets
-the fetch layer produced. It returns the graded findings (DANGER, BLOCKED, WARNING, INFO) and the
-report-only `invalid` and `unresolved` lists narrowed to refs that sit on no trigger node. It
-performs no I/O and no network, so it is unit-tested against synthetic trigger maps and ticket maps.
-A trigger node's `ticket_ref` that is absent from the ticket map becomes a BLOCKED finding; the same
-ref on a non-trigger node stays in the report-only lists.
+looking at it), a `Mapping[identifier, Ticket]`, and the set of identifiers the fetch layer rejected
+as malformed (used only to label a BLOCKED finding's `reason`). It returns the graded findings
+(DANGER, BLOCKED, WARNING, INFO) and nothing else; there are no separate report-only lists, because
+only trigger-node tickets are ever in scope. It performs no I/O and no network, so it is unit-tested
+against synthetic trigger maps and ticket maps. For each trigger node, each of its `tickets:` refs is
+resolved against the ticket map: a hit grades by state, a miss is BLOCKED (`reason` `"malformed"` if
+the ref is in the rejected set, else `"not-found"`). A node that lists the same ref twice yields one
+finding, not two.
 
 ### 5.1 Finding identity and grading
 
@@ -174,17 +176,17 @@ completed ticket's still-open children are attached to its DANGER finding as con
 parent with open children is itself a signal.
 
 The gate fails closed. A ticket ref on a trigger node that is malformed (rejected by the shape check)
-or unresolved (Linear returned `null`) becomes a **BLOCKED** finding carrying the node id, path, and
-the offending `ticket_ref`, because `tickets:` is repo-controlled and a drifted doc must not be able
-to silence its own DANGER by replacing a completed ticket with a typo or a deleted id. A malformed or
-unresolved ref on a node that is *not* in the trigger map endangers no shipped work, so it stays in
-the report-only `invalid` and `unresolved` lists and never becomes a finding. This scoping is the
-whole point: the gate fails closed exactly where drift and an unverifiable ticket coincide, and stays
-quiet everywhere else.
+or unresolved (Linear returned `null`) becomes a **BLOCKED** finding carrying the node id, path, the
+offending `ticket_ref`, and a `reason`, because `tickets:` is repo-controlled and a drifted doc must
+not be able to silence its own DANGER by replacing a completed ticket with a typo or a deleted id.
+A malformed or unresolved ref on a node that is *not* a trigger node endangers no shipped work and is
+never collected in the first place, so it simply does not appear. The gate fails closed exactly where
+drift and an unverifiable ticket coincide, and stays quiet everywhere else.
 
-Findings are returned in a deterministic order: by severity (DANGER, then BLOCKED, then WARNING, then
-INFO), then by node id, then by `ticket_ref`. This keeps the human table and the `--json` payload
-stable and directly assertable in tests.
+Findings are returned in a deterministic order keyed on an explicit severity rank (DANGER 0, BLOCKED
+1, WARNING 2, INFO 3), then node id, then `ticket_ref`. The rank is explicit, not the declaration
+order of the `Severity` literal, which lists `BLOCKED` last; a sort must not key on the literal's
+order. This keeps the human table and the `--json` payload stable and directly assertable in tests.
 
 ### 5.2 How each mode builds the trigger map
 
@@ -195,11 +197,15 @@ The join is one function; only the trigger map handed to it differs, and each mo
   and group them by `source_id`. Each downstream node maps to the `target_ref`s of its STALE edges:
   the drift that has already happened. A positional `TARGET` further intersects this with the impact
   set of `TARGET`.
-- **`--from <id>`.** Compute the change set `impact.expand_targets(lattice, <id>)` and the downstream
-  nodes via `impact.impact(lattice, <id>)`. Each such node maps to the `target_ref`s of its own
-  edges whose resolved `target_id` lies in the change set: the drift that *would* happen if `<id>`
-  changed. An unknown `<id>` raises `ValidationError` from `impact`, surfaced as exit 2, so a typo is
-  reported rather than returning a silently empty result.
+- **`--from <id>`.** Take the downstream nodes from `impact.impact(lattice, <id>)`. Each such node
+  maps to the `target_ref`s of its own edges whose resolved `target_id` lies in the *transitive*
+  impacted-id closure, the drift that would propagate if `<id>` changed. The closure is not just
+  `expand_targets(<id>)`: a two-hop dependent's edges point at an intermediate node, not at `<id>`'s
+  own ids, so keying on `expand_targets` alone would leave transitive dependents with empty
+  `drifted_refs`. `stale_shipped` reconstructs the closure purely as `expand_targets(lattice, <id>)`
+  unioned with every affected node's id and the anchors of its file (the same set `impact`'s walk
+  visits), so `impact` itself is not modified. An unknown `<id>` raises `ValidationError` from
+  `impact`, surfaced as exit 2, so a typo is reported rather than returning a silently empty result.
 
 ## 6. Fetching ticket status
 
@@ -220,7 +226,9 @@ children are context, not a gate. Identifier sets larger than a fixed batch size
 are chunked into several documents whose results are merged. A total distinct-identifier cap bounds
 the whole run, so a malicious doc set listing thousands of `tickets:` cannot drive unbounded
 outbound requests against Linear (section 9); exceeding it is a `LinearError`, not a silent flood.
-Identifiers are passed as GraphQL variables, never interpolated into the document text.
+Identifiers are passed as GraphQL variables, never interpolated into the document text. The builder
+returns the alias-to-identifier mapping alongside the document so results can be keyed back to the
+exact identifier that was queried.
 
 `linear_client.py` is the transport, copied in shape from the proven `gx-linear-skills` client but
 hardened (see section 9): a synchronous `urllib.request` POST to the hardcoded
@@ -244,11 +252,15 @@ its name ends in `_parser` and `scripts/check_typing_boundaries.py` allows the u
 conversion there. It parses the JSON, rejects a GraphQL `errors` array or a missing `data` object as
 a `LinearError`, and validates each issue node into a typed `Ticket`. Because Linear's schema is not
 ours to pin, ticket models validate the fields we query and ignore unknown fields (pydantic
-`extra="ignore"`), unlike our own frontmatter models, which forbid extras. Every string field from
-the response, not only titles and state names but also identifiers and urls, is stripped of ASCII
-control characters here, at the boundary, so a hostile response cannot smuggle terminal escape
-sequences downstream of validation (section 9). A missing ticket comes back as a `null` alias value, which is the **unresolved** case
-from section 5.1, distinct from an `errors` array; the parser records the unresolved identifier and
+`extra="ignore"`), unlike our own frontmatter models, which forbid extras. The ticket map is keyed
+by the identifier that was *queried* (recovered through the alias-to-identifier mapping the builder
+returned), never by the `identifier` the response echoes, so a case or formatting difference in the
+echo cannot cause a lookup miss that a downstream node would then read as a false BLOCKED. Every
+string field from the response, not only titles and state names but also identifiers and urls, is
+stripped of ASCII control characters here, at the boundary, so a hostile response cannot smuggle
+terminal escape sequences downstream of validation (section 9). A missing ticket comes back as a
+`null` alias value, which is the unresolved case from section 5.1, distinct from an `errors` array;
+the parser records the unresolved identifier and
 does not raise. This mirrors the local core's decision that a BROKEN edge is a normal reported state
 rather than a crash.
 
@@ -282,8 +294,8 @@ Extends the `ProjectError` hierarchy with one coded error, consistent with the l
 
 Exit codes:
 
-- 0: success, including when findings exist. The command is informational by default. Report-only
-  `unresolved` and `invalid` identifiers (those on non-trigger nodes) never change the exit code.
+- 0: success, including when findings exist. The command is informational by default, so DANGER,
+  WARNING, INFO, and BLOCKED findings all exit 0 unless `--exit-code` is passed.
 - 1: only under `--exit-code`, when a DANGER or BLOCKED finding exists (or a WARNING finding too,
   under the additional `--warn-exit`). BLOCKED is the fail-closed case: a drifted node whose ticket
   ref cannot be resolved gates rather than passing silently (section 5.1).
@@ -378,43 +390,60 @@ authentication, so timing is not a concern).
 Test-driven, per project conventions, tests mirroring sources one to one, all offline.
 
 - **Pure unit tests.**
-  - `test_stale_shipped.py`: grading by state type; canceled and triage omitted; one finding per
-    `(node, ticket)`; `drifted_refs` aggregation across multiple stale edges on a node; a completed
-    ticket's open children attached as context; the audit stale-trigger versus the `--from`
-    impact-trigger trigger maps; a malformed or unresolved `ticket_ref` on a trigger node becomes a
-    BLOCKED finding, while the same ref on a non-trigger node stays in the report-only lists (the
-    fail-closed scoping); the deterministic severity-then-node-then-ticket_ref ordering with BLOCKED
-    after DANGER; a node with no tickets yields nothing.
+  - `test_stale_shipped.py`: a parametrized case per Linear state type asserts its bucket
+    (`completed` DANGER, `started` WARNING, `unstarted` and `backlog` INFO, `canceled` and `triage`
+    omitted), so no state can be silently mis-graded; one finding per `(node, ticket_ref)`, with a
+    ref listed twice on a node collapsing to one finding; `drifted_refs` aggregation across multiple
+    stale edges on a node; a completed ticket's open children attached as context; a malformed
+    `ticket_ref` on a trigger node becomes a BLOCKED finding with `reason="malformed"` and an
+    unresolved one with `reason="not-found"`, while a ref whose node is outside the trigger map
+    produces nothing; a two-hop `--from` dependent receives non-empty `drifted_refs` from the
+    transitive closure, not an empty tuple (the regression test for the closure fix); the explicit
+    severity rank orders DANGER, then BLOCKED, then WARNING, then INFO, with node id and `ticket_ref`
+    tie-breaks; a node with no tickets yields nothing.
   - `test_linear_query.py`: the document is a `query` and never a `mutation`; the valid/invalid
-    partition, with invalid identifiers never reaching the document; a non-ASCII-digit identifier is
-    rejected (the `re.ASCII` guard); a crafted `linear_team` is validated by shape and matched by
-    split-and-equality, never spliced into a regex; the total-identifier cap raises `LinearError`;
-    identifiers passed as variables, not interpolated; aliases unique; chunking at the batch
-    boundary; dedupe.
-  - `test_tickets.py`: model construction and the state-type literal enforcement.
+    partition, with invalid identifiers (including an empty or whitespace `tickets:` entry, and a
+    non-ASCII-digit value under the `re.ASCII` guard) never reaching the document; a crafted
+    `linear_team` is validated by shape and matched by split-and-equality, never spliced into a
+    regex; the total-identifier cap raises `LinearError` at one over the cap but not at exactly the
+    cap; chunking emits one document at exactly the batch size and two at batch size plus one (the
+    off-by-one boundary); identifiers passed as variables, not interpolated; aliases unique; the
+    alias-to-identifier mapping is returned and round-trips; dedupe.
+  - `test_tickets.py`: model construction; the `LinearStateType` and `Severity` literal enforcement.
   - `test_linear_render.py`: severity grouping in the human table including the BLOCKED bucket; the
-    `--json` shape with a `null` ticket on a BLOCKED finding; a rich-markup title is escaped; ASCII
-    control bytes in any emitted field, a Linear url or identifier and a repo-derived ref, path, or
-    node id alike, are stripped by the shared render-safe helper; the API key never appears in any
-    output.
+    `--json` shape with a `null` ticket and a `reason` on a BLOCKED finding; a rich-markup title is
+    escaped; a hypothesis property that the shared render-safe helper is idempotent and leaves no
+    ASCII control byte in its output for any generated string (mirroring the existing hashing
+    canonicalization properties); a worked case that control bytes in a Linear url or identifier and
+    in a repo-derived ref, path, or node id are all stripped; the API key never appears in any output.
 - **Boundary test.** `test_linear_parser.py`: a valid response yields typed `Ticket`s including
-  parent and children; an unknown extra field is ignored, not rejected; a title carrying ASCII
-  control characters is stripped at the boundary; a GraphQL `errors` array raises `LinearError`; a
-  missing `data` raises `LinearError`; a null issue is reported unresolved without raising; a
-  malformed response raises `LinearError`.
+  parent and children; the ticket map is keyed by the queried identifier even when the response
+  echoes a different-cased `identifier`, so no false BLOCKED; an unknown extra field is ignored, not
+  rejected; control characters in a title, a url, and an identifier are stripped at the boundary; a
+  GraphQL `errors` array raises `LinearError`; a missing `data` raises `LinearError`; a null issue is
+  reported unresolved without raising; a malformed response raises `LinearError`.
+- **Fetch test (mocked `urlopen`, no real network).** `test_linear_fetch.py`: identifiers are
+  deduplicated before the request; an empty identifier set returns an empty map, makes no request,
+  and never reads `LINEAR_API_KEY`; a chunked fetch merges results across chunks and keys them by the
+  queried identifier; an unresolved (`null`) alias propagates as an unresolved identifier; a failing
+  chunk aborts the whole fetch.
 - **Transport test (mocked HTTP, no real network).** `test_linear_client.py`: the Authorization
   header carries the key; a POST with JSON content type; the HTTPS scheme guard rejects an `http://`
   URL; a 3xx redirect raises `LinearError` rather than being followed; the timeout is passed; the
   read is byte-capped; `HTTPError` (including 429) and `URLError` map to `LinearError`; the key never
   appears in any raised message; a missing `LINEAR_API_KEY` raises an actionable `LinearError`.
-- **CLI tests (mocked fetch).** The `linear` audit table; `--json` shape; `--from` mode; the exit
-  codes (0 by default even with findings, 1 on DANGER under `--exit-code`, 1 on a BLOCKED finding
-  under `--exit-code` even with no DANGER, WARNING also under `--warn-exit`, 2 on auth or network
-  error); a malformed or unresolved ticket on a drifted node fails the gate (the false-pass
-  regression test); a lattice with no tickets succeeds with no findings and without requiring
-  `LINEAR_API_KEY`; report-only unresolved and invalid identifiers on non-trigger nodes leave the
-  exit code unchanged; an unknown `--from` id exits 2; the no-key actionable error when a ticket was
-  present; `--from` and a positional target together as a usage error.
+- **CLI tests (mocked fetch).** Assert content, not mere presence: the audit table for a known
+  fixture contains the expected node id, severity label, and ticket identifier, and omits a node
+  whose only ticket is canceled; the `--json` payload matches the exact finding objects; `--from`
+  mode; the exit codes (0 by default even with findings, 1 on a DANGER finding under `--exit-code`,
+  1 on a BLOCKED finding under `--exit-code` with no DANGER present, WARNING also under `--warn-exit`,
+  2 on auth or network error); a malformed or unresolved ticket on a drifted node fails the gate (the
+  false-pass regression test); a lattice with no tickets succeeds with no findings and without
+  requiring `LINEAR_API_KEY`; an unknown `--from` id exits 2; the no-key actionable error when a
+  ticket was present; `--from` and a positional target together as a usage error.
+- `test_constants.py` and `test_error_types.py` gain the new members: the `VALID_LINEAR_STATE_TYPES`
+  and `VALID_SEVERITIES` frozensets match their literals, and `LinearError` carries code
+  `LINEAR_ERROR`.
 - Coverage at or above the existing 80 percent gate. `test_conventions.py` stays green: the new
   modules carry module docstrings and Google-style docstrings, use the constants pattern, and keep
   `Any` and `cast` confined to `linear_parser.py`.
