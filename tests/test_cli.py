@@ -1,6 +1,7 @@
 """Tests for the CLI."""
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -271,3 +272,32 @@ def test_linear_unknown_from_exits_2(lattice_dir, monkeypatch):
     monkeypatch.chdir(lattice_dir)
     result = runner.invoke(app, ["linear", "--from", "nonexistent"])
     assert result.exit_code == 2
+
+
+def test_atomic_create_writes_when_absent(tmp_path: Path):
+    target = tmp_path / ".game-lattice.yml"
+    cli_mod._atomic_create(target, "hello\n")
+    assert target.read_text(encoding="utf-8") == "hello\n"
+    assert not any(p.name.endswith(".tmp") for p in tmp_path.iterdir())
+
+
+def test_atomic_create_refuses_existing_and_preserves_it(tmp_path: Path):
+    target = tmp_path / ".game-lattice.yml"
+    target.write_text("original\n", encoding="utf-8")
+    with pytest.raises(FileExistsError):
+        cli_mod._atomic_create(target, "new\n")
+    assert target.read_text(encoding="utf-8") == "original\n"
+    assert not any(p.name.endswith(".tmp") for p in tmp_path.iterdir())
+
+
+def test_atomic_create_leaves_nothing_on_failure(tmp_path: Path, monkeypatch):
+    target = tmp_path / ".game-lattice.yml"
+
+    def boom(_src, _dst):
+        raise OSError("link failed")
+
+    monkeypatch.setattr(os, "link", boom)
+    with pytest.raises(OSError, match="link failed"):
+        cli_mod._atomic_create(target, "data\n")
+    assert not target.exists()
+    assert not any(p.name.endswith(".tmp") for p in tmp_path.iterdir())

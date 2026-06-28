@@ -1,6 +1,8 @@
 """Command-line interface."""
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Annotated
 
@@ -235,6 +237,32 @@ def _atomic_write(path: Path, text: str) -> None:
     except OSError:
         tmp.unlink(missing_ok=True)
         raise
+
+
+def _atomic_create(path: Path, text: str) -> None:
+    """Create path with text, crash-safe and never overwriting an existing file.
+
+    Writes to a unique temp file in the same directory, fsyncs it so the bytes
+    are durable, then publishes by hard-linking the temp onto the final path.
+    os.link is atomic and raises FileExistsError if the target already exists, so
+    the final path only ever appears complete, never empty or partial. The temp
+    is always removed, so a failed run leaves no litter.
+
+    Raises:
+        FileExistsError: If path already exists.
+        OSError: If the write or the link fails for another reason.
+    """
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        try:
+            os.write(fd, text.encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.link(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def main() -> None:
