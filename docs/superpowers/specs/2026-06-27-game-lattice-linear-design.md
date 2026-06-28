@@ -93,16 +93,52 @@ and `Severity = Literal["DANGER", "WARNING", "INFO"]` are added to `constants.py
 `Ticket` types live in a new `tickets.py`, kept separate from `model.py` so the lattice graph types
 stay free of any network-derived domain.
 
+### 4.1 The `--json` payload
+
+`--json` emits one object, shaped inline as `check` and `impact` already shape theirs:
+
+```json
+{
+  "findings": [
+    {
+      "severity": "DANGER",
+      "node_id": "pc-design",
+      "node_title": "PC Design Tokens",
+      "node_path": "docs/pc-design.md",
+      "drifted_refs": ["art-direction#accent-color"],
+      "ticket": {
+        "identifier": "PC-228",
+        "title": "Implement accent tokens",
+        "url": "https://linear.app/acme/issue/PC-228",
+        "state": {"name": "Done", "type": "completed"},
+        "parent": null,
+        "children": [
+          {"identifier": "PC-261", "title": "Tune motion", "state": {"name": "In Progress", "type": "started"}}
+        ]
+      }
+    }
+  ],
+  "unresolved": ["PC-999"],
+  "invalid": ["not-a-ticket"]
+}
+```
+
+`findings` is ordered as in section 5.1. `unresolved` lists identifiers Linear returned `null` for;
+`invalid` lists identifiers rejected by the shape check. Neither list affects the exit code.
+
 ## 5. The stale-shipped join
 
-`stale_shipped.py` is pure. It takes the built `Lattice`, the trigger node set (from `check` for
-audit, from `impact` for `--from`), and a `Mapping[identifier, Ticket]`, and returns graded findings.
+`stale_shipped.py` is pure. Its entry point takes the built `Lattice`, a trigger map
+`Mapping[node_id, tuple[str, ...]]` (each downstream node id mapped to the upstream refs that
+justify looking at it), and a `Mapping[identifier, Ticket]`. It returns the graded findings plus the
+list of identifiers it could not resolve. It performs no I/O and no network, so it is unit-tested
+against synthetic trigger maps and ticket maps.
 
 ### 5.1 Finding identity and grading
 
-A finding is keyed on the pair `(downstream_node_id, ticket_identifier)`, not on the edge. A node
-with several drifted upstream refs lists all of them in `drifted_refs`; it does not fan out into one
-finding per edge. The severity comes from the implementing ticket's own state type:
+A finding is keyed on the pair `(downstream_node_id, ticket_identifier)`, not on the edge. The
+node's justifying refs are carried whole in `drifted_refs`; a node with several of them does not fan
+out into one finding per edge. The severity comes from the implementing ticket's own state type:
 
 | Ticket state type | Severity | Meaning |
 |---|---|---|
@@ -111,46 +147,73 @@ finding per edge. The severity comes from the implementing ticket's own state ty
 | `unstarted`, `backlog` | INFO | Not started; the worker will pick up the current spec. |
 | `canceled`, `triage` | omitted | Not a real risk; produces no finding. |
 
-Consequences worth stating: a node with a STALE edge but no tickets produces nothing, because no
-shipped work is endangered. A node whose tickets are all canceled produces nothing. A node with an
-OK edge and a Done ticket is the healthy case and produces nothing. A completed ticket's still-open
-children are attached to its DANGER finding as context, since a "done" parent with open children is
-itself a signal.
+Consequences worth stating: a node in the trigger map with no tickets produces nothing, because no
+shipped work is endangered. A node whose tickets are all canceled produces nothing. In audit mode a
+node with only OK edges never enters the trigger map at all, so the healthy case produces nothing. A
+completed ticket's still-open children are attached to its DANGER finding as context, since a "done"
+parent with open children is itself a signal.
 
-### 5.2 What the two modes feed in
+A ticket identifier present on a trigger node but absent from the ticket map (Linear returned
+`null`) is collected into the **unresolved** list, never graded into a finding. Unresolved and
+malformed identifiers are reported but never affect the exit code.
 
-The join logic is one function. Only its trigger node set changes:
+Findings are returned in a deterministic order: by severity (DANGER, then WARNING, then INFO), then
+by node id, then by ticket identifier. This keeps the human table and the `--json` payload stable
+and directly assertable in tests.
 
-- Audit passes the set of source node ids whose edges `check` classified as STALE.
-- `--from <id>` passes the impact set of `<id>`, the downstream nodes that would go STALE if `<id>`
-  changed, computed by `impact`'s reverse-walk over `dependents`, the same one the local core
-  already ships.
+### 5.2 How each mode builds the trigger map
+
+The join is one function; only the trigger map handed to it differs, and each mode also fixes what
+`drifted_refs` means:
+
+- **Audit.** Call `check.check_lattice(lattice)`, keep the `EdgeStatus`es whose state is `STALE`,
+  and group them by `source_id`. Each downstream node maps to the `target_ref`s of its STALE edges:
+  the drift that has already happened. A positional `TARGET` further intersects this with the impact
+  set of `TARGET`.
+- **`--from <id>`.** Compute the change set `impact.expand_targets(lattice, <id>)` and the downstream
+  nodes via `impact.impact(lattice, <id>)`. Each such node maps to the `target_ref`s of its own
+  edges whose resolved `target_id` lies in the change set: the drift that *would* happen if `<id>`
+  changed. An unknown `<id>` raises `ValidationError` from `impact`, surfaced as exit 2, so a typo is
+  reported rather than returning a silently empty result.
 
 ## 6. Fetching ticket status
 
-`linear_fetch.py` is the thin impure wiring that turns a set of identifiers into the ticket map. It
-deduplicates identifiers first, so a ticket referenced by several docs is fetched once.
+`linear_fetch.py` is the thin impure wiring that turns the identifiers named across the trigger
+nodes into the ticket map. It deduplicates identifiers first, so a ticket referenced by several docs
+is fetched once. When no valid identifier remains to resolve (the lattice references no tickets, or
+`--from` reaches no ticketed downstream node), it returns an empty map without reading
+`LINEAR_API_KEY` or touching the network. A no-ticket run therefore succeeds with no findings and
+needs no credential.
 
-`linear_query.py` is pure. It builds one GraphQL `query` document with one aliased `issue(id:)`
-field per identifier, sharing a single fragment for the ticket fields including `parent` and
-`children(first: 50)`. Identifier sets larger than a fixed batch size (for example 50) are chunked
-into several documents whose results are merged. Identifiers are passed as GraphQL variables, never
-interpolated into the document text.
+`linear_query.py` is pure. It first partitions identifiers into valid and invalid by matching each
+against the expected shape (section 9), so the set that reaches the wire is decided in pure,
+unit-tested code; invalid identifiers are returned for reporting and never queried. For the valid
+set it builds one GraphQL `query` document with one index-named aliased `issue(id:)` field per
+identifier (`i0: issue(id: $id0)`), sharing a single fragment for the ticket fields including
+`parent` and `children(first: 50)`. The child cap is deliberate and not paginated in this slice;
+children are context, not a gate. Identifier sets larger than a fixed batch size (for example 50)
+are chunked into several documents whose results are merged. Identifiers are passed as GraphQL
+variables, never interpolated into the document text.
 
 `linear_client.py` is the transport, copied in shape from the proven `gx-linear-skills` client:
 synchronous `urllib.request` POST to `https://api.linear.app/graphql`, the API key read lazily from
-`LINEAR_API_KEY` on each request, the URL scheme validated up front, a bounded timeout, and HTTP or
-URL errors mapped to `LinearError`. It returns the raw response text and interprets none of it.
+`LINEAR_API_KEY` on each request, the URL scheme validated up front, a bounded timeout, and a capped
+read so an oversized response cannot exhaust memory. HTTP and URL errors map to `LinearError`,
+a 429 included: this slice issues a single batched request per chunk and deliberately does not retry
+or back off (a local single-user tool), so a rate limit or transport failure surfaces as a clear
+exit-2 `LinearError` telling the user to retry rather than as hidden retry machinery. If identifiers
+are chunked and any chunk fails, the whole command fails; it never reports a silently partial audit.
+The transport returns the raw response text and interprets none of it.
 
 `linear_parser.py` is the boundary. It is the only new module permitted `Any` and `cast`, because
 its name ends in `_parser` and `scripts/check_typing_boundaries.py` allows the untyped-to-typed
-conversion there. It parses the JSON, rejects a GraphQL `errors` array or a missing `data` object
-as a `LinearError`, caps the response size before parsing, and validates each issue node into a
-typed `Ticket` with strict pydantic.
-
-An identifier that Linear returns `null` for (a typo, or a deleted ticket) is recorded as
-**unresolved** and surfaced as a soft note. It is not a fatal error, mirroring the local core's
-decision that a BROKEN edge is a normal reported state rather than a crash.
+conversion there. It parses the JSON, rejects a GraphQL `errors` array or a missing `data` object as
+a `LinearError`, and validates each issue node into a typed `Ticket`. Because Linear's schema is not
+ours to pin, ticket models validate the fields we query and ignore unknown fields (pydantic
+`extra="ignore"`), unlike our own frontmatter models, which forbid extras. A missing ticket comes
+back as a `null` alias value, which is the **unresolved** case from section 5.1, distinct from an
+`errors` array; the parser records the unresolved identifier and does not raise. This mirrors the
+local core's decision that a BROKEN edge is a normal reported state rather than a crash.
 
 ## 7. Configuration
 
@@ -177,13 +240,16 @@ Extends the `ProjectError` hierarchy with one coded error, consistent with the l
 
 Exit codes:
 
-- 0: success, including when findings exist. The command is informational by default.
+- 0: success, including when findings exist and including when some identifiers were unresolved or
+  malformed. The command is informational by default; unresolved and invalid identifiers are
+  reported but never change the exit code.
 - 1: only under `--exit-code`, when a DANGER finding exists (or a WARNING finding too, under the
   additional `--warn-exit`).
-- 2: a `LinearError` (missing credential, auth failure, network failure, bad response), or any
-  local load error already defined by the core (missing or invalid config, duplicate id, unreadable
-  doc). A missing `LINEAR_API_KEY` is an actionable exit 2, not a silent degrade; its message points
-  at setting the key or at running `impact` for the offline raw-ticket view.
+- 2: a `LinearError` (missing credential, auth failure, network failure, rate limit, bad response),
+  a `ValidationError` from an unknown `--from` or `TARGET` id, or any local load error already
+  defined by the core (missing or invalid config, duplicate id, unreadable doc). A missing
+  `LINEAR_API_KEY` is an actionable exit 2 only when there was actually a ticket to resolve; its
+  message points at setting the key or at running `impact` for the offline raw-ticket view.
 
 No bare `except Exception`. No `datetime.now()` outside `datetime_utils.py`.
 
@@ -201,12 +267,19 @@ response.
   slice, and a test asserts the generated document contains no `mutation`.
 - **Injection safety.** Ticket identifiers travel as GraphQL variables, never interpolated into the
   document, so a repo-controlled `tickets:` value cannot change query structure.
-- **Identifier validation.** Each identifier is validated against `^[A-Z][A-Z0-9]*-\d+$` (narrowed
-  to the `linear_team` prefix when configured) before being sent. A malformed value is reported as
-  invalid and never put on the wire.
+- **Identifier validation.** Each identifier is validated in the pure `linear_query` partitioner
+  against `^[A-Z][A-Z0-9]*-\d+$` (narrowed to the `linear_team` prefix when configured), matched as
+  written with no case normalization, before any document is built. A malformed value is returned
+  for reporting and never put on the wire, so the decision of what reaches Linear is pure and
+  unit-tested.
 - **Transport hardening.** HTTPS only, enforced by the URL-scheme guard. A bounded timeout. The
-  response body is length-capped before parsing so a hostile or oversized response cannot exhaust
-  memory. Each ticket node is strictly validated by pydantic.
+  transport caps the bytes it reads, so a hostile or oversized response cannot exhaust memory before
+  the parser runs. No retry or backoff is added this slice; a 429 or transport error is a clear
+  exit-2 `LinearError`. Each ticket node is validated by pydantic (`extra="ignore"`, since the
+  schema is Linear's, not ours).
+- **Output rendering.** `linear_render` passes every externally-derived string (ticket titles and
+  identifiers from Linear, plus node ids, refs, and paths) through rich's `escape()`, exactly as the
+  existing commands do, so a ticket title containing rich markup cannot inject console formatting.
 - **Zero secrets in the repo.** Every test mocks the transport: no real network, no real key, only
   synthetic ticket JSON. No fixture, config, or CI file carries a token. The public repo's own CI
   does not run `linear`; `check` remains its CI gate. The pure layers (`stale_shipped`, `tickets`,
@@ -220,24 +293,30 @@ Test-driven, per project conventions, tests mirroring sources one to one, all of
   - `test_stale_shipped.py`: grading by state type; canceled and triage omitted; one finding per
     `(node, ticket)`; `drifted_refs` aggregation across multiple stale edges on a node; a completed
     ticket's open children attached as context; the audit stale-trigger versus the `--from`
-    impact-trigger; a node with no tickets yields nothing.
-  - `test_linear_query.py`: the document is a `query` and never a `mutation`; identifiers are passed
-    as variables, not interpolated; aliases are unique; chunking at the batch boundary; dedupe.
+    impact-trigger trigger maps; an identifier absent from the ticket map collected as unresolved,
+    not graded; the deterministic severity-then-node-then-ticket ordering; a node with no tickets
+    yields nothing.
+  - `test_linear_query.py`: the document is a `query` and never a `mutation`; the valid/invalid
+    partition, with invalid identifiers never reaching the document; identifiers passed as variables,
+    not interpolated; aliases unique; chunking at the batch boundary; dedupe.
   - `test_tickets.py`: model construction and the state-type literal enforcement.
-  - `test_linear_render.py`: severity grouping in the human table, the `--json` shape, and that the
-    API key never appears in any output.
+  - `test_linear_render.py`: severity grouping in the human table; the `--json` shape; a ticket
+    title carrying rich markup is escaped; the API key never appears in any output.
 - **Boundary test.** `test_linear_parser.py`: a valid response yields typed `Ticket`s including
-  parent and children; a GraphQL `errors` array raises `LinearError`; a missing `data` raises
-  `LinearError`; a null issue is reported unresolved; a malformed or oversized response raises
-  `LinearError`.
+  parent and children; an unknown extra field is ignored, not rejected; a GraphQL `errors` array
+  raises `LinearError`; a missing `data` raises `LinearError`; a null issue is reported unresolved
+  without raising; a malformed response raises `LinearError`.
 - **Transport test (mocked HTTP, no real network).** `test_linear_client.py`: the Authorization
   header carries the key; a POST with JSON content type; the HTTPS scheme guard; the timeout is
-  passed; `HTTPError` and `URLError` map to `LinearError`; the key never appears in any raised
-  message; a missing `LINEAR_API_KEY` raises an actionable `LinearError`.
+  passed; the read is byte-capped; `HTTPError` (including 429) and `URLError` map to `LinearError`;
+  the key never appears in any raised message; a missing `LINEAR_API_KEY` raises an actionable
+  `LinearError`.
 - **CLI tests (mocked fetch).** The `linear` audit table; `--json` shape; `--from` mode; the exit
   codes (0 by default even with findings, 1 on DANGER under `--exit-code`, WARNING also under
-  `--warn-exit`, 2 on auth or network error); the no-key actionable error; the unresolved-ticket
-  soft note; `--from` and a positional target together as a usage error.
+  `--warn-exit`, 2 on auth or network error); a lattice with no tickets succeeds with no findings
+  and without requiring `LINEAR_API_KEY`; unresolved and invalid identifiers are reported and leave
+  the exit code unchanged; an unknown `--from` id exits 2; the no-key actionable error when a ticket
+  was present; `--from` and a positional target together as a usage error.
 - Coverage at or above the existing 80 percent gate. `test_conventions.py` stays green: the new
   modules carry module docstrings and Google-style docstrings, use the constants pattern, and keep
   `Any` and `cast` confined to `linear_parser.py`.
@@ -257,11 +336,11 @@ third-party dependencies.
 | Module | Purpose | Pure? |
 |---|---|---|
 | `tickets.py` | `TicketState`, `TicketRef`, `Ticket`, `Finding` types | pure |
-| `linear_query.py` | Build the batched, aliased `issue(id:)` GraphQL document and variables | pure |
-| `linear_client.py` | Transport: stdlib POST, lazy key, scheme guard, timeout, error mapping | impure I/O |
+| `linear_query.py` | Partition identifiers, build the batched aliased `issue(id:)` document and variables | pure |
+| `linear_client.py` | Transport: stdlib POST, lazy key, scheme guard, timeout, capped read, error mapping | impure I/O |
 | `linear_parser.py` | Boundary: JSON to typed `Ticket`, envelope and shape validation | boundary |
-| `linear_fetch.py` | Thin wiring: dedupe, query, client, parser, into a ticket map | impure |
-| `stale_shipped.py` | Pure join: lattice plus trigger set plus ticket map to graded findings | pure |
+| `linear_fetch.py` | Thin wiring: dedupe, skip-when-empty, query, client, parser, into a ticket map | impure |
+| `stale_shipped.py` | Pure join: lattice plus trigger map plus ticket map to graded findings and unresolved | pure |
 | `linear_render.py` | Severity-grouped human table and the `--json` shape | pure |
 
 Edits: `error_types.py` adds `LinearError`; `constants.py` adds `LinearStateType` and `Severity`;
