@@ -5,13 +5,29 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 
+from game_lattice.constants import VALID_LINEAR_STATE_TYPES, VALID_SEVERITIES
 from game_lattice.loader import build_lattice
 from game_lattice.model import NodeMeta, ParsedDoc, RawEdge
-from game_lattice.stale_shipped import build_audit_trigger, build_from_trigger, stale_shipped
+from game_lattice.stale_shipped import (
+    _SEVERITY_RANK,
+    _STATE_SEVERITY,
+    build_audit_trigger,
+    build_from_trigger,
+    stale_shipped,
+)
 from game_lattice.tickets import Ticket, TicketState
 
 if TYPE_CHECKING:
     from game_lattice.constants import BlockedReason, LinearStateType
+
+
+def test_state_and_severity_maps_track_their_literals():
+    # Tie the grading maps to their Literals: a renamed state member would otherwise leave a
+    # stale key that silently grades as None (no finding), and a new severity would KeyError
+    # on the rank lookup.
+    assert set(_STATE_SEVERITY) <= VALID_LINEAR_STATE_TYPES
+    assert set(_STATE_SEVERITY.values()) <= VALID_SEVERITIES
+    assert set(_SEVERITY_RANK) == VALID_SEVERITIES
 
 
 def _ticket(identifier: str, state_type: str) -> Ticket:

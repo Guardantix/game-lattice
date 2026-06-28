@@ -96,34 +96,28 @@ def stale_shipped(
                 continue
             seen_refs.add(ref)
             ticket = tickets.get(ref)
+            severity: Severity
+            reason: BlockedReason | None
             if ticket is not None:
-                severity = _STATE_SEVERITY.get(ticket.state.type)
-                if severity is None:
+                graded = _STATE_SEVERITY.get(ticket.state.type)
+                if graded is None:
                     continue
-                findings.append(
-                    Finding(
-                        severity=severity,
-                        node_id=node_id,
-                        node_title=node.title,
-                        node_path=node.path,
-                        drifted_refs=drifted_refs,
-                        ticket_ref=ref,
-                        reason=None,
-                        ticket=ticket,
-                    )
-                )
+                severity = graded
+                reason = None
             else:
-                findings.append(
-                    Finding(
-                        severity="BLOCKED",
-                        node_id=node_id,
-                        node_title=node.title,
-                        node_path=node.path,
-                        drifted_refs=drifted_refs,
-                        ticket_ref=ref,
-                        reason=rejected.get(ref, "not-found"),
-                        ticket=None,
-                    )
+                severity = "BLOCKED"
+                reason = rejected.get(ref, "not-found")
+            findings.append(
+                Finding(
+                    severity=severity,
+                    node_id=node_id,
+                    node_title=node.title,
+                    node_path=node.path,
+                    drifted_refs=drifted_refs,
+                    ticket_ref=ref,
+                    reason=reason,
+                    ticket=ticket,
                 )
+            )
     findings.sort(key=lambda f: (_SEVERITY_RANK[f.severity], f.node_id, f.ticket_ref))
     return findings

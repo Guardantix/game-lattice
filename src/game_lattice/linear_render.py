@@ -5,8 +5,18 @@ from collections.abc import Sequence
 from rich.console import Console
 from rich.markup import escape
 
+from .constants import Severity
 from .text_utils import strip_control_chars
-from .tickets import Finding, Ticket, TicketRef
+from .tickets import Finding
+
+# Tied to the Severity Literal by test_severity_colors_cover_all_severities: a new severity
+# member without a color here fails that test instead of raising KeyError at render time.
+_SEVERITY_COLORS: dict[Severity, str] = {
+    "DANGER": "red",
+    "BLOCKED": "magenta",
+    "WARNING": "yellow",
+    "INFO": "cyan",
+}
 
 
 def render_safe(text: str) -> str:
@@ -19,25 +29,6 @@ def render_safe(text: str) -> str:
         The string with control bytes removed and rich markup escaped.
     """
     return escape(strip_control_chars(text))
-
-
-def _ref_json(ref: TicketRef) -> dict:
-    return {
-        "identifier": ref.identifier,
-        "title": ref.title,
-        "state": {"name": ref.state.name, "type": ref.state.type},
-    }
-
-
-def _ticket_json(ticket: Ticket) -> dict:
-    return {
-        "identifier": ticket.identifier,
-        "title": ticket.title,
-        "url": ticket.url,
-        "state": {"name": ticket.state.name, "type": ticket.state.type},
-        "parent": _ref_json(ticket.parent) if ticket.parent is not None else None,
-        "children": [_ref_json(child) for child in ticket.children],
-    }
 
 
 def findings_json(findings: Sequence[Finding]) -> dict:
@@ -60,7 +51,9 @@ def findings_json(findings: Sequence[Finding]) -> dict:
                 "drifted_refs": list(finding.drifted_refs),
                 "ticket_ref": finding.ticket_ref,
                 "reason": finding.reason,
-                "ticket": (_ticket_json(finding.ticket) if finding.ticket is not None else None),
+                "ticket": (
+                    finding.ticket.model_dump(mode="json") if finding.ticket is not None else None
+                ),
             }
             for finding in findings
         ]
@@ -77,14 +70,8 @@ def render_findings(console: Console, findings: Sequence[Finding]) -> None:
     if not findings:
         console.print("no stale-shipped findings")
         return
-    colors = {
-        "DANGER": "red",
-        "BLOCKED": "magenta",
-        "WARNING": "yellow",
-        "INFO": "cyan",
-    }
     for finding in findings:
-        color = colors[finding.severity]
+        color = _SEVERITY_COLORS[finding.severity]
         refs = ", ".join(render_safe(ref) for ref in finding.drifted_refs)
         if finding.ticket is not None:
             detail = render_safe(f"{finding.ticket_ref} [{finding.ticket.state.name}]")

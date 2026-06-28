@@ -7,7 +7,13 @@ from hypothesis import given
 from hypothesis import strategies as st
 from rich.console import Console
 
-from game_lattice.linear_render import findings_json, render_findings, render_safe
+from game_lattice.constants import VALID_SEVERITIES
+from game_lattice.linear_render import (
+    _SEVERITY_COLORS,
+    findings_json,
+    render_findings,
+    render_safe,
+)
 from game_lattice.tickets import Finding, Ticket, TicketState
 
 
@@ -59,10 +65,18 @@ def test_json_shape_for_graded_and_blocked():
 
 
 @given(st.text())
-def test_render_safe_is_idempotent_and_control_free(text: str):
+def test_render_safe_output_is_control_free(text: str):
+    # render_safe is NOT idempotent: rich.markup.escape re-escapes a balanced ``[tag]`` on
+    # each pass (render_safe("[/]") != render_safe(render_safe("[/]"))). The universal
+    # property is only that no control byte (C0, DEL, or C1) survives.
     once = render_safe(text)
-    assert render_safe(once) == once
-    assert all(ord(ch) >= 0x20 and ord(ch) != 0x7F for ch in once)
+    assert all(ord(ch) >= 0x20 and ord(ch) != 0x7F and not (0x80 <= ord(ch) <= 0x9F) for ch in once)
+
+
+def test_severity_colors_cover_all_severities():
+    # A new Severity member without a color would raise KeyError at render time; pinning the
+    # color map to the Literal surfaces that gap here instead.
+    assert set(_SEVERITY_COLORS) == VALID_SEVERITIES
 
 
 def test_render_table_escapes_and_shows_severity():

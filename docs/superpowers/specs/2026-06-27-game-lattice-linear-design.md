@@ -270,8 +270,8 @@ by the identifier that was *queried* (recovered through the alias-to-identifier 
 returned), never by the `identifier` the response echoes, so a case or formatting difference in the
 echo cannot cause a lookup miss that a downstream node would then read as a false BLOCKED. Every
 string field from the response, not only titles and state names but also identifiers and urls, is
-stripped of ASCII control characters here, at the boundary, so a hostile response cannot smuggle
-terminal escape sequences downstream of validation (section 9). A missing ticket comes back as a
+stripped of control characters (C0, C1, and DEL) here, at the boundary, so a hostile response cannot
+smuggle terminal escape sequences downstream of validation (section 9). A missing ticket comes back as a
 `null` alias value, which is the unresolved case from section 5.1, distinct from an `errors` array;
 the parser records the unresolved identifier and
 does not raise. This mirrors the local core's decision that a BROKEN edge is a normal reported state
@@ -294,7 +294,7 @@ repo-controlled and the command runs with a credential; silently dropping an off
 drifted doc dodge its own gate. When `linear_team` is null there is no team boundary to enforce, so
 identifiers are validated only against the generic shape and queried as written. Because
 `linear_team` comes from a repo-controlled `.game-lattice.yml`, it is never interpolated into a
-regex; it is itself validated against a fixed team-key shape `^[A-Z][A-Z0-9]*$` when first used, and
+regex; it is itself validated against a fixed team-key shape `\A[A-Z][A-Z0-9]*\Z` when first used, and
 the prefix match is done by splitting the identifier on `-` and comparing the segment by string
 equality (section 9). This keeps a crafted `linear_team` from causing catastrophic backtracking or
 from widening the allowlist. Credentials never live in config; `LINEAR_API_KEY` is read from the
@@ -383,8 +383,9 @@ internal network the credentialed process can reach.
   config load.
 - **Terminal injection (CWE-150).** rich's `escape()` neutralizes `[...]` markup but not raw control
   bytes, so escaping alone is insufficient for either network or repo-controlled strings. Defense is
-  two-layered and covers every emitted field. At the boundary, the parser strips ASCII control
-  characters from all Linear response strings (titles, state names, identifiers, urls). At
+  two-layered and covers every emitted field. At the boundary, the parser strips control
+  characters (C0, C1, and DEL) from all Linear response strings (titles, state names, identifiers,
+  urls). At
   rendering, `linear_render` routes every external string it emits, the Linear fields and the
   repo-derived node ids, refs, and paths alike, through one shared render-safe helper that both
   strips control characters and applies `escape()`. So no field, network or repo, reaches the

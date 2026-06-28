@@ -10,8 +10,10 @@ from .error_types import ConfigError, LinearError
 BATCH_SIZE = 50
 MAX_IDENTIFIERS = 500
 
-_IDENTIFIER_RE = re.compile(r"^[A-Z][A-Z0-9]*-[0-9]+$", re.ASCII)
-_TEAM_RE = re.compile(r"^[A-Z][A-Z0-9]*$", re.ASCII)
+# Anchored with \A...\Z, not ^...$: in Python ``$`` also matches just before a trailing
+# newline, so a value like "PC-1\n" would slip past ``^...$``. \Z matches only the very end.
+_IDENTIFIER_RE = re.compile(r"\A[A-Z][A-Z0-9]*-[0-9]+\Z", re.ASCII)
+_TEAM_RE = re.compile(r"\A[A-Z][A-Z0-9]*\Z", re.ASCII)
 
 _TICKET_FRAGMENT = """
 fragment T on Issue {

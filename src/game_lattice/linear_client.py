@@ -87,9 +87,15 @@ class LinearClient:
             with self._opener.open(request, timeout=self._timeout) as resp:  # ty: ignore[unresolved-attribute]
                 body = resp.read(MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as exc:
-            raise LinearError(f"Linear HTTP error {exc.code}") from exc
+            raise LinearError(
+                f"Linear HTTP error {exc.code}; if it is a 429 or 5xx wait and re-run, "
+                "or run impact for the offline view"
+            ) from exc
         except urllib.error.URLError as exc:
-            raise LinearError(f"Linear network error: {exc.reason}") from exc
+            raise LinearError(
+                f"Linear network error: {exc.reason}; check the connection and re-run, "
+                "or run impact for the offline view"
+            ) from exc
         if len(body) > MAX_RESPONSE_BYTES:
             raise LinearError("Linear response exceeded the size cap; refusing to parse it")
         return body.decode("utf-8", errors="replace")

@@ -47,6 +47,19 @@ def test_partition_rejects_malformed_team_key():
         partition_identifiers(["PC-1"], "p c")
 
 
+def test_partition_rejects_trailing_newline_team_key():
+    # A trailing newline must not slip past the team-key guard (\Z, not $).
+    with pytest.raises(ConfigError):
+        partition_identifiers(["PC-1"], "PC\n")
+
+
+def test_partition_rejects_trailing_newline_identifier():
+    # A trailing newline must not slip past the identifier guard (\Z, not $).
+    valid, rejected = partition_identifiers(["PC-1\n"], None)
+    assert valid == []
+    assert rejected == {"PC-1\n": "malformed"}
+
+
 def test_partition_cap_raises_one_over_but_not_at_cap():
     at_cap = [f"PC-{i}" for i in range(MAX_IDENTIFIERS)]
     valid, _ = partition_identifiers(at_cap, None)
