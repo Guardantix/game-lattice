@@ -12,8 +12,8 @@ from rich.markup import escape
 
 from . import __version__
 from .check import check_lattice, has_drift
-from .config import load_config
-from .error_types import ProjectError, UnreadableDocError
+from .config import DEFAULT_CONFIG_NAME, load_config
+from .error_types import ConfigError, ProjectError, UnreadableDocError
 from .impact import impact as impact_walk
 from .linear_fetch import fetch_tickets
 from .linear_render import findings_json, render_findings
@@ -22,7 +22,9 @@ from .orchestrate import load_lattice
 from .reconcile import apply_reconcile
 from .reconcile import reconcile as plan_reconcile
 from .render import to_dot, to_mermaid
+from .scaffold import build_scaffold
 from .stale_shipped import build_audit_trigger, build_from_trigger, stale_shipped
+from .text_utils import strip_control_chars
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 _out = Console()
@@ -226,6 +228,74 @@ def linear(  # noqa: PLR0913
         gate = {"DANGER", "BLOCKED"} | ({"WARNING"} if warn_exit else set())
         if any(finding.severity in gate for finding in findings):
             raise typer.Exit(1)
+    raise typer.Exit(0)
+
+
+def _validate_init_flags(docs_roots: tuple[str, ...], linear_team: str | None) -> None:
+    """Reject flag values that would corrupt the generated config.
+
+    Args:
+        docs_roots: The docs roots from --docs-root (or the default).
+        linear_team: The --linear-team value, or None.
+
+    Raises:
+        ConfigError: If a value is empty or holds a control character, or a docs
+            root is absolute or contains a parent reference.
+    """
+    values = list(docs_roots)
+    if linear_team is not None:
+        values.append(linear_team)
+    for value in values:
+        if not value or strip_control_chars(value) != value:
+            msg = f"flag value {value!r} is empty or contains a control character"
+            raise ConfigError(msg)
+    for root in docs_roots:
+        if Path(root).is_absolute() or ".." in Path(root).parts:
+            msg = (
+                f"--docs-root {root!r} must be a relative path inside the project, "
+                "without '..' or a leading slash"
+            )
+            raise ConfigError(msg)
+
+
+@app.command()
+def init(
+    docs_root: Annotated[
+        list[str] | None,
+        typer.Option("--docs-root", help="Docs root to write (repeatable). Defaults to docs."),
+    ] = None,
+    linear_team: Annotated[
+        str | None,
+        typer.Option("--linear-team", help="Linear team slug to bake into the config."),
+    ] = None,
+) -> None:
+    """Scaffold .game-lattice.yml and print pre-commit and CI codegen."""
+    try:
+        roots = tuple(docs_root) if docs_root else ("docs",)
+        _validate_init_flags(roots, linear_team)
+        scaffold = build_scaffold(roots, linear_team, f"v{__version__}")
+        target = Path.cwd() / DEFAULT_CONFIG_NAME
+        try:
+            _atomic_create(target, scaffold.config_text)
+        except FileExistsError:
+            _err.print(f"{escape(target.name)} already exists, leaving it untouched")
+        except OSError as exc:
+            msg = f"cannot write {target.name}: {exc}"
+            raise ConfigError(msg) from exc
+        else:
+            _err.print(f"wrote {escape(target.name)}")
+        typer.echo("# ===== .pre-commit-config.yaml (add under `repos:`) =====")
+        typer.echo(scaffold.precommit_text)
+        typer.echo("# ===== .github/workflows/game-lattice.yml (new file) =====")
+        typer.echo(scaffold.ci_text)
+        _err.print(
+            "Add the pre-commit block under `repos:`, save the workflow as "
+            ".github/workflows/game-lattice.yml, and make sure the "
+            f"v{__version__} tag is pushed so the pinned snippets resolve."
+        )
+    except ProjectError as exc:
+        _err.print(f"[red]error[/red]: {exc} ({exc.code})")
+        raise typer.Exit(2) from exc
     raise typer.Exit(0)
 
 

@@ -301,3 +301,69 @@ def test_atomic_create_leaves_nothing_on_failure(tmp_path: Path, monkeypatch):
         cli_mod._atomic_create(target, "data\n")
     assert not target.exists()
     assert not any(p.name.endswith(".tmp") for p in tmp_path.iterdir())
+
+
+def test_init_writes_config_and_prints_codegen(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["init"])
+    assert result.exit_code == 0
+    config = (tmp_path / ".game-lattice.yml").read_text(encoding="utf-8")
+    assert "docs_roots:" in config
+    assert "- docs" in config
+    assert ".pre-commit-config.yaml" in result.stdout
+    assert ".github/workflows/game-lattice.yml" in result.stdout
+    assert f"@v{__version__}" in result.stdout
+
+
+def test_init_skips_existing_config_but_still_prints(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".game-lattice.yml").write_text("SENTINEL\n", encoding="utf-8")
+    result = runner.invoke(app, ["init"])
+    assert result.exit_code == 0
+    assert (tmp_path / ".game-lattice.yml").read_text(encoding="utf-8") == "SENTINEL\n"
+    assert ".github/workflows/game-lattice.yml" in result.stdout
+
+
+def test_init_bakes_flag_values(tmp_path: Path, monkeypatch):
+    from game_lattice.config import load_config  # noqa: PLC0415
+
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app, ["init", "--docs-root", "design", "--docs-root", "lore", "--linear-team", "PC"]
+    )
+    assert result.exit_code == 0
+    project = load_config(None, tmp_path)
+    assert project.config.docs_roots == ["design", "lore"]
+    assert project.config.linear_team == "PC"
+
+
+@pytest.mark.parametrize("bad", ["/etc", "../escape"])
+def test_init_rejects_unsafe_docs_root(tmp_path: Path, monkeypatch, bad):
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["init", "--docs-root", bad])
+    assert result.exit_code == 2
+    assert not (tmp_path / ".game-lattice.yml").exists()
+
+
+def test_init_rejects_control_character_in_flag(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["init", "--linear-team", "a\nb"])
+    assert result.exit_code == 2
+    assert not (tmp_path / ".game-lattice.yml").exists()
+
+
+def test_init_crash_during_link_leaves_clean_state(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    real_link = os.link
+
+    def boom(_src, _dst):
+        raise OSError("link failed")
+
+    monkeypatch.setattr(os, "link", boom)
+    assert runner.invoke(app, ["init"]).exit_code == 2
+    assert not (tmp_path / ".game-lattice.yml").exists()
+    assert not any(p.name.endswith(".tmp") for p in tmp_path.iterdir())
+
+    monkeypatch.setattr(os, "link", real_link)
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    assert (tmp_path / ".game-lattice.yml").exists()
