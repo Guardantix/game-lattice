@@ -61,6 +61,19 @@ def test_partition_rejects_trailing_newline_identifier():
     assert rejected == {"PC-1\n": "malformed"}
 
 
+def test_partition_rejects_leading_zero_numbers():
+    # Leading zeros are disallowed: "PC-007" would be keyed "PC-7" after int(), so
+    # tickets.get("PC-007") would miss and produce a spurious not-found result.
+    valid, rejected = partition_identifiers(["PC-007", "PC-01"], None)
+    assert valid == []
+    assert rejected["PC-007"] == "malformed"
+    assert rejected["PC-01"] == "malformed"
+    # PC-0 (exactly zero, no leading zero) and PC-7 (no leading zero) remain valid.
+    valid2, rejected2 = partition_identifiers(["PC-0", "PC-7"], None)
+    assert valid2 == ["PC-0", "PC-7"]
+    assert rejected2 == {}
+
+
 def test_partition_cap_raises_one_over_but_not_at_cap():
     at_cap = [f"PC-{i}" for i in range(MAX_IDENTIFIERS)]
     valid, _ = partition_identifiers(at_cap, None)

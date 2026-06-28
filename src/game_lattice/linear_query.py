@@ -12,7 +12,10 @@ MAX_IDENTIFIERS = 500
 
 # Anchored with \A...\Z, not ^...$: in Python ``$`` also matches just before a trailing
 # newline, so a value like "PC-1\n" would slip past ``^...$``. \Z matches only the very end.
-_IDENTIFIER_RE = re.compile(r"\A[A-Z][A-Z0-9]*-[0-9]+\Z", re.ASCII)
+# Leading zeros are disallowed (0|[1-9][0-9]*) because the number is later normalized via
+# int() to reconstruct the queried identifier as the result key; a ref like "PC-007" would
+# be keyed "PC-7", so tickets.get("PC-007") would miss and produce a spurious not-found.
+_IDENTIFIER_RE = re.compile(r"\A[A-Z][A-Z0-9]*-(0|[1-9][0-9]*)\Z", re.ASCII)
 _TEAM_RE = re.compile(r"\A[A-Z][A-Z0-9]*\Z", re.ASCII)
 
 _TICKET_FRAGMENT = """
@@ -108,6 +111,11 @@ def chunk_numbers(numbers: Sequence[int], size: int = BATCH_SIZE) -> list[list[i
 
 def build_query(team: str, numbers: Sequence[int]) -> QueryPlan:
     """Build one filtered connection query for one team's numbers (at most ``BATCH_SIZE``).
+
+    External API contract (verified against live Linear API 2026-06-28): a number that does
+    not exist returns an empty ``nodes`` list, not a top-level ``errors`` array. This is what
+    makes not-found non-fatal; a future Linear schema change there would silently reintroduce
+    the batch-fatal path.
 
     Args:
         team: The validated team key.

@@ -52,6 +52,7 @@ def parse_tickets(response_text: str, team: str) -> dict[str, Ticket]:
 
     tickets: dict[str, Ticket] = {}
     for node in nodes:
+        # Outer guard catches int(node['number']) failures; _ticket_from_node wraps its own.
         try:
             key = f"{team}-{int(node['number'])}"
             tickets[key] = _ticket_from_node(node)
