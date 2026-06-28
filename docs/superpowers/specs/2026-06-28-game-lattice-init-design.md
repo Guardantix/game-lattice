@@ -255,7 +255,7 @@ There is no chicken-and-egg here, because a git tag is created after the commit 
 emits the pin as a literal string, not a resolved ref. The release is one linear sequence:
 
 1. On the feature branch, set `__version__` to 0.2.0 across the version locations (`__init__.py`,
-   `pyproject.toml`, `.gx-new-version`) and finish `init`.
+   `pyproject.toml`) and finish `init`.
 2. Merge to main. The merge commit now carries `init`, `check`, and the logic that emits `@v0.2.0`.
 3. Tag that merge commit `v0.2.0` and push the tag.
 

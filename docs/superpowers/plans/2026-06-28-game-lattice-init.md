@@ -33,7 +33,6 @@ Every task's requirements implicitly include these (copied from the spec and CLA
 | `tests/test_cli.py` | Modify | Add `_atomic_create` unit tests and `init` command tests. |
 | `src/game_lattice/__init__.py` | Modify | Bump `__version__` to `0.2.0`. |
 | `pyproject.toml` | Modify | Bump `version` to `0.2.0`. |
-| `.gx-new-version` | Modify | Bump to `0.2.0`. |
 | `uv.lock` | Modify | Refreshed by `uv lock` after the version bump. |
 | `CHANGELOG.md` | Modify | Add the `## [0.2.0]` release entry. |
 | `RELEASING.md` | Create | Release checklist making the version tag an atomic part of cutting a release. |
@@ -596,7 +595,7 @@ git commit -m "feat: add init command"
 ### Task 4: Release mechanics (version 0.2.0)
 
 **Files:**
-- Modify: `src/game_lattice/__init__.py`, `pyproject.toml`, `.gx-new-version`, `uv.lock`, `CHANGELOG.md`
+- Modify: `src/game_lattice/__init__.py`, `pyproject.toml`, `uv.lock`, `CHANGELOG.md`
 - Create: `RELEASING.md`
 
 **Interfaces:**
@@ -618,13 +617,11 @@ In `pyproject.toml`, change line 10 from `version = "0.1.0"` to:
 version = "0.2.0"
 ```
 
-- [ ] **Step 3: Bump the gx marker**
+- [ ] ~~**Step 3: Bump the gx marker**~~ (REMOVED: spec error)
 
-Replace the contents of `.gx-new-version` with:
-
-```
-gx-new 0.2.0 (2026-06-28)
-```
+`.gx-new-version` records the version of the gx-new scaffolding tool, not the
+game-lattice package version. It is gitignored and is not part of a release, so it is
+never bumped or committed. The version bump is the two locations in Steps 1 and 2.
 
 - [ ] **Step 4: Refresh the lockfile**
 
@@ -662,10 +659,9 @@ version bump) leaves adopters with a gate that fails before `check` runs.
 
 ## Checklist
 
-1. Bump the version to the new `X.Y.Z` in all three locations:
+1. Bump the version to the new `X.Y.Z` in both locations:
    - `src/game_lattice/__init__.py` (`__version__`)
    - `pyproject.toml` (`version`)
-   - `.gx-new-version`
 2. Run `uv lock` and commit the refreshed `uv.lock`.
 3. Add a `## [X.Y.Z]` section to `CHANGELOG.md`.
 4. Open the PR, get it green, and merge to `main`.
@@ -698,7 +694,7 @@ Expected: PASS, coverage at or above 80 percent.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/game_lattice/__init__.py pyproject.toml .gx-new-version uv.lock CHANGELOG.md RELEASING.md
+git add src/game_lattice/__init__.py pyproject.toml uv.lock CHANGELOG.md RELEASING.md
 git commit -m "chore: release 0.2.0 with init command and RELEASING checklist"
 ```
 
