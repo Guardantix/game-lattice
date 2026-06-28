@@ -1,0 +1,264 @@
+# game-lattice Init Slice: Design Spec
+
+**Date:** 2026-06-28
+**Status:** Design (post brainstorm). Ready for implementation planning.
+**Scope:** Onboarding ergonomics. One `init` command that scaffolds the project config and emits
+pre-commit and CI codegen for an adopting repo. No network, no secrets, no LLM. The only new
+disk-touching code is a single config write; the rest is printed.
+**Builds on:** `docs/superpowers/specs/2026-06-27-game-lattice-local-core-design.md` (the local
+core) and `docs/superpowers/specs/2026-06-27-game-lattice-linear-design.md` (the linear slice).
+
+This spec turns the deferred `init` item from the local-core deferral map (section 12, "init
+scaffolding, pre-commit and CI codegen") into a buildable design. It does not re-open any locked
+decision from the local core. The local-core spec already states (section 7) that `init` will
+scaffold `.game-lattice.yml` later and that the tool never depends on `init` having run; this slice
+realizes that promise without changing how config is read.
+
+## 1. Scope
+
+In scope:
+
+- A single `init` command that bootstraps a repo adopting game-lattice.
+- It writes one file, `.game-lattice.yml`, when absent, and prints two codegen artifacts: a
+  pre-commit hook and a GitHub Actions workflow, each of which runs `game-lattice check` as the
+  drift gate.
+- The config write is deterministic and templated, with two optional flags (`--docs-root`,
+  repeatable, and `--linear-team`) that bake values into the generated file.
+- The command is idempotent and re-runnable: with a config already present it leaves it untouched
+  and still prints the codegen, so `init` doubles as a way to re-fetch the snippets.
+
+Explicitly out of scope, deferred or declined (see section 11):
+
+- Merging into or editing an existing `.pre-commit-config.yaml` or CI workflow. The command prints
+  those two artifacts; it never mutates a file the adopting repo owns.
+- Interactive prompts, `--json` output, a `--force` overwrite, a `--config` write-target override,
+  and non-GitHub CI providers.
+- Actually cutting the `v0.1.0` git tag. The snippets pin to a version tag; creating and pushing
+  that tag is a user-performed release step this spec calls out (section 8), not automated here.
+
+## 2. The mutation boundary
+
+game-lattice keeps mutation narrow and deliberate. Today `reconcile` is the only command that
+writes, and it writes surgically. This slice adds the second writing command, and draws its
+boundary just as sharply so the careful-mutation posture is preserved:
+
+- `init` writes exactly one file, `.game-lattice.yml`, and only when it does not already exist. It
+  never overwrites it, never edits it, and never touches any other file on disk.
+- The pre-commit and CI artifacts are codegen: printed to stdout for the user to place, never
+  written. This is why the slice can scaffold a repo it knows nothing about without risking a file
+  the adopter has hand-tuned.
+- The spec's own wording splits the job this way: the config is "scaffolding" (written), the
+  pre-commit and CI are "codegen" (printed). The command honors that split exactly.
+
+## 3. Operating model and command surface
+
+```
+game-lattice init                                # write .game-lattice.yml (if absent), print codegen
+game-lattice init --docs-root design --docs-root lore   # repeatable; sets docs_roots
+game-lattice init --linear-team PC               # bakes linear_team into the written config
+```
+
+There is no `--json`, no `--force`, no `--config`, and no interactive prompt. The command's
+behavior is fully determined by the two flags and whether a config already exists.
+
+Streams are split so a captured run yields only the artifacts:
+
+- stdout carries the two codegen snippets, each under a `#`-comment banner naming its destination
+  file. Emitted with plain `typer.echo` (no rich markup) so the YAML pastes clean and stays valid.
+- stderr carries narration: whether the config was written or skipped, where to paste each snippet,
+  and the tag prerequisite from section 8.
+
+So `game-lattice init > setup.yml` captures exactly the two snippets and nothing else.
+
+## 4. Architecture
+
+The slice extends the existing pure/impure split rather than bending it.
+
+**Pure layer, new module `scaffold.py`** (filesystem-free, beside `render.py` and `reconcile.py`).
+It generates three strings from typed inputs and returns them as a frozen value:
+
+```python
+@dataclass(frozen=True, slots=True)
+class Scaffold:
+    config_text: str       # .game-lattice.yml
+    precommit_text: str    # the repo: local hook snippet
+    ci_text: str           # the GitHub Actions workflow
+
+def build_scaffold(
+    docs_roots: tuple[str, ...], linear_team: str | None, rev: str
+) -> Scaffold: ...
+```
+
+`rev` is injected by the caller, never read inside the module, so `scaffold` stays pure and is
+tested against arbitrary revs. The repository URL is a single module constant
+`GAME_LATTICE_REPO_URL = "https://github.com/Guardantix/game-lattice"` (the SSH remote rewritten to
+the https git form `uvx` needs), referenced by both snippet renderers so the literal is never
+duplicated.
+
+**Impure layer, `init` command in `cli.py`** (the only new disk-touching code). It computes
+`rev = f"v{__version__}"`, builds the scaffold, writes the config when absent through the existing
+`_atomic_write`, and prints the codegen. It follows the same `ProjectError -> exit 2` handling every
+other command uses.
+
+This keeps `scaffold` testable with no I/O, exactly as `render` and `reconcile.reconcile` are.
+
+## 5. Command behavior
+
+1. Resolve inputs: `rev = f"v{__version__}"`; `docs_roots = tuple(--docs-root) or ("docs",)`;
+   `linear_team` from the flag or `None`.
+2. Validate `--docs-root` values syntactically: reject any entry that is absolute or contains a
+   `..` segment, with the same message style `config._resolve_roots` uses. This is a pure,
+   filesystem-free guard so `init` never writes a config guaranteed to fail loading. Full
+   containment resolution still happens later when the config is loaded; this is only the early,
+   obvious-case check.
+3. Build the scaffold (pure).
+4. Config write to `cwd/.game-lattice.yml`:
+   - If it exists: leave it untouched, note the skip on stderr.
+   - If absent: atomic-write `scaffold.config_text`, note the write on stderr.
+5. Print the codegen to stdout: the pre-commit snippet then the CI snippet, each under a `#`-comment
+   banner naming its destination file.
+6. Print placement guidance and the tag caveat (section 8) to stderr.
+7. Exit 0 on success. A `ProjectError` (for example an unwritable directory surfaced as a project
+   error) exits 2, consistent with the other commands. `init` never reports drift, so it never
+   exits 1.
+
+## 6. The three artifacts
+
+### 6.1 `.game-lattice.yml` (written)
+
+The active keys reflect the flags; the remaining optional keys appear as commented examples the
+user can uncomment. With no flags:
+
+```yaml
+# game-lattice configuration. See https://github.com/Guardantix/game-lattice
+docs_roots:
+  - docs
+# ignore_globs:
+#   - "**/superpowers/plans/**"
+# linear_team: my-team-slug
+# binding_layers: null
+```
+
+`--docs-root design --docs-root lore` replaces the `docs_roots` list with `design` and `lore`.
+`--linear-team PC` turns the commented `linear_team` line into an active `linear_team: PC`.
+
+The generated text must round-trip through the real `Config` pydantic model. A test loads the
+generated file through `load_config` and asserts the resulting `Config`, so the template can never
+drift from the schema (`extra="forbid"` would catch a stray key).
+
+### 6.2 pre-commit hook (printed)
+
+Added by the user under `repos:` in their `.pre-commit-config.yaml`:
+
+```yaml
+  - repo: local
+    hooks:
+      - id: game-lattice-check
+        name: game-lattice check
+        entry: uvx --from git+https://github.com/Guardantix/game-lattice@v0.1.0 game-lattice check
+        language: system
+        files: \.md$
+        pass_filenames: false
+```
+
+`language: system` runs the entry as given (it needs `uvx` on PATH, which the uv toolchain
+provides). `files: \.md$` triggers the hook when markdown changes; `pass_filenames: false` because
+`check` evaluates the whole lattice, not the individual changed files.
+
+### 6.3 CI workflow (printed)
+
+Saved by the user as `.github/workflows/game-lattice.yml`:
+
+```yaml
+name: game-lattice
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+jobs:
+  check:
+    name: Traceability check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uvx --from git+https://github.com/Guardantix/game-lattice@v0.1.0 game-lattice check
+```
+
+`check` exits 0 on a clean lattice, 1 on drift, and 2 on a tool error; the job fails on 1 or 2,
+which is exactly the gate this is meant to provide. Only `check` runs. `linear` is deliberately
+excluded from the generated CI: it needs a token and network, which are out of scope for an
+onboarding default.
+
+## 7. Invocation model
+
+Both snippets invoke game-lattice through `uvx --from git+<url>@<rev> game-lattice check`. This is
+zero-install: `uv` fetches and runs the pinned revision on demand, adds no dependency to the
+adopter's project, and works identically in pre-commit and GitHub Actions. It fits because `uv` is
+already the toolchain and there is no PyPI release to install from.
+
+## 8. Versioning prerequisite
+
+The snippets pin `@v{__version__}`, which is `@v0.1.0` for the current version. No release tags
+exist yet, so the generated snippets resolve only once `v0.1.0` is tagged and pushed. This slice
+therefore carries one user-performed companion action, stated here so it is a conscious step rather
+than a surprise:
+
+- Establish the `vX.Y.Z` release-tag convention and push `v0.1.0` (and each subsequent version),
+  so that `uvx --from git+...@vX.Y.Z` resolves for consumers.
+
+The code is version-agnostic: it reads `__version__` and pins `v{__version__}`, so future versions
+need no code change, only the matching tag. The slice documents this expectation with a short note
+in the README or release docs; it does not add release tooling or cut the tag automatically.
+
+## 9. Conventions and invariants
+
+- `scaffold.py` is a pure typed module: no `typing.Any`, no `typing.cast` (it is not a `_parser`
+  boundary module). String building only.
+- The repo URL is centralized as one constant and referenced from every renderer that needs it
+  (both snippets and the config header); no duplicated literal.
+- No `datetime` use: the artifacts carry no timestamps.
+- Module docstring on `scaffold.py`; Google-style docstrings on `build_scaffold` and the `init`
+  command. No em-dashes in docstrings, messages, or comments.
+- Paths: `init` writes the fixed filename `.game-lattice.yml` into the current working directory; it
+  is not a user-provided path, so it does not need `safe_resolve`. The `--docs-root` values are
+  written as text, not resolved at init time; section 5 step 2 gives them a syntactic guard.
+
+## 10. Testing
+
+- `tests/test_scaffold.py` (pure, no I/O):
+  - default `docs_roots` yields `docs` active with the optional keys commented;
+  - `--docs-root` overrides produce the listed roots; `--linear-team` produces an active
+    `linear_team` line;
+  - `rev` is interpolated into both snippets, alongside the repo URL;
+  - the generated `config_text` round-trips through the real `Config` model.
+- `tests/test_cli.py` (extend, using `tmp_path`):
+  - `init` in an empty directory writes `.game-lattice.yml` with the expected content and prints
+    both snippets to stdout, exit 0;
+  - `init` with a config already present does not change the file but still prints both snippets,
+    notes the skip on stderr, exit 0;
+  - `--docs-root` and `--linear-team` bake their values into the written file;
+  - stdout carries both destination banners and the pinned `@v0.1.0`;
+  - an absolute or `..`-bearing `--docs-root` is rejected before any write.
+- `tests/test_conventions.py` stays green (new module obeys the typing-boundary and docstring
+  rules). Coverage stays at or above the existing 80 percent gate.
+
+## 11. Non-goals and deferral map
+
+| Deferred or declined item | Disposition |
+|---|---|
+| Merging into an existing `.pre-commit-config.yaml` or CI workflow | declined; print, never edit a file the adopter owns |
+| Interactive prompts | declined; non-deterministic, fights the offline/CI posture |
+| `--json`, `--force`, `--config` write target | declined; YAGNI for an onboarding command |
+| Non-GitHub CI providers | out of scope; GitHub Actions only, matching this repo |
+| Cutting and pushing the `v0.1.0` tag | user-performed release step (section 8), not automated |
+| Authority-ladder validation, display-prefix lint | still deferred by the local-core map; unrelated to init |
+
+## 12. Acceptance
+
+| Goal | Solved by | Verifiable when |
+|---|---|---|
+| Onboarding a repo | `init` writes a valid config and prints both gate snippets | a fresh directory gains a loadable `.game-lattice.yml` and copy-paste pre-commit and CI in one command |
+| Safe re-run | skip-and-continue on an existing config | re-running `init` never alters a hand-tuned config yet still prints the codegen |
+| Reproducible gate | `uvx ... @v{__version__}` pinning | the generated pre-commit and CI both pin the same version that generated them |
