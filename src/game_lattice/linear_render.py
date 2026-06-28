@@ -87,9 +87,9 @@ def render_findings(console: Console, findings: Sequence[Finding]) -> None:
         color = colors[finding.severity]
         refs = ", ".join(render_safe(ref) for ref in finding.drifted_refs)
         if finding.ticket is not None:
-            detail = f"{render_safe(finding.ticket_ref)} [{render_safe(finding.ticket.state.name)}]"
+            detail = render_safe(f"{finding.ticket_ref} [{finding.ticket.state.name}]")
         else:
-            detail = f"{render_safe(finding.ticket_ref)} ({finding.reason})"
+            detail = render_safe(f"{finding.ticket_ref} ({finding.reason})")
         console.print(
             f"[{color}]{finding.severity:<8}[/{color}] "
             f"{render_safe(finding.node_id)}  {detail}  drift: {refs}"

@@ -83,3 +83,30 @@ def test_render_table_escapes_and_shows_severity():
     assert "DANGER" in out
     assert "\x1b" not in out  # control byte stripped
     assert "node[/]" in out  # markup-escaped, rendered literally
+
+
+def test_render_does_not_let_state_name_inject_markup():
+    ticket = Ticket(
+        identifier="PC-1",
+        title="t",
+        url="https://x/PC-1",
+        state=TicketState(name="bold red", type="completed"),  # a real rich style
+        parent=None,
+        children=(),
+    )
+    finding = Finding(
+        severity="DANGER",
+        node_id="n",
+        node_title=None,
+        node_path=Path("docs/x.md"),
+        drifted_refs=("a#b",),
+        ticket_ref="PC-1",
+        reason=None,
+        ticket=ticket,
+    )
+    output = io.StringIO()
+    console = Console(file=output, width=200)
+    render_findings(console, [finding])
+    out = output.getvalue()
+    assert "[bold red]" in out  # rendered literally, not consumed as a style tag
+    assert "bold red" in out  # the state-name text is not lost
