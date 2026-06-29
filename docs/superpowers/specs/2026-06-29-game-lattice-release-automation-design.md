@@ -162,7 +162,11 @@ Steps, in order:
 3. **Re-assert version sync.** Run `scripts/check_version_sync.py` again. Defense in depth; the
    `code-quality` job already ran it on this commit, but the release job must not tag on drift.
 4. **Gating smoke against the commit SHA.** Run `uvx --python 3.14 --from git+<repo>@${{ github.sha }}`
-   for each of `check`, `lint`, and `init` (the last in a scratch directory). Because the merge commit
+   for each of `check`, `lint`, and `init`. `check` and `lint` run against a checked-in hermetic
+   fixture (`tests/fixtures/release-smoke/.game-lattice.yml`, a clean edge-free lattice) via `--config`,
+   not the repository's own `docs/`, so the smoke proves the commands install and run without coupling
+   release success to the state of this repo's real lattice (a future STALE or BROKEN edge under
+   `docs/` must not redden every release). `init` runs in a scratch directory. Because the merge commit
    is already public on `main`, this proves the exact commit installs and all three subcommands run
    *before any tag exists*. If it fails, the job fails and no tag is created.
 5. **Create and push the tag.** A lightweight `vX.Y.Z` at `github.sha`, matching the `RELEASING.md`

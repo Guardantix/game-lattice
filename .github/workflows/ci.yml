@@ -97,8 +97,9 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         run: |
           ref="git+https://github.com/Guardantix/game-lattice@${{ github.sha }}"
-          uvx --python 3.14 --from "${ref}" game-lattice check
-          uvx --python 3.14 --from "${ref}" game-lattice lint
+          fixture="tests/fixtures/release-smoke/.game-lattice.yml"
+          uvx --python 3.14 --from "${ref}" game-lattice check --config "${fixture}"
+          uvx --python 3.14 --from "${ref}" game-lattice lint --config "${fixture}"
           workdir="$(mktemp -d)"
           ( cd "${workdir}" && uvx --python 3.14 --from "${ref}" game-lattice init )
 
