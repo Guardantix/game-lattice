@@ -21,6 +21,7 @@ jobs:
       - run: uv run --no-sync ruff format --check src/ tests/
       - run: uv run --no-sync ty check src/
       - run: uv run --no-sync python scripts/check_typing_boundaries.py src/
+      - run: uv run --no-sync python scripts/check_version_sync.py
 
   # --- semgrep start ---
   security-scan:
