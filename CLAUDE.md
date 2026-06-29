@@ -33,12 +33,12 @@ lands; if a hook auto-fixes a file, re-stage and re-commit.
 
 ## Architecture
 
-The engine is a pure pipeline feeding five lattice-reading commands; `linear` adds a network
+The engine is a pure pipeline feeding six lattice-reading commands; `linear` adds a network
 fetch of ticket status on top of the loaded lattice, and `init` is a separate scaffolding command
 that writes `.game-lattice.yml` without loading the lattice at all:
 
 ```
-config -> discovery -> frontmatter parse -> loader.build_lattice -> { check, impact, reconcile, graph, linear }
+config -> discovery -> frontmatter parse -> loader.build_lattice -> { check, impact, reconcile, graph, lint, linear }
 ```
 
 `orchestrate.load_lattice(project)` is the single wiring point that runs that pipeline.
