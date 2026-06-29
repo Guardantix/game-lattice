@@ -70,11 +70,14 @@ def _graph_edges(
             location = lattice.index.get(edge.target_id)
             if location is None:
                 continue
-            upstream = lattice.file_id_by_path.get(location.path, edge.target_id)
+            # Every index location path belongs to a tracked node, so this lookup always hits.
+            upstream = lattice.file_id_by_path[location.path]
             is_stale = (source_id, edge.target_id) in stale_edges
             key = (upstream, source_id)
             collapsed[key] = collapsed.get(key, False) or is_stale
-    return sorted((up, src, stale) for (up, src), stale in collapsed.items())
+    return sorted(
+        (upstream, source_id, is_stale) for (upstream, source_id), is_stale in collapsed.items()
+    )
 
 
 def to_mermaid(lattice: Lattice, stale_edges: set[tuple[str, str]]) -> str:
