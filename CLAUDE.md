@@ -24,10 +24,10 @@ uv run --group dev ruff check src tests   # lint
 uv run --group dev ruff format src tests  # format (add --check to verify only)
 uv run --group dev ty check src           # type check
 uv run --group dev python scripts/check_typing_boundaries.py src           # boundary rule check
+uv run --group dev python scripts/check_version_sync.py    # version-consistency guard
 ```
 
-A pre-commit hook runs ruff (with `--fix`), ruff-format, `ty`, the typing-boundary check, and
-detect-secrets on every commit, and blocks direct commits to `main`.
+A pre-commit hook runs ruff (with `--fix`), ruff-format, `ty`, the typing-boundary check, the version-sync check, and detect-secrets on every commit, and blocks direct commits to `main`.
 A commit that fails any of these is rejected, so code must be lint/type/boundary clean before it
 lands; if a hook auto-fixes a file, re-stage and re-commit.
 
@@ -96,7 +96,8 @@ release tag. Spec: `docs/superpowers/specs/2026-06-28-game-lattice-init-design.m
 **Pure vs impure split.** All graph and report logic is pure and filesystem-free: `model`,
 `hashing`, `sections`, `resolve`, `loader`, `check`, `lint`, `impact`, `render`, `reconcile.reconcile`/
 `apply_reconcile` (which returns rewritten text rather than writing it), plus the linear pure core
-(`tickets`, `linear_query`, `stale_shipped`, `linear_render`) and `scaffold`. The untyped-to-typed
+(`tickets`, `linear_query`, `stale_shipped`, `linear_render`), `scaffold`, and the release
+version-consistency core `version_check`. The untyped-to-typed
 boundary modules are `frontmatter_parser` and `linear_parser`. Only `config`, `discovery`,
 `orchestrate`, and `cli` touch the disk (`cli` performs the reconcile and init writes); `linear_fetch`
 is impure wiring and `linear_client` is the only module that touches the network. This is what lets
@@ -122,6 +123,11 @@ violation fails CI rather than just being a style preference:
   `config` (docs roots) and `discovery` (each discovered file) reject any path that escapes the
   project root via `..`, an absolute path, or a symlink, before any read or write.
 - **No `datetime.now()`/`utcnow()` outside `datetime_utils.py`.**
+- **Version sync.** `__version__` (`src/game_lattice/__init__.py`), the `pyproject.toml` `version`,
+  and the top `## [X.Y.Z]` `CHANGELOG.md` heading must agree. The pure core is `version_check.py`;
+  `scripts/check_version_sync.py` wraps it and runs in pre-commit and CI. On merge to `main` the
+  `release` job in `.github/workflows/ci.yml` verifies sync, smoke-tests the commit, and cuts the
+  lightweight `vX.Y.Z` tag. Release flow: `RELEASING.md`.
 - ruff line length 100; module docstring on every module; Google-style docstrings on public
   functions; no em-dashes in any drafted content (docstrings, messages, comments).
 

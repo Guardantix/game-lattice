@@ -21,6 +21,7 @@ jobs:
       - run: uv run --no-sync ruff format --check src/ tests/
       - run: uv run --no-sync ty check src/
       - run: uv run --no-sync python scripts/check_typing_boundaries.py src/
+      - run: uv run --no-sync python scripts/check_version_sync.py
 
   # --- semgrep start ---
   security-scan:
@@ -44,3 +45,76 @@ jobs:
       - run: uv python install 3.14
       - run: uv sync --locked --group dev
       - run: uv run --no-sync pytest
+
+  release:
+    name: Release
+    needs: [code-quality, tests, security-scan]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv python install 3.14
+      - run: uv sync --locked --group dev
+
+      - name: Determine target tag
+        id: target
+        run: |
+          version="$(uv run --no-sync python -c 'import game_lattice; print(game_lattice.__version__)')"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Tag-health gate
+        id: gate
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
+          VERSION: ${{ steps.target.outputs.version }}
+        run: |
+          git fetch --tags --force
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            tagged="$(git show "${TAG}:src/game_lattice/__init__.py" | sed -n 's/^__version__ = "\(.*\)"/\1/p')"
+            if [ "${tagged}" = "${VERSION}" ]; then
+              echo "Tag ${TAG} already exists at version ${VERSION}; no-op."
+              echo "proceed=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "::error::Tag ${TAG} exists but points at version '${tagged}', not ${VERSION}."
+              exit 1
+            fi
+          else
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Re-assert version sync
+        if: steps.gate.outputs.proceed == 'true'
+        run: uv run --no-sync python scripts/check_version_sync.py
+
+      - name: Smoke-test the commit
+        if: steps.gate.outputs.proceed == 'true'
+        run: |
+          ref="git+https://github.com/Guardantix/game-lattice@${GITHUB_SHA}"
+          fixture="tests/fixtures/release-smoke/.game-lattice.yml"
+          uvx --python 3.14 --from "${ref}" game-lattice check --config "${fixture}"
+          uvx --python 3.14 --from "${ref}" game-lattice lint --config "${fixture}"
+          workdir="$(mktemp -d)"
+          ( cd "${workdir}" && uvx --python 3.14 --from "${ref}" game-lattice init )
+
+      - name: Create and push the tag
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          git tag "${TAG}" "${GITHUB_SHA}"
+          git push origin "${TAG}"
+
+      - name: Confirm pinned ref resolves
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          uvx --python 3.14 --from "git+https://github.com/Guardantix/game-lattice@${TAG}" game-lattice --version
