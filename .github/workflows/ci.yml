@@ -45,3 +45,72 @@ jobs:
       - run: uv python install 3.14
       - run: uv sync --locked --group dev
       - run: uv run --no-sync pytest
+
+  release:
+    name: Release
+    needs: [code-quality, tests, security-scan]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv python install 3.14
+      - run: uv sync --locked --group dev
+
+      - name: Determine target tag
+        id: target
+        run: |
+          version="$(uv run --no-sync python -c 'import game_lattice; print(game_lattice.__version__)')"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Tag-health gate
+        id: gate
+        run: |
+          tag='${{ steps.target.outputs.tag }}'
+          version='${{ steps.target.outputs.version }}'
+          git fetch --tags --force
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            tagged="$(git show "${tag}:src/game_lattice/__init__.py" | sed -n 's/^__version__ = "\(.*\)"/\1/p')"
+            if [ "${tagged}" = "${version}" ]; then
+              echo "Tag ${tag} already exists at version ${version}; no-op."
+              echo "proceed=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "::error::Tag ${tag} exists but points at version '${tagged}', not ${version}."
+              exit 1
+            fi
+          else
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Re-assert version sync
+        if: steps.gate.outputs.proceed == 'true'
+        run: uv run --no-sync python scripts/check_version_sync.py
+
+      - name: Smoke-test the commit
+        if: steps.gate.outputs.proceed == 'true'
+        run: |
+          ref="git+https://github.com/Guardantix/game-lattice@${{ github.sha }}"
+          uvx --python 3.14 --from "${ref}" game-lattice check
+          uvx --python 3.14 --from "${ref}" game-lattice lint
+          workdir="$(mktemp -d)"
+          ( cd "${workdir}" && uvx --python 3.14 --from "${ref}" game-lattice init )
+
+      - name: Create and push the tag
+        if: steps.gate.outputs.proceed == 'true'
+        run: |
+          tag='${{ steps.target.outputs.tag }}'
+          git tag "${tag}" '${{ github.sha }}'
+          git push origin "${tag}"
+
+      - name: Confirm pinned ref resolves
+        if: steps.gate.outputs.proceed == 'true'
+        run: |
+          tag='${{ steps.target.outputs.tag }}'
+          uvx --python 3.14 --from "git+https://github.com/Guardantix/game-lattice@${tag}" game-lattice --version
