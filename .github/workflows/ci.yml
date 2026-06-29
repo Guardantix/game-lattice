@@ -106,7 +106,7 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         run: |
           tag='${{ steps.target.outputs.tag }}'
-          git tag "${tag}" '${{ github.sha }}'
+          git tag "${tag}" "${{ github.sha }}"
           git push origin "${tag}"
 
       - name: Confirm pinned ref resolves

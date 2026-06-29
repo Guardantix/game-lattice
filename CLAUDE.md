@@ -27,8 +27,7 @@ uv run --group dev python scripts/check_typing_boundaries.py src           # bou
 uv run --group dev python scripts/check_version_sync.py    # version-consistency guard
 ```
 
-A pre-commit hook runs ruff (with `--fix`), ruff-format, `ty`, the typing-boundary check, and
-detect-secrets on every commit, and blocks direct commits to `main`.
+A pre-commit hook runs ruff (with `--fix`), ruff-format, `ty`, the typing-boundary check, the version-sync check, and detect-secrets on every commit, and blocks direct commits to `main`.
 A commit that fails any of these is rejected, so code must be lint/type/boundary clean before it
 lands; if a hook auto-fixes a file, re-stage and re-commit.
 

@@ -44,6 +44,13 @@ def test_missing_pyproject_version_is_a_mismatch():
     assert "pyproject.toml" in messages[0]
 
 
+def test_pyproject_without_project_table_is_a_mismatch():
+    pyproject = 'name = "game-lattice"\nversion = "0.4.0"\n'  # no [project] table
+    messages = check_version_consistency("0.4.0", pyproject, _CHANGELOG)
+    assert len(messages) == 1
+    assert "pyproject.toml" in messages[0]
+
+
 def test_malformed_pyproject_is_a_mismatch_not_an_error():
     pyproject = "[project"  # unterminated table header, invalid TOML
     messages = check_version_consistency("0.4.0", pyproject, _CHANGELOG)
