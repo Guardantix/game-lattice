@@ -72,17 +72,18 @@ jobs:
 
       - name: Tag-health gate
         id: gate
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
+          VERSION: ${{ steps.target.outputs.version }}
         run: |
-          tag='${{ steps.target.outputs.tag }}'
-          version='${{ steps.target.outputs.version }}'
           git fetch --tags --force
-          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
-            tagged="$(git show "${tag}:src/game_lattice/__init__.py" | sed -n 's/^__version__ = "\(.*\)"/\1/p')"
-            if [ "${tagged}" = "${version}" ]; then
-              echo "Tag ${tag} already exists at version ${version}; no-op."
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            tagged="$(git show "${TAG}:src/game_lattice/__init__.py" | sed -n 's/^__version__ = "\(.*\)"/\1/p')"
+            if [ "${tagged}" = "${VERSION}" ]; then
+              echo "Tag ${TAG} already exists at version ${VERSION}; no-op."
               echo "proceed=false" >> "$GITHUB_OUTPUT"
             else
-              echo "::error::Tag ${tag} exists but points at version '${tagged}', not ${version}."
+              echo "::error::Tag ${TAG} exists but points at version '${tagged}', not ${VERSION}."
               exit 1
             fi
           else
@@ -96,7 +97,7 @@ jobs:
       - name: Smoke-test the commit
         if: steps.gate.outputs.proceed == 'true'
         run: |
-          ref="git+https://github.com/Guardantix/game-lattice@${{ github.sha }}"
+          ref="git+https://github.com/Guardantix/game-lattice@${GITHUB_SHA}"
           fixture="tests/fixtures/release-smoke/.game-lattice.yml"
           uvx --python 3.14 --from "${ref}" game-lattice check --config "${fixture}"
           uvx --python 3.14 --from "${ref}" game-lattice lint --config "${fixture}"
@@ -105,13 +106,15 @@ jobs:
 
       - name: Create and push the tag
         if: steps.gate.outputs.proceed == 'true'
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
         run: |
-          tag='${{ steps.target.outputs.tag }}'
-          git tag "${tag}" "${{ github.sha }}"
-          git push origin "${tag}"
+          git tag "${TAG}" "${GITHUB_SHA}"
+          git push origin "${TAG}"
 
       - name: Confirm pinned ref resolves
         if: steps.gate.outputs.proceed == 'true'
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
         run: |
-          tag='${{ steps.target.outputs.tag }}'
-          uvx --python 3.14 --from "git+https://github.com/Guardantix/game-lattice@${tag}" game-lattice --version
+          uvx --python 3.14 --from "git+https://github.com/Guardantix/game-lattice@${TAG}" game-lattice --version

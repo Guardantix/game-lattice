@@ -227,6 +227,10 @@ The only state the job creates is the tag, and only on the green path past the S
   under pre-commit and CI.
 - The release job pins `--python 3.14` in every `uvx` call, matching the CI matrix and the
   `RELEASING.md` smoke command.
+- The release job never interpolates a `${{ }}` expression directly into a `run:` script. Step
+  outputs (`steps.target.outputs.tag`/`version`) are passed in through an `env:` mapping and read as
+  `"$TAG"` / `"$VERSION"`, and the commit is the built-in `$GITHUB_SHA`. So a value cannot break out
+  of the shell context, making the post-merge job's injection safety structural rather than incidental.
 
 ## 11. Testing
 
