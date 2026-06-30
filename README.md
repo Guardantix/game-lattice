@@ -51,9 +51,11 @@ is out of date."
 | **UNRECONCILED** | The edge has no `seen` yet. The dependency was declared but never acknowledged. |
 | **BROKEN** | The ref points at an id that no longer exists. |
 
-The content hash is `sha256` of a *canonicalized* copy of the text (line endings, trailing
-whitespace, and edge blank lines stripped), truncated to 128 bits. Reflowing whitespace or
-fixing line endings therefore never trips drift; only a substantive content change does.
+The content hash is `sha256` of a *canonicalized* copy of the text, truncated to 128 bits.
+Canonicalization normalizes line endings, strips trailing whitespace per line, and trims
+leading and trailing blank lines, so those cosmetic edits never trip drift. Internal
+whitespace is preserved, so rewrapping a paragraph (which moves its line breaks) does count
+as a change.
 
 ### A broken ref is a state, not a crash
 
@@ -220,7 +222,7 @@ docs_roots:
 # ignore_globs:           # paths to skip within those roots
 #   - "**/superpowers/plans/**"
 # linear_team: ENG        # the Linear team the `linear` query targets
-# binding_layers: null    # layers treated as binding-authority for lint
+# binding_layers: null    # reserved; accepted in config but not yet consulted by lint
 ```
 
 All `docs_roots` must resolve inside the project root; an entry that escapes via `..`, an
