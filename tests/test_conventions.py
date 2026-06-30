@@ -5,7 +5,7 @@ import inspect
 from pathlib import Path
 
 from game_lattice import error_types
-from game_lattice.constants import VALID_AUTHORITIES
+from game_lattice.constants import VALID_AUTHORITIES, VALID_STATUSES
 from game_lattice.error_types import ProjectError
 
 SRC_DIR = Path(__file__).parent.parent / "src" / "game_lattice"
@@ -89,9 +89,22 @@ def test_no_raw_authority_strings():
             assert f"'{value}'" not in content, f"{py_file.name} inlines authority '{value}'"
 
 
+def test_no_raw_status_strings():
+    """Status values must be imported from constants.py, not inlined as raw literals."""
+    for py_file in _source_files():
+        if py_file.name == "constants.py":
+            continue
+        content = py_file.read_text(encoding="utf-8")
+        for value in sorted(VALID_STATUSES):
+            assert f'"{value}"' not in content, f"{py_file.name} inlines status '{value}'"
+            assert f"'{value}'" not in content, f"{py_file.name} inlines status '{value}'"
+
+
 def test_no_em_dashes_in_source():
     """Em-dash (U+2014) is banned in src docstrings, messages, and comments."""
-    em_dash = "\\u2014"  # escape keeps this test file itself em-dash-free
+    em_dash = chr(0x2014)  # build the real char at runtime; keeps this file's own source ASCII
+    assert len(em_dash) == 1  # guard: a single real char, not the literal 6-char escape string
+    assert ord(em_dash) == 0x2014  # and it is specifically U+2014
     for py_file in _source_files():
         assert em_dash not in py_file.read_text(encoding="utf-8"), f"{py_file.name} has an em-dash"
 

@@ -277,8 +277,9 @@ def test_finding_carries_node_title_and_path():
     assert f.node_path == Path("docs/down.md")
 
 
-# State types that grade into a finding; the rest (terminal) are dropped.
-_GRADED_STATES = {"completed", "started", "unstarted", "backlog"}
+# State types that grade into a finding; the rest (terminal) are dropped. Derived from the
+# source-of-truth severity map so adding/removing a graded state cannot desync this test.
+_GRADED_STATES = set(_STATE_SEVERITY)
 
 
 @given(
