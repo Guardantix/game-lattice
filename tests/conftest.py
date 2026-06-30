@@ -1,8 +1,15 @@
 """Shared test fixtures."""
 
+import os
 from pathlib import Path
 
 import pytest
+
+# Strip FORCE_COLOR before any source module is imported. cli.py builds module-level rich Consoles
+# at import time, so a color-forcing dev shell (FORCE_COLOR set) would make them emit ANSI escapes
+# that break contiguous-substring assertions on human output. CI runs without FORCE_COLOR; this
+# just matches the CI environment. Runs at conftest import, ahead of test modules importing cli.py.
+os.environ.pop("FORCE_COLOR", None)
 
 
 @pytest.fixture
