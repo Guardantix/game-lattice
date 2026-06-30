@@ -113,10 +113,8 @@ violation fails CI rather than just being a style preference:
   `adapter`, `parser`, `validator`, `external`, or `inbound`, or ends with one of those words
   prefixed by `_` (for example `frontmatter_parser`) (or sits under a directory of that
   name). The real engine boundaries are `frontmatter_parser.py` (raw YAML to `NodeMeta`) and
-  `linear_parser.py` (Linear JSON to `Ticket`). `io_boundary.py` matches the rule and uses `Any` as
-  well, but is leftover example scaffolding from the project template, not wired into the engine.
-  Likewise `path_utils.normalize_path` and `path_utils.ensure_dir` are unused template leftovers;
-  only `safe_resolve` is wired in (by `config` and `discovery`).
+  `linear_parser.py` (Linear JSON to `Ticket`). In `path_utils.py`, only `safe_resolve` is wired in
+  (by `config` and `discovery`).
   Everywhere else, convert at the boundary and pass typed models.
 - **Errors.** All custom exceptions extend `ProjectError` (error_types.py) and carry a `code`; no
   bare `except Exception`/`except BaseException`. Messages name the file and the fix.

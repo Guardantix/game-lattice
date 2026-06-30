@@ -2,19 +2,7 @@
 
 import pytest
 
-from game_lattice.path_utils import ensure_dir, normalize_path, safe_resolve
-
-
-def test_normalize_path_resolves(tmp_path):
-    p = normalize_path(tmp_path / "subdir" / ".." / "file.txt")
-    assert ".." not in str(p)
-
-
-def test_ensure_dir_creates(tmp_path):
-    target = tmp_path / "a" / "b"
-    result = ensure_dir(target)
-    assert target.exists()
-    assert result == target
+from game_lattice.path_utils import safe_resolve
 
 
 def test_safe_resolve_within_root(tmp_path):
