@@ -51,8 +51,11 @@ Explicitly out of scope, deferred, or declined (see section 11):
 - Full inline-markdown rendering before slugging. `github_slug` operates on raw heading source text,
   which matches GitHub for plain-text headings (the norm) but can diverge for headings with inline
   links, images, or complex markup. Those keep the marker escape hatch (section 3).
-- Any new command, network call, or change to `check`/`reconcile`/`graph`/`linear`/`init`/`lint`
-  behavior beyond re-typing the resolved id they already consume.
+- Any new command, network call, or change to `check`/`reconcile`/`graph`/`init`/`lint` behavior
+  beyond re-typing the resolved id they already consume. The `linear` slice is a deliberate
+  exception: its `stale_shipped` trigger builders join `expand_targets` and `anchors_by_path` against
+  node ids, so they need active `TargetId` bridging, not passive re-typing (section 6), and are in
+  scope as a behavior-preserving change.
 - Preserving bare-anchor resolution. A bare ref now resolves only to a file id; a bare anchor that is
   not a file id becomes a normal `BROKEN` edge (section 5).
 
@@ -220,6 +223,7 @@ fails frontmatter validation (exit 2) and names the file.
 - **resolve.py** re-types `target_content(lattice, target_id: TargetId)`; the `index.get` and `section_text` calls are otherwise unchanged. `node_for_path` is unchanged.
 - **check.py** re-types `EdgeStatus.target_id` to `TargetId | None`; `_classify` reads `edge.target_id` as before.
 - **impact.py** parses the token with `parse_ref`, walks with `TargetId`, and bridges a walked source node id back to its file target via `TargetId(source_id)` when continuing the walk. `expand_targets` returns `set[TargetId]`.
+- **stale_shipped.py** (the `linear` trigger builders) needs active `TargetId` bridging, not passive re-typing, because it joins `expand_targets`/`anchors_by_path` against node ids. Two call sites break silently otherwise. In `build_audit_trigger`, the filter `tid in lattice.nodes_by_id` over `expand_targets` goes always-False once `tid` is a `TargetId` (the map is string-keyed), so the deliberate add-back of the target's own node is lost and a scoped `linear <target>` audit drops that node's own STALE-shipped tickets; the fix bridges file targets to node ids, for example `{tid.file_id for tid in expand_targets(lattice, target) if tid.anchor is None and tid.file_id in lattice.nodes_by_id}`. In `build_from_trigger`, `closure` becomes `set[TargetId]` and the affected-node add must be `closure.add(TargetId(node.id))`, not the bare string, or an edge deriving from a whole downstream file fails the `edge.target_id in closure` test and `linear --from` under-reports its justifying refs. Trigger-dict keys stay node-id strings and `Finding.drifted_refs` stay raw `target_ref` strings (grouping and display, unaffected).
 - **render.py** `_graph_edges` reads `edge.target_id` as a `TargetId`; `stale_edges` becomes `set[tuple[str, TargetId]]`. Node ids in the rendered graph stay file-id strings.
 - **reconcile.py** compares edges with `parse_ref(edge.target_ref) != parse_ref(ref)` (`TargetId` equality). The rewrite plan still keys on the literal `target_ref` string, so `apply_reconcile` is unchanged.
 - **lint.py** re-types `LadderViolation.target_id` and `SkippedEdge.target_id` to `TargetId`; `_target_authority(lattice, target_id: TargetId)` looks up the index as before.
@@ -284,6 +288,12 @@ Test files mirror sources. New and updated coverage:
 - **Downstream layers**: `impact`, `render`, and `reconcile` behave under file-scoped anchors; the
   `check --json` and `lint --json` `target_id` field emits the scoped ref form; marker removal is
   hash-neutral.
+- **Linear trigger builders**: `stale_shipped.build_audit_trigger` and `build_from_trigger` under
+  file-scoped `TargetId`. A scoped `linear <target>` audit still grades the target node's own
+  STALE-shipped tickets (the `build_audit_trigger` add-back), and `linear --from` still reports
+  justifying refs for edges that derive from a whole downstream file (the `build_from_trigger`
+  closure). Both are exercised with file-target and section-target edges, since the file-target path
+  is exactly where the bridge is load-bearing and where a naive re-type under-reports.
 - **Fixture**: `tests/conftest.py`'s `lattice_dir` is updated so its STALE, UNRECONCILED, and BROKEN
   edges keep the same states under file-scoped resolution, since those states are load-bearing across
   the check, reconcile, and CLI suites. The `FORCE_COLOR` scrubbing already in `conftest` is untouched.
@@ -312,5 +322,8 @@ Test files mirror sources. New and updated coverage:
 - A bare anchor ref that is not a file id reports `BROKEN`, not a load failure.
 - `check`, `impact`, `reconcile`, `graph`, `lint`, and `linear` all read the file-scoped `TargetId`
   correctly, and the two `--json` surfaces emit the scoped ref form.
+- A scoped `linear <target>` audit grades the target node's own stale-shipped tickets, and
+  `linear --from` reports every justifying ref including whole-file derivations; neither
+  under-reports after the `TargetId` migration.
 - Full suite green with coverage at or above the enforced 80 percent; ruff, `ty`, the typing-boundary
   check, and the version-sync guard all clean.
