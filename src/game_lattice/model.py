@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .constants import Authority, Layer, LocationKind
 
@@ -19,6 +19,43 @@ def split_ref(ref: str) -> str:
         The trailing id after the last ``#``; the namespace prefix is display-only.
     """
     return ref.rsplit("#", 1)[-1]
+
+
+@dataclass(frozen=True, slots=True)
+class TargetId:
+    """A resolved target: a whole file, or a file-scoped section anchor.
+
+    ``anchor`` is None for a whole-file target; otherwise it names a section inside
+    ``file_id``. The two halves are separate fields, so a file target and a section target
+    can never be confused and the ``#`` separator is not overloaded inside a key.
+    """
+
+    file_id: str
+    anchor: str | None = None
+
+    def as_ref(self) -> str:
+        """Return the canonical ref string: ``file`` or ``file#anchor``."""
+        return self.file_id if self.anchor is None else f"{self.file_id}#{self.anchor}"
+
+
+def parse_ref(ref: str) -> TargetId:
+    """Parse a derives_from ref into a file-scoped TargetId.
+
+    A ref containing ``#`` is a section ref: it splits on the last ``#`` into a file id and
+    an anchor. A bare ref is a whole-file target. Parsing never consults the index and never
+    fails; whether the TargetId actually resolves is decided by index membership in
+    ``Edge.resolve``.
+
+    Args:
+        ref: A derives_from ref as written (``save-format#slot-table`` or ``save-format``).
+
+    Returns:
+        The TargetId the ref names.
+    """
+    if "#" in ref:
+        file_id, anchor = ref.rsplit("#", 1)
+        return TargetId(file_id, anchor)
+    return TargetId(ref)
 
 
 class RawEdge(BaseModel):
@@ -41,6 +78,18 @@ class NodeMeta(BaseModel):
     authority: Authority | None = None
     derives_from: list[RawEdge] = Field(default_factory=list)
     tickets: list[str] = Field(default_factory=list)
+
+    @field_validator("id")
+    @classmethod
+    def _id_has_no_hash(cls, value: str) -> str:
+        """Reject a ``#`` in a node id; it separates a file id from a section anchor in a ref."""
+        if "#" in value:
+            msg = (
+                f"node id {value!r} must not contain '#'; "
+                "'#' separates a file id from a section anchor"
+            )
+            raise ValueError(msg)
+        return value
 
 
 @dataclass(frozen=True, slots=True)

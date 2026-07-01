@@ -15,6 +15,8 @@ from game_lattice.model import (
     NodeMeta,
     ParsedDoc,
     RawEdge,
+    TargetId,
+    parse_ref,
     split_ref,
 )
 
@@ -143,3 +145,33 @@ def test_lattice_holds_maps():
     assert lat.nodes_by_id["x"].id == "x"
     assert lat.file_id_by_path[Path("x.md")] == "x"
     assert ParsedDoc(path=Path("x.md"), meta=NodeMeta(id="x"), body="").meta.id == "x"
+
+
+def test_parse_ref_namespaced_is_file_scoped():
+    assert parse_ref("art-direction#accent") == TargetId("art-direction", "accent")
+
+
+def test_parse_ref_bare_is_a_file_id():
+    assert parse_ref("accent") == TargetId("accent")
+    assert parse_ref("accent").anchor is None
+
+
+def test_parse_ref_splits_on_last_hash():
+    assert parse_ref("a#b#c") == TargetId("a#b", "c")
+
+
+def test_target_id_as_ref_roundtrips():
+    assert TargetId("save-format", "slot-table").as_ref() == "save-format#slot-table"
+    assert TargetId("save-format").as_ref() == "save-format"
+
+
+def test_target_id_is_hashable_and_frozen():
+    tid = TargetId("f", "a")
+    assert tid in {TargetId("f", "a")}  # hashable, value-equal
+    with pytest.raises(AttributeError):
+        tid.anchor = "b"  # ty: ignore[invalid-assignment]
+
+
+def test_nodemeta_rejects_hash_in_id():
+    with pytest.raises(PydanticValidationError):
+        NodeMeta.model_validate({"id": "a#b"})
