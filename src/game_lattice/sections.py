@@ -11,6 +11,12 @@ from dataclasses import dataclass
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
 _ANCHOR_RE = re.compile(r"\s*\{#([A-Za-z0-9][A-Za-z0-9_-]*)\}\s*")
 _FENCE_RE = re.compile(r"^ {0,3}(?P<ticks>`{3,}|~{3,})(?P<info>.*)$")
+# Characters github-slugger strips: everything that is not a word char (Unicode letters,
+# digits, underscore), a hyphen, or a space. Spaces are turned into hyphens afterward. This
+# reproduces github-slugger's slug output for plain-text and emoji headings, which is what
+# GitHub renders as a heading anchor; a heading with inline markup (links, images) whose
+# rendered text differs from its source keeps an explicit {#marker} escape hatch.
+_SLUG_STRIP_RE = re.compile(r"[^\w\- ]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,3 +135,63 @@ def section_text(body: str, span: tuple[int, int]) -> str:
     if chunk:
         chunk[0] = _ANCHOR_RE.sub(" ", chunk[0]).rstrip()
     return "\n".join(chunk)
+
+
+def github_slug(text: str) -> str:
+    """Return the github-slugger slug of a heading's text (without de-duping).
+
+    Lowercases the text, strips punctuation, symbols, and emoji, then turns each space into
+    a hyphen. Runs are not collapsed, matching github-slugger: two spaces become two hyphens.
+    De-duping across a document is handled by ``anchor_ids``.
+
+    Args:
+        text: One heading's text (the marker, if any, is part of the text and is slugged).
+
+    Returns:
+        The lowercase, punctuation-stripped, hyphen-joined slug.
+    """
+    return _SLUG_STRIP_RE.sub("", text.lower()).replace(" ", "-")
+
+
+class _Slugger:
+    """Document-order slug de-duper mirroring github-slugger's occurrence counter.
+
+    The first time a base slug appears it is emitted and reserved; each later appearance is
+    suffixed ``-1``, ``-2``, and so on, and every emitted result is reserved so a later
+    identical base cannot reuse it.
+    """
+
+    def __init__(self) -> None:
+        self._seen: dict[str, int] = {}
+
+    def slug(self, text: str) -> str:
+        """Return the unique slug for ``text`` given every slug emitted so far."""
+        base = github_slug(text)
+        result = base
+        while result in self._seen:
+            self._seen[base] += 1
+            result = f"{base}-{self._seen[base]}"
+        self._seen[result] = 0
+        return result
+
+
+def anchor_ids(headings: list[Heading]) -> list[str]:
+    """Return one addressable anchor id per heading, in document order.
+
+    A heading with an explicit ``{#marker}`` is addressed by its marker; every other heading
+    is addressed by its de-duped GitHub slug. Every heading (marker or not) reserves its
+    GitHub slug in the shared counter, so the markerless headings around a marker heading are
+    suffixed exactly as GitHub would suffix them.
+
+    Args:
+        headings: The document TOC from ``build_toc``, in document order.
+
+    Returns:
+        A list of anchor ids positionally aligned with ``headings``.
+    """
+    slugger = _Slugger()
+    ids: list[str] = []
+    for heading in headings:
+        unique = slugger.slug(heading.text)
+        ids.append(heading.anchor if heading.anchor is not None else unique)
+    return ids
