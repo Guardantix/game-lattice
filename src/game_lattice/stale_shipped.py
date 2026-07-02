@@ -73,7 +73,9 @@ def build_from_trigger(lattice: Lattice, from_id: str) -> dict[str, tuple[str, .
         # An affected node's whole file is in the closure; use its file target, not the bare
         # node id, so an edge deriving from the whole file matches `edge.target_id in closure`.
         closure.add(TargetId(node.id))
-        closure |= lattice.anchors_by_path.get(node.path, frozenset())
+        # An affected node's path is a tracked node, so it keys anchors_by_path by
+        # construction; index direct to fail loud on an incoherent index.
+        closure |= lattice.anchors_by_path[node.path]
     trigger: dict[str, tuple[str, ...]] = {}
     for node in affected:
         refs = tuple(edge.target_ref for edge in node.derives_from if edge.target_id in closure)

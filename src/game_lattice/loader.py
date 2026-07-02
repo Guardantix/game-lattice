@@ -2,14 +2,10 @@
 
 import warnings
 from collections import defaultdict
-from typing import TYPE_CHECKING
 
 from .error_types import DuplicateIdError
 from .model import Edge, Lattice, Location, Node, ParsedDoc, TargetId, parse_ref
 from .sections import Heading, anchor_ids, build_toc, section_span, split_body_lines
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def build_lattice(docs: list[ParsedDoc]) -> Lattice:
@@ -75,7 +71,7 @@ def build_lattice(docs: list[ParsedDoc]) -> Lattice:
         )
 
     file_id_by_path = {node.path: node_id for node_id, node in nodes.items()}
-    section_ids_by_path: defaultdict[Path, list[TargetId]] = defaultdict(list)
+    section_ids_by_path = defaultdict(list)
     for tid, loc in index.items():
         if loc.kind == "section":
             section_ids_by_path[loc.path].append(tid)

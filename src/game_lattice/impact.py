@@ -21,11 +21,12 @@ def expand_targets(lattice: Lattice, token: str) -> set[TargetId]:
     if location is None:
         return set()
     if location.kind == "file":
-        return {target_id} | lattice.anchors_by_path.get(location.path, frozenset())
-    expanded = {target_id} | set(lattice.ancestors.get(target_id, ()))
-    file_id = lattice.file_id_by_path.get(location.path)
-    if file_id is not None:
-        expanded.add(TargetId(file_id))
+        return {target_id} | lattice.anchors_by_path[location.path]
+    # A resolved section is registered in ancestors and its file path is a tracked node, so
+    # both keys exist by construction; index direct so an incoherent index fails loud instead
+    # of silently under-reporting impact.
+    expanded = {target_id} | set(lattice.ancestors[target_id])
+    expanded.add(TargetId(lattice.file_id_by_path[location.path]))
     return expanded
 
 
