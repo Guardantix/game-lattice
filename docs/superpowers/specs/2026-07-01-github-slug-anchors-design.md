@@ -96,8 +96,10 @@ function, not a hand-rolled approximation. The steps `github-slugger` performs, 
 
 Byte-parity with GitHub's rendered anchors is the whole point, so the strip regex must be copied
 verbatim from a pinned `github-slugger` version, and that version must be recorded in the spec history
-and in a comment beside the ported regex. Two behaviors that a hand-rolled version tends to get wrong,
-and that the corpus (section 10) locks, are:
+and in a comment beside the ported regex. **This slice pins `github-slugger@2.0.0`**: the character
+class in `sections.py`'s `_SLUG_STRIP_RE` is a verbatim translation of that version's `regex.js`,
+verified codepoint-for-codepoint (0 through 0x10FFFF) against the real package. Two behaviors that a
+hand-rolled version tends to get wrong, and that the corpus (section 10) locks, are:
 
 - `github-slugger` does not collapse runs. `a  b` (two spaces) becomes `a--b`, not `a-b`. We match
   that; we do not "improve" it.
@@ -272,7 +274,7 @@ messages continue to name the file and the fix, per the repo's error convention.
 Test files mirror sources. New and updated coverage:
 
 - **`github_slug` parity corpus** in `test_sections.py`, generic strings (not Mainspring's literals),
-  pinned to a recorded `github-slugger` version, covering: lowercasing, numbered headings
+  pinned to `github-slugger@2.0.0`, covering: lowercasing, numbered headings
   (`3.2 Slot table` to `32-slot-table`, `5.7 Capability` to `57-capability`), punctuation stripping,
   single-space-to-hyphen and the no-collapse `a  b` to `a--b` behavior, emoji stripping,
   underscore/hyphen preservation, leading/trailing text, and document-order dupes

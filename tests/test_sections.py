@@ -171,6 +171,33 @@ def test_github_slug_matches_github_rules(text, slug):
     assert github_slug(text) == slug
 
 
+@pytest.mark.parametrize(
+    ("text", "slug"),
+    [
+        # Category No (superscript / vulgar fraction / circled digit): github-slugger strips
+        # these; a hand-rolled `\w`-based class wrongly keeps them. Values observed from the
+        # real github-slugger@2.0.0 package (see task-1-fix-report.md).
+        ("x²", "x"),  # SUPERSCRIPT TWO
+        ("½ cup", "-cup"),  # VULGAR FRACTION ONE HALF
+        ("① step one", "-step-one"),  # CIRCLED DIGIT ONE
+        # Category Mn (nonspacing combining marks): github-slugger keeps these; a hand-rolled
+        # class wrongly strips them.
+        ("é", "é"),  # e + COMBINING ACUTE ACCENT, unchanged
+        # An emoji (So, stripped) directly followed by VARIATION SELECTOR-16 (Mn, kept): only
+        # the emoji is removed, the selector survives.
+        ("\U0001f44d️", "️"),
+        # Category Pc other than underscore (connector punctuation): github-slugger keeps
+        # these; a hand-rolled class wrongly strips them.
+        ("under‿score", "under‿score"),  # UNDERTIE
+        ("under⁀score", "under⁀score"),  # CHARACTER TIE
+        # Category Lm (modifier letter): github-slugger keeps these.
+        ("aʼb", "aʼb"),  # noqa: RUF001 -- MODIFIER LETTER APOSTROPHE, intentional
+    ],
+)
+def test_github_slug_divergent_unicode_categories(text, slug):
+    assert github_slug(text) == slug
+
+
 def test_anchor_ids_uses_marker_when_present_else_slug():
     toc = build_toc("# Intro {#custom}\n\n## Slot table\nx\n")
     assert anchor_ids(toc) == ["custom", "slot-table"]
