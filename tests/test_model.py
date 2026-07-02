@@ -3,8 +3,6 @@
 from pathlib import Path
 
 import pytest
-from hypothesis import given
-from hypothesis import strategies as st
 from pydantic import ValidationError as PydanticValidationError
 
 from game_lattice.model import (
@@ -17,36 +15,18 @@ from game_lattice.model import (
     RawEdge,
     TargetId,
     parse_ref,
-    split_ref,
 )
-
-
-def test_split_ref_keys_on_trailing_id():
-    assert split_ref("art-direction#accent") == "accent"
-    assert split_ref("accent") == "accent"
-    assert split_ref("a#b#c") == "c"
-
-
-@pytest.mark.parametrize(
-    ("ref", "expected"),
-    [("", ""), ("#accent", "accent"), ("art#", "")],
-)
-def test_split_ref_boundary_inputs(ref, expected):
-    assert split_ref(ref) == expected
-
-
-@given(st.text())
-def test_split_ref_strips_all_namespaces_and_is_idempotent(ref: str):
-    out = split_ref(ref)
-    assert "#" not in out
-    assert split_ref(out) == out
 
 
 def test_edge_resolve_links_ref_to_index():
-    index = {"accent": Location(path=Path("a.md"), kind="section", span=(1, 2))}
+    index = {
+        TargetId("art-direction", "accent"): Location(
+            path=Path("a.md"), kind="section", span=(1, 2)
+        )
+    }
     edge = Edge.resolve("art-direction#accent", "h", index)
     assert edge.target_ref == "art-direction#accent"
-    assert edge.target_id == "accent"
+    assert edge.target_id == TargetId("art-direction", "accent")
     assert edge.seen == "h"
 
 
@@ -118,7 +98,7 @@ def test_rawedge_seen_defaults_none():
 
 
 def test_dataclasses_are_frozen():
-    edge = Edge(target_ref="a#b", target_id="b", seen=None)
+    edge = Edge(target_ref="a#b", target_id=TargetId("a", "b"), seen=None)
     with pytest.raises(AttributeError):
         edge.seen = "x"  # ty: ignore[invalid-assignment]
 
@@ -136,7 +116,7 @@ def test_lattice_holds_maps():
     )
     lat = Lattice(
         nodes_by_id={"x": node},
-        index={"x": Location(path=Path("x.md"), kind="file", span=(1, 1))},
+        index={TargetId("x"): Location(path=Path("x.md"), kind="file", span=(1, 1))},
         dependents={},
         ancestors={},
         file_id_by_path={Path("x.md"): "x"},

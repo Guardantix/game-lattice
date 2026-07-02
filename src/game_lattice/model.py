@@ -9,18 +9,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .constants import Authority, Layer, LocationKind
 
 
-def split_ref(ref: str) -> str:
-    """Return the stable id a ref points at.
-
-    Args:
-        ref: A ref written bare (``accent``) or namespaced (``art-direction#accent``).
-
-    Returns:
-        The trailing id after the last ``#``; the namespace prefix is display-only.
-    """
-    return ref.rsplit("#", 1)[-1]
-
-
 @dataclass(frozen=True, slots=True)
 class TargetId:
     """A resolved target: a whole file, or a file-scoped section anchor.
@@ -97,22 +85,22 @@ class Edge:
     """A resolved derives_from edge. ``target_id`` is None when the ref is broken."""
 
     target_ref: str
-    target_id: str | None
+    target_id: TargetId | None
     seen: str | None
 
     @classmethod
-    def resolve(cls, ref: str, seen: str | None, index: "Mapping[str, Location]") -> "Edge":
+    def resolve(cls, ref: str, seen: str | None, index: "Mapping[TargetId, Location]") -> "Edge":
         """Build an edge, resolving the ref so target_ref and target_id cannot disagree.
 
         Args:
             ref: The derives_from ref as written.
             seen: The locked hash from frontmatter, or None if never reconciled.
-            index: The id-to-Location index; a ref resolving to no id yields a broken edge.
+            index: The TargetId-to-Location index; a ref resolving to no id yields a broken edge.
 
         Returns:
-            An Edge whose target_id is the resolved id, or None when the ref is broken.
+            An Edge whose target_id is the resolved TargetId, or None when the ref is broken.
         """
-        target_id = split_ref(ref)
+        target_id = parse_ref(ref)
         return cls(target_ref=ref, target_id=target_id if target_id in index else None, seen=seen)
 
 
@@ -152,7 +140,7 @@ class ParsedDoc:
 class Lattice:
     """The whole derived graph.
 
-    ``index`` maps every stable id to a Location. ``dependents`` maps a target id
+    ``index`` maps every TargetId to a Location. ``dependents`` maps a target id
     to the set of source node ids that derive from it. ``ancestors`` maps a section
     anchor id to the anchored sections (outermost to innermost) whose spans contain it.
     ``file_id_by_path`` and ``anchors_by_path`` are path lookups precomputed by the loader
@@ -163,8 +151,8 @@ class Lattice:
     """
 
     nodes_by_id: Mapping[str, Node]
-    index: Mapping[str, Location]
-    dependents: Mapping[str, frozenset[str]]
-    ancestors: Mapping[str, tuple[str, ...]]
+    index: Mapping[TargetId, Location]
+    dependents: Mapping[TargetId, frozenset[str]]
+    ancestors: Mapping[TargetId, tuple[TargetId, ...]]
     file_id_by_path: Mapping[Path, str]
-    anchors_by_path: Mapping[Path, frozenset[str]]
+    anchors_by_path: Mapping[Path, frozenset[TargetId]]
