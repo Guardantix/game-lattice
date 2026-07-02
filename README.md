@@ -110,9 +110,10 @@ The PC's UI highlights use the accent color.
 ```
 
 The ref `art-direction#accent` resolves file-scoped: it points at the section in the `art-direction`
-file whose heading has the `{#accent}` marker (or would be addressed by the GitHub slug for
-"Accent Color" if the marker were omitted). The `seen` hash records the accent text pc-design was
-last built against.
+file whose heading carries the `{#accent}` marker. Markers are optional; a heading with no marker is
+addressed by its GitHub slug instead, and the `{#accent}` marker here pins a short stable id
+regardless of the heading's wording. The `seen` hash records the accent text pc-design was last built
+against.
 
 Now someone changes the accent to "cool teal." The `{#accent}` section's content hash no
 longer matches `seen`, so:
@@ -211,7 +212,7 @@ atomically, so a concurrent edit is never clobbered.
 | `tickets` | optional | Issue ids associated with the doc (used by `impact` and `linear`). |
 
 Section ids are optional: a heading is addressed by its GitHub slug by default (e.g. `## Accent Color`
-resolves to `accent`), and an explicit `{#anchor}` marker on the heading wins as an escape hatch for
+resolves to `accent-color`), and an explicit `{#anchor}` marker on the heading wins as an escape hatch for
 a stable id independent of heading text (e.g. `## Accent Color {#accent-hue}`). Section refs are
 file-scoped (`file#anchor`), so the same anchor in two files does not collide.
 
