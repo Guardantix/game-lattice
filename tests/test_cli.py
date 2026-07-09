@@ -82,11 +82,19 @@ def test_check_only_unknown_state_exits_2(lattice_dir: Path, monkeypatch):
     assert "STALE" in result.stderr
 
 
+def test_check_only_unknown_state_with_markup_does_not_crash(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["check", "--only", "BOGUS[/]"])
+    assert result.exit_code == 2
+    assert isinstance(result.exception, SystemExit)
+    assert "BOGUS[/]" in result.stderr
+
+
 def test_check_only_ok_still_exits_1_on_drift(lattice_dir: Path, monkeypatch):
     monkeypatch.chdir(lattice_dir)
     result = runner.invoke(app, ["check", "--only", "OK"])
     assert result.exit_code == 1
-    assert not [line for line in result.stdout.splitlines() if line.strip()]
+    assert not result.stdout.strip()
 
 
 def test_check_only_repeated_flags_combine(lattice_dir: Path, monkeypatch):

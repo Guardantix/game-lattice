@@ -57,14 +57,14 @@ def _parse_only_states(only: list[str] | None) -> frozenset[str] | None:
     Raises:
         typer.Exit: Exit code 2 when a value is not a valid edge state.
     """
-    if only is None:
+    if not only:
         return None
     states = frozenset(value.upper() for value in only)
     unknown = states - VALID_EDGE_STATES
     if unknown:
         valid = ", ".join(sorted(VALID_EDGE_STATES))
         bad = ", ".join(sorted(unknown))
-        _err.print(f"[red]error[/red]: unknown --only state(s): {bad} (valid: {valid})")
+        _err.print(f"[red]error[/red]: unknown --only state(s): {escape(bad)} (valid: {valid})")
         raise typer.Exit(2)
     return states
 
