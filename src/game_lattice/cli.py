@@ -11,8 +11,9 @@ from rich.console import Console
 from rich.markup import escape
 
 from . import __version__
-from .check import check_lattice, has_drift
+from .check import EdgeStatus, check_lattice, has_drift
 from .config import DEFAULT_CONFIG_NAME, load_config
+from .constants import VALID_EDGE_STATES
 from .error_types import ConfigError, ProjectError, UnreadableDocError
 from .impact import impact as impact_walk
 from .linear_fetch import fetch_tickets
@@ -41,6 +42,47 @@ _STATE_COL_WIDTH = 13  # widest EdgeState ("UNRECONCILED") is 12 chars, plus one
 def _print_project_error(exc: ProjectError) -> None:
     """Render a ProjectError to stderr in the standard one-line format."""
     _err.print(f"[red]error[/red]: {escape(str(exc))} ({exc.code})")
+
+
+def _parse_only_states(only: list[str] | None) -> frozenset[str] | None:
+    """Normalize and validate the ``--only`` flag's values.
+
+    Args:
+        only: Raw repeated ``--only`` values, or None when the flag is absent.
+
+    Returns:
+        None when the flag is absent (no filtering), otherwise the set of
+        upper-cased, validated edge states to keep.
+
+    Raises:
+        typer.Exit: Exit code 2 when a value is not a valid edge state.
+    """
+    if not only:
+        return None
+    states = frozenset(value.upper() for value in only)
+    unknown = states - VALID_EDGE_STATES
+    if unknown:
+        valid = ", ".join(sorted(VALID_EDGE_STATES))
+        bad = ", ".join(sorted(unknown))
+        _err.print(f"[red]error[/red]: unknown --only state(s): {escape(bad)} (valid: {valid})")
+        raise typer.Exit(2)
+    return states
+
+
+def _filter_statuses(statuses: list[EdgeStatus], only: frozenset[str] | None) -> list[EdgeStatus]:
+    """Filter statuses to the requested states for display, leaving the input untouched.
+
+    Args:
+        statuses: The full, unfiltered edge statuses.
+        only: States to keep, or None to keep everything.
+
+    Returns:
+        The subset of statuses whose state is in ``only``, or all statuses when
+        ``only`` is None.
+    """
+    if only is None:
+        return statuses
+    return [status for status in statuses if status.state in only]
 
 
 def _version_callback(value: bool) -> None:
@@ -83,14 +125,29 @@ def _skip_summary(result: LintResult) -> str:
 
 
 @app.command()
-def check(config: ConfigOpt = None, json_out: JsonOpt = False) -> None:
+def check(
+    config: ConfigOpt = None,
+    json_out: JsonOpt = False,
+    only: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--only",
+            help=(
+                "Show only these states (repeatable): OK, STALE, UNRECONCILED, BROKEN. "
+                "Filters display only; the exit code always reflects every edge."
+            ),
+        ),
+    ] = None,
+) -> None:
     """Classify every edge; exit 1 on drift, 2 on tool error."""
+    only_states = _parse_only_states(only)
     try:
         lattice = _load(config)
         statuses = check_lattice(lattice)
     except ProjectError as exc:
         _print_project_error(exc)
         raise typer.Exit(2) from exc
+    displayed = _filter_statuses(statuses, only_states)
     if json_out:
         payload = {
             "edges": [
@@ -102,13 +159,13 @@ def check(config: ConfigOpt = None, json_out: JsonOpt = False) -> None:
                     "expected": status.expected,
                     "actual": status.actual,
                 }
-                for status in statuses
+                for status in displayed
             ]
         }
         typer.echo(json.dumps(payload))
     else:
         state_colors = {"OK": "green", "STALE": "yellow", "UNRECONCILED": "yellow", "BROKEN": "red"}
-        for status in statuses:
+        for status in displayed:
             color = state_colors[status.state]
             _out.print(
                 f"[{color}]{status.state:<{_STATE_COL_WIDTH}}[/{color}] "
