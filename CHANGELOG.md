@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- The version-sync guard now also checks the README's pinned `game-lattice@vX.Y.Z` install
+  refs against `__version__`, so a stale README pin fails `check_version_sync.py` instead of
+  shipping silently.
+
 ## [0.6.0] - 2026-07-05
 
 ### Changed
