@@ -17,6 +17,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   document-order stack pass, so lattice builds no longer go quadratic on heading-dense docs.
   Ancestor maps are unchanged; a differential test verifies parity with the prior implementation.
 
+### Removed
+
+- Pruned the unused `local_now`, `parse_iso`, and `format_iso` helpers from `datetime_utils.py`;
+  `utc_now` remains the single sanctioned current-time entry point.
+
 ## [0.6.0] - 2026-07-05
 
 ### Changed
