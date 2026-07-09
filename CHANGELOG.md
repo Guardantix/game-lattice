@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- `check --only STATE` (repeatable, case insensitive) to narrow human and JSON output to specific
+  edge states. Filtering is display-only; the exit code still reflects every edge.
+
 ## [0.6.0] - 2026-07-05
 
 ### Changed
