@@ -138,12 +138,12 @@ def to_json(lattice: Lattice, stale_edges: set[tuple[str, TargetId]]) -> dict:
     nodes = [
         {
             "id": node_id,
-            "title": lattice.nodes_by_id[node_id].title,
-            "layer": lattice.nodes_by_id[node_id].layer,
-            "authority": lattice.nodes_by_id[node_id].authority,
-            "path": str(lattice.nodes_by_id[node_id].path),
+            "title": node.title,
+            "layer": node.layer,
+            "authority": node.authority,
+            "path": str(node.path),
         }
-        for node_id in sorted(lattice.nodes_by_id)
+        for node_id, node in sorted(lattice.nodes_by_id.items())
     ]
     edges = [
         {"upstream": upstream, "downstream": source_id, "stale": is_stale}
