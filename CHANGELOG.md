@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- `impact` now accepts `--depth N` (N >= 1) to bound the reverse walk to N hops from the target,
+  and each `--json` entry gains a `depth` field carrying the minimum number of hops at which that
+  doc is reached. The walk is breadth-first; unbounded output reports the same node set as before.
+
 ## [0.6.0] - 2026-07-05
 
 ### Changed
