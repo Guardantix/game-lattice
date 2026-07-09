@@ -174,14 +174,15 @@ uv run --group dev ty check src
 | `check` | Classify every `derives_from` edge as OK / STALE / UNRECONCILED / BROKEN. | 1 on drift, 2 on tool error |
 | `lint` | Validate the authority ladder (binding > derived > exploratory) over the edges. | 1 on a violation, 2 on tool error |
 | `impact TOKEN` | List every downstream doc affected by a change to TOKEN. | 2 on tool error |
-| `reconcile [ID] [--ref REF] [--all]` | Set `seen` to current upstream hashes for the selected edges (the only command that mutates your tracked docs). | 2 on tool error |
+| `reconcile [ID] [--ref REF] [--all] [--dry-run]` | Set `seen` to current upstream hashes for the selected edges (the only command that mutates your tracked docs); `--dry-run` previews the plan without writing. | 2 on tool error |
 | `graph [--format mermaid\|dot]` | Emit the edge graph as Mermaid or DOT. | 2 on tool error |
 | `linear [TARGET] [--from ID] [--exit-code] [--warn-exit]` | Report tickets shipped against a spec that has since drifted (needs `LINEAR_API_KEY`). | 1 with `--exit-code` on DANGER/BLOCKED, 2 on tool error |
 | `init [--docs-root ...] [--linear-team KEY]` | Scaffold `.game-lattice.yml` and print pre-commit and CI codegen. | 2 on tool error |
 
 Every command except `init` accepts `--config PATH` (path to `.game-lattice.yml`; defaults to
-the file in the current directory). `check`, `lint`, `impact`, and `linear` accept `--json` for
-machine-readable output. Run `uv run game-lattice <command> --help` for the full flag list.
+the file in the current directory). `check`, `lint`, `impact`, `reconcile`, and `linear` accept
+`--json` for machine-readable output. Run `uv run game-lattice <command> --help` for the full
+flag list.
 
 ### `reconcile` selectors
 
@@ -197,6 +198,13 @@ machine-readable output. Run `uv run game-lattice <command> --help` for the full
 `reconcile` re-reads each downstream file fresh at write time, rewrites only the targeted `seen`
 scalar through round-trip YAML (preserving your body, key order, and comments), and writes
 atomically, so a concurrent edit is never clobbered.
+
+Add `--dry-run` to any of the selectors above to preview the plan without writing: it prints
+`would reconcile FILE: REF` per edge that would change (`nothing to reconcile` if none would),
+and leaves every file byte-identical. Combine with `--json` for a machine-readable plan:
+`{"dry_run": true, "reconciled": [{"path": ..., "ref": ..., "new_seen": ...}]}`, sorted by path
+then ref. A real run with `--json` emits the same shape with `"dry_run": false`, after the
+writes complete.
 
 ## Frontmatter reference
 

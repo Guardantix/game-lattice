@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- `reconcile` gained `--dry-run` (preview the plan without writing) and `--json` (single-line
+  machine-readable plan output, `{"dry_run": ..., "reconciled": [{"path", "ref", "new_seen"}, ...]}`
+  sorted by path then ref), matching the JSON convention already used by `check`/`lint`/`impact`.
+
 ## [0.6.0] - 2026-07-05
 
 ### Changed

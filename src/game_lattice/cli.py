@@ -188,8 +188,51 @@ def impact(token: str, config: ConfigOpt = None, json_out: JsonOpt = False) -> N
             _out.print(f"{escape(node.id)}  ({escape(str(node.path))})  tickets: {escape(tickets)}")
 
 
+Rewrite = tuple[Path, str, set[str]]
+
+
+def _reconcile_json_payload(
+    plan: dict[Path, dict[str, str]], rewrites: list[Rewrite], *, dry_run: bool
+) -> str:
+    """Build the single-line JSON payload for a reconcile run (dry or real).
+
+    Args:
+        plan: The full planned mapping of path to ``{ref: new_seen}``, used to look up
+            ``new_seen`` for each applied ref.
+        rewrites: The rewrites actually applied (fresh-read, non-empty ``applied`` set).
+        dry_run: Whether this was a preview (no writes) or a completed real run.
+
+    Returns:
+        The JSON text, entries sorted by path then ref for deterministic output.
+    """
+    entries = sorted(
+        (
+            {"path": str(path), "ref": target_ref, "new_seen": plan[path][target_ref]}
+            for path, _new_text, applied in rewrites
+            for target_ref in applied
+        ),
+        key=lambda entry: (entry["path"], entry["ref"]),
+    )
+    return json.dumps({"dry_run": dry_run, "reconciled": entries})
+
+
+def _print_reconcile_human(rewrites: list[Rewrite], *, dry_run: bool) -> None:
+    """Print the human-readable reconcile lines for a dry or real run.
+
+    Args:
+        rewrites: The rewrites actually applied (fresh-read, non-empty ``applied`` set).
+        dry_run: Whether this was a preview (no writes) or a completed real run.
+    """
+    verb = "would reconcile" if dry_run else "reconciled"
+    for path, _new_text, applied in rewrites:
+        for target_ref in sorted(applied):
+            _out.print(f"{verb} {escape(path.name)}: {escape(target_ref)}")
+    if not rewrites:
+        _out.print("nothing to reconcile")
+
+
 @app.command()
-def reconcile(
+def reconcile(  # noqa: PLR0913
     downstream_id: Annotated[
         str, typer.Argument(help="Node whose edges to reconcile (omit when using --all).")
     ] = "",
@@ -199,9 +242,16 @@ def reconcile(
     reconcile_all: Annotated[
         bool, typer.Option("--all", help="Reconcile every drifting edge.")
     ] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Show what would be reconciled without writing.")
+    ] = False,
     config: ConfigOpt = None,
+    json_out: JsonOpt = False,
 ) -> None:
-    """Set seen to current upstream hashes for the selected edges."""
+    """Set seen to current upstream hashes for the selected edges.
+
+    With --dry-run, computes and reports the same plan without writing anything.
+    """
     if not reconcile_all and not downstream_id:
         _err.print("[red]error[/red]: provide a downstream id or --all")
         raise typer.Exit(2)
@@ -210,8 +260,10 @@ def reconcile(
         plan = plan_reconcile(lattice, downstream_id, ref=ref, reconcile_all=reconcile_all)
         # Phase 1: compute every rewrite from a fresh read before touching disk, so a
         # malformed concurrent edit aborts the whole command instead of leaving an
-        # earlier file already rewritten (no cross-file half-reconcile).
-        rewrites: list[tuple[Path, str, set[str]]] = []
+        # earlier file already rewritten (no cross-file half-reconcile). Computed
+        # unconditionally (even for --dry-run) so the preview reflects the same
+        # fresh-read validation a real run would perform.
+        rewrites: list[Rewrite] = []
         for path, updates in plan.items():
             try:
                 fresh = path.read_text(encoding="utf-8")
@@ -221,17 +273,19 @@ def reconcile(
             new_text, applied = apply_reconcile(fresh, updates)
             if applied:
                 rewrites.append((path, new_text, applied))
-        # Phase 2: only after all rewrites computed cleanly, write them.
-        for path, new_text, applied in rewrites:
-            try:
-                _atomic_write(path, new_text)
-            except OSError as exc:
-                msg = f"cannot write {path}: {exc}"
-                raise UnreadableDocError(msg) from exc
-            for target_ref in sorted(applied):
-                _out.print(f"reconciled {escape(path.name)}: {escape(target_ref)}")
-        if not rewrites:
-            _out.print("nothing to reconcile")
+        # Phase 2: only after all rewrites computed cleanly, write them (skipped
+        # entirely for --dry-run, which never touches disk).
+        if not dry_run:
+            for path, new_text, _applied in rewrites:
+                try:
+                    _atomic_write(path, new_text)
+                except OSError as exc:
+                    msg = f"cannot write {path}: {exc}"
+                    raise UnreadableDocError(msg) from exc
+        if json_out:
+            typer.echo(_reconcile_json_payload(plan, rewrites, dry_run=dry_run))
+        else:
+            _print_reconcile_human(rewrites, dry_run=dry_run)
     except ProjectError as exc:
         _print_project_error(exc)
         raise typer.Exit(2) from exc
