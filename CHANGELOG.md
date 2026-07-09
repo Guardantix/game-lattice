@@ -6,11 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `graph --format json` emits a node/edge dump (`{"nodes": [...], "edges": [...]}`) for
+  programmatic consumers, with the same collapsed edge set as the Mermaid and DOT renderers.
+- `check --only STATE` (repeatable, case insensitive) to narrow human and JSON output to specific
+  edge states. Filtering is display-only; the exit code still reflects every edge.
+
 ### Changed
 
 - The version-sync guard now also checks the README's pinned `game-lattice@vX.Y.Z` install
   refs against `__version__`, so a stale README pin fails `check_version_sync.py` instead of
   shipping silently.
+- `graph --format` now rejects any value other than `mermaid`, `dot`, or `json` with an exit
+  2 error naming the valid formats, instead of silently falling back to Mermaid.
+- Replaced the O(headings^2) ancestor computation in `loader._record_ancestors` with a single
+  document-order stack pass, so lattice builds no longer go quadratic on heading-dense docs.
+  Ancestor maps are unchanged; a differential test verifies parity with the prior implementation.
+
+### Removed
+
+- Pruned the unused `local_now`, `parse_iso`, and `format_iso` helpers from `datetime_utils.py`;
+  `utc_now` remains the single sanctioned current-time entry point.
 
 ## [0.6.0] - 2026-07-05
 
