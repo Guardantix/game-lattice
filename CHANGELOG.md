@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.0] - 2026-07-09
+
+### Added
+
+- `check --only STATE` (repeatable) filters human and JSON output by edge state; the exit code
+  still reflects every edge (#19).
+- `graph --format json` emits a machine-readable node and edge dump that matches the Mermaid and
+  DOT edge collapsing (#21).
+- `impact --depth N` bounds the reverse walk, and `impact --json` entries now carry a `depth`
+  field (#22).
+- `reconcile --dry-run` previews the plan without writing, and `reconcile --json` emits a
+  machine-readable plan for both dry and real runs (#17).
+- The Linear client retries transient HTTP 429 and 5xx failures with bounded backoff, honoring
+  `Retry-After` up to a 30 second cap (#24).
+- The version-sync guard now also checks README pinned install refs (`game-lattice@vX.Y.Z`)
+  against `__version__` (#34).
+
+### Changed
+
+- `graph --format` now rejects unknown formats with exit 2 instead of silently rendering
+  Mermaid (#21).
+- Ancestor recording in the loader is a single stack pass instead of a quadratic scan (#26).
+- CI runs the code-quality job on both Python 3.13 and 3.14 (#33).
+
+### Removed
+
+- Unused `datetime_utils` helpers (`local_now`, `parse_iso`, `format_iso`); `utc_now` remains the
+  single sanctioned current-time entry point (#35).
+
 ## [0.6.0] - 2026-07-05
 
 ### Changed
