@@ -15,6 +15,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The version-sync guard now also checks the README's pinned `game-lattice@vX.Y.Z` install
+  refs against `__version__`, so a stale README pin fails `check_version_sync.py` instead of
+  shipping silently.
 - `graph --format` now rejects any value other than `mermaid`, `dot`, or `json` with an exit
   2 error naming the valid formats, instead of silently falling back to Mermaid.
 - Replaced the O(headings^2) ancestor computation in `loader._record_ancestors` with a single
