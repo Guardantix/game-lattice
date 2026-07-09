@@ -216,17 +216,58 @@ def _reconcile_json_payload(
     return json.dumps({"dry_run": dry_run, "reconciled": entries})
 
 
-def _print_reconcile_human(rewrites: list[Rewrite], *, dry_run: bool) -> None:
-    """Print the human-readable reconcile lines for a dry or real run.
+def _print_reconcile_lines(path: Path, applied: set[str], *, dry_run: bool) -> None:
+    """Print one file's human-readable reconcile confirmation lines.
 
     Args:
-        rewrites: The rewrites actually applied (fresh-read, non-empty ``applied`` set).
-        dry_run: Whether this was a preview (no writes) or a completed real run.
+        path: The downstream file that was (or would be) rewritten.
+        applied: The refs whose seen scalar was updated in this file.
+        dry_run: Whether this was a preview (would reconcile) or a real write (reconciled).
     """
     verb = "would reconcile" if dry_run else "reconciled"
-    for path, _new_text, applied in rewrites:
-        for target_ref in sorted(applied):
-            _out.print(f"{verb} {escape(path.name)}: {escape(target_ref)}")
+    for target_ref in sorted(applied):
+        _out.print(f"{verb} {escape(path.name)}: {escape(target_ref)}")
+
+
+def _write_and_report_reconcile(
+    plan: dict[Path, dict[str, str]],
+    rewrites: list[Rewrite],
+    *,
+    dry_run: bool,
+    json_out: bool,
+) -> None:
+    """Write the planned rewrites (unless dry run) and emit the reconcile report.
+
+    For a real human run, each file's confirmation prints as its write lands rather than
+    deferred to after the whole batch, so a mid-batch OSError still records which files
+    were durably rewritten (phase 2 is intentionally non-atomic across files). JSON emits
+    one payload after every write completes; a dry run writes nothing.
+
+    Args:
+        plan: The full planned mapping of path to ``{ref: new_seen}``.
+        rewrites: The rewrites actually applied (fresh-read, non-empty ``applied`` set).
+        dry_run: Whether this is a preview (no writes of any kind).
+        json_out: Whether to emit the machine-readable payload instead of human lines.
+
+    Raises:
+        UnreadableDocError: If a downstream file cannot be written.
+    """
+    report_progress = not dry_run and not json_out
+    if not dry_run:
+        for path, new_text, applied in rewrites:
+            try:
+                _atomic_write(path, new_text)
+            except OSError as exc:
+                msg = f"cannot write {path}: {exc}"
+                raise UnreadableDocError(msg) from exc
+            if report_progress:
+                _print_reconcile_lines(path, applied, dry_run=False)
+    if json_out:
+        typer.echo(_reconcile_json_payload(plan, rewrites, dry_run=dry_run))
+        return
+    if dry_run:
+        for path, _new_text, applied in rewrites:
+            _print_reconcile_lines(path, applied, dry_run=True)
     if not rewrites:
         _out.print("nothing to reconcile")
 
@@ -274,18 +315,8 @@ def reconcile(  # noqa: PLR0913
             if applied:
                 rewrites.append((path, new_text, applied))
         # Phase 2: only after all rewrites computed cleanly, write them (skipped
-        # entirely for --dry-run, which never touches disk).
-        if not dry_run:
-            for path, new_text, _applied in rewrites:
-                try:
-                    _atomic_write(path, new_text)
-                except OSError as exc:
-                    msg = f"cannot write {path}: {exc}"
-                    raise UnreadableDocError(msg) from exc
-        if json_out:
-            typer.echo(_reconcile_json_payload(plan, rewrites, dry_run=dry_run))
-        else:
-            _print_reconcile_human(rewrites, dry_run=dry_run)
+        # entirely for --dry-run) and report the outcome.
+        _write_and_report_reconcile(plan, rewrites, dry_run=dry_run, json_out=json_out)
     except ProjectError as exc:
         _print_project_error(exc)
         raise typer.Exit(2) from exc

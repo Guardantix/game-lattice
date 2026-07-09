@@ -163,6 +163,50 @@ def test_reconcile_write_error_exits_2(lattice_dir: Path, monkeypatch):
     assert result.exit_code == 2
 
 
+def test_reconcile_real_run_reports_reconciled_lines(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["reconcile", "--all"])
+    assert result.exit_code == 0
+    assert "reconciled pc-design.md: art-direction#accent" in result.stdout
+    assert "reconciled pc-design.md: art-direction#motion" in result.stdout
+
+
+def test_reconcile_real_run_reports_progress_before_midbatch_write_error(
+    tmp_path: Path, monkeypatch
+):
+    # Phase 2 is non-atomic across files: if an earlier file writes durably and a later
+    # write fails, the earlier file's confirmation must still print (per-file progress is
+    # emitted as each write lands, not deferred to after the whole batch).
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "up.md").write_text("---\nid: up\n---\n# Up {#s}\nupstream body\n", encoding="utf-8")
+    for name in ("down-a", "down-b"):
+        (docs / f"{name}.md").write_text(
+            f"---\nid: {name}\nderives_from:\n  - ref: up#s\n---\n# {name}\nbody\n",
+            encoding="utf-8",
+        )
+    monkeypatch.chdir(tmp_path)
+
+    real_write = cli_mod._atomic_write
+    calls: list[Path] = []
+
+    def flaky(path, text):
+        calls.append(path)
+        if len(calls) == 1:
+            real_write(path, text)  # first file writes durably
+            return
+        raise OSError("disk full")  # a later file's write fails mid-batch
+
+    monkeypatch.setattr(cli_mod, "_atomic_write", flaky)
+    result = runner.invoke(app, ["reconcile", "--all"])
+    assert result.exit_code == 2
+    first = calls[0]
+    # The durably rewritten file's confirmation survives the abort ...
+    assert f"reconciled {first.name}: up#s" in result.stdout
+    # ... and the write really landed on disk (a seen scalar now exists).
+    assert "seen:" in first.read_text(encoding="utf-8")
+
+
 def test_reconcile_dry_run_leaves_files_unchanged(lattice_dir: Path, monkeypatch):
     monkeypatch.chdir(lattice_dir)
     docs = lattice_dir / "docs"
