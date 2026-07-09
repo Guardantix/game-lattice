@@ -171,7 +171,7 @@ uv run --group dev ty check src
 
 | Command | What it does | Exits non-zero |
 |---------|--------------|----------------|
-| `check` | Classify every `derives_from` edge as OK / STALE / UNRECONCILED / BROKEN. | 1 on drift, 2 on tool error |
+| `check [--only STATE ...]` | Classify every `derives_from` edge as OK / STALE / UNRECONCILED / BROKEN. | 1 on drift, 2 on tool error |
 | `lint` | Validate the authority ladder (binding > derived > exploratory) over the edges. | 1 on a violation, 2 on tool error |
 | `impact TOKEN` | List every downstream doc affected by a change to TOKEN. | 2 on tool error |
 | `reconcile [ID] [--ref REF] [--all]` | Set `seen` to current upstream hashes for the selected edges (the only command that mutates your tracked docs). | 2 on tool error |
@@ -182,6 +182,11 @@ uv run --group dev ty check src
 Every command except `init` accepts `--config PATH` (path to `.game-lattice.yml`; defaults to
 the file in the current directory). `check`, `lint`, `impact`, and `linear` accept `--json` for
 machine-readable output. Run `uv run game-lattice <command> --help` for the full flag list.
+
+`check` accepts a repeatable `--only STATE` to narrow the display to specific states (case
+insensitive, e.g. `--only stale --only broken`); an unrecognized state exits 2 and names the
+valid set. Filtering is display-only: the exit code always reflects every edge, so `check --only
+OK` on a drifting lattice still exits 1.
 
 ### `reconcile` selectors
 
