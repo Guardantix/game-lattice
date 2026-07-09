@@ -49,6 +49,70 @@ def test_check_json_reports_all_states(lattice_dir: Path, monkeypatch):
     assert stale["expected"] != stale["actual"]
 
 
+def test_check_only_filters_human_output(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["check", "--only", "STALE"])
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert lines
+    assert all("STALE" in line for line in lines)
+
+
+def test_check_only_filters_json_output(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["check", "--json", "--only", "STALE"])
+    payload = json.loads(result.stdout)
+    assert payload["edges"]
+    assert all(edge["state"] == "STALE" for edge in payload["edges"])
+
+
+def test_check_only_is_case_insensitive(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["check", "--only", "stale"])
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert lines
+    assert all("STALE" in line for line in lines)
+
+
+def test_check_only_unknown_state_exits_2(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["check", "--only", "BOGUS"])
+    assert result.exit_code == 2
+    assert "BOGUS" in result.stderr
+    assert "OK" in result.stderr
+    assert "STALE" in result.stderr
+
+
+def test_check_only_unknown_state_with_markup_does_not_crash(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["check", "--only", "BOGUS[/]"])
+    assert result.exit_code == 2
+    assert isinstance(result.exception, SystemExit)
+    assert "BOGUS[/]" in result.stderr
+
+
+def test_check_only_ok_still_exits_1_on_drift(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["check", "--only", "OK"])
+    assert result.exit_code == 1
+    assert not result.stdout.strip()
+
+
+def test_check_only_repeated_flags_combine(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["check", "--json", "--only", "STALE", "--only", "BROKEN"])
+    payload = json.loads(result.stdout)
+    states = {edge["state"] for edge in payload["edges"]}
+    assert states == {"STALE", "BROKEN"}
+
+
+def test_check_without_only_shows_all_states(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["check", "--json"])
+    payload = json.loads(result.stdout)
+    states = {edge["state"] for edge in payload["edges"]}
+    assert states == {"STALE", "UNRECONCILED", "BROKEN"}
+
+
 def test_check_exits_2_on_bad_config(tmp_path: Path, monkeypatch):
     (tmp_path / ".game-lattice.yml").write_text("docs_roots: ['../x']\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
