@@ -2,10 +2,14 @@
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import get_args
 
 import pytest
+from rich.console import Console
+from rich.text import Text
 from typer.testing import CliRunner
 
 import game_lattice.cli as cli_mod
@@ -37,6 +41,115 @@ def test_version_flag():
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
     assert __version__ in result.stdout
+
+
+def test_no_color_suppresses_forced_ansi(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    original_out = cli_mod._out
+    original_err = cli_mod._err
+    with monkeypatch.context() as patch:
+        patch.delenv("NO_COLOR", raising=False)
+        patch.setenv("FORCE_COLOR", "1")
+        patch.setenv("TERM", "xterm-256color")
+        patch.setattr(cli_mod, "_err", original_err)
+        patch.setattr(
+            cli_mod,
+            "_out",
+            Console(force_terminal=True, color_system="standard", no_color=False),
+        )
+        colored = runner.invoke(app, ["check"])
+        assert colored.exit_code == 1
+        assert "\x1b[" in colored.stdout
+
+        patch.setattr(
+            cli_mod,
+            "_out",
+            Console(force_terminal=True, color_system="standard", no_color=False),
+        )
+        plain = runner.invoke(app, ["--no-color", "check"])
+        assert plain.exit_code == 1
+        assert cli_mod._out.is_terminal
+        assert cli_mod._out.color_system is not None
+        assert "\x1b[" not in plain.stdout
+
+    assert cli_mod._out is original_out
+    assert cli_mod._err is original_err
+
+
+def _run_cli_subprocess(argv: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    script = (
+        "import sys\n"
+        f"sys.argv = {argv!r}\n"
+        "from game_lattice.cli import main\n"
+        "try:\n    main()\nexcept SystemExit:\n    pass\n"
+    )
+    return subprocess.run(  # noqa: S603 - fixed argv and generated script, no untrusted input
+        [sys.executable, "-c", script], capture_output=True, text=True, env=env, check=False
+    )
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["game-lattice", "--no-color", "--help"],
+        ["game-lattice", "--no-color", "check", "--json", "--indent", "-1"],
+    ],
+)
+def test_no_color_suppresses_typer_rendered_colors(argv):
+    # These two invocations never reach _out/_err: --help and a --indent range failure
+    # are rendered by typer's own rich_utils consoles before or outside main_callback.
+    # Regression test for the review finding that --no-color left them styled: even with an
+    # ambient FORCE_COLOR (as CI sets), the explicit flag must yield escape-free captured output,
+    # so we assert on raw ANSI, not just color spans (bold/dim escapes would otherwise survive).
+    env: dict[str, str] = dict(os.environ)
+    env["FORCE_COLOR"] = "1"
+    env["TERM"] = "xterm-256color"
+    env.pop("NO_COLOR", None)
+    result = _run_cli_subprocess(argv, env)
+    combined = result.stdout + result.stderr
+    assert "\x1b[" not in combined, combined
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["game-lattice", "--help"],
+        ["game-lattice", "check", "--json", "--indent", "-1"],
+    ],
+)
+def test_no_color_env_var_suppresses_typer_rendered_colors(argv):
+    # The documented NO_COLOR environment variable, not just the --no-color flag, must reach
+    # typer's own rich_utils consoles: with a forcing FORCE_COLOR set, NO_COLOR alone otherwise
+    # leaves help and parse errors styled. Regression test for that env-only review finding.
+    env: dict[str, str] = dict(os.environ)
+    env["FORCE_COLOR"] = "1"
+    env["TERM"] = "xterm-256color"
+    env["NO_COLOR"] = "1"
+    result = _run_cli_subprocess(argv, env)
+    combined = result.stdout + result.stderr
+    assert "\x1b[" not in combined, combined
+
+
+def test_global_help_lists_no_color(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0
+    output = Text.from_ansi(result.stdout).plain
+    assert "--no-color" in output
+
+
+@pytest.mark.parametrize("command", ["check", "lint", "impact", "linear"])
+def test_json_commands_help_lists_indent(command, monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    result = runner.invoke(app, [command, "--help"])
+    assert result.exit_code == 0
+    output = Text.from_ansi(result.stdout).plain
+    assert "--indent" in output
+    assert "requires --json" in output
 
 
 def test_check_exits_1_on_drift(lattice_dir: Path, monkeypatch):
@@ -200,6 +313,64 @@ def test_check_json_reports_all_states(lattice_dir: Path, monkeypatch):
     assert stale["expected"] != stale["actual"]
 
 
+def test_check_json_indent_round_trips_to_compact_payload(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    compact = runner.invoke(app, ["check", "--json"])
+    pretty = runner.invoke(app, ["check", "--json", "--indent", "2"])
+    assert compact.exit_code == pretty.exit_code == 1
+    assert json.loads(pretty.stdout) == json.loads(compact.stdout)
+    assert '\n  "edges": [\n' in pretty.stdout
+
+
+def test_check_json_zero_indent_round_trips_to_compact_payload(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    compact = runner.invoke(app, ["check", "--json"])
+    zero_indent = runner.invoke(app, ["check", "--json", "--indent", "0"])
+    assert compact.exit_code == zero_indent.exit_code == 1
+    assert json.loads(zero_indent.stdout) == json.loads(compact.stdout)
+    assert '\n"edges": [\n' in zero_indent.stdout
+
+
+def test_check_format_json_accepts_indent(lattice_dir: Path, monkeypatch):
+    # --format json is the documented equivalent of --json, so --indent must be honored with it.
+    monkeypatch.chdir(lattice_dir)
+    via_flag = runner.invoke(app, ["check", "--json", "--indent", "2"])
+    via_format = runner.invoke(app, ["check", "--format", "json", "--indent", "2"])
+    assert via_flag.exit_code == via_format.exit_code == 1
+    assert via_format.stdout == via_flag.stdout
+    assert '\n  "edges": [\n' in via_format.stdout
+
+
+def test_lint_format_json_accepts_indent(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    via_flag = runner.invoke(app, ["lint", "--json", "--indent", "2"])
+    via_format = runner.invoke(app, ["lint", "--format", "json", "--indent", "2"])
+    assert via_flag.exit_code == via_format.exit_code
+    assert via_format.stdout == via_flag.stdout
+    assert json.loads(via_format.stdout) == json.loads(via_flag.stdout)
+
+
+def test_check_indent_without_json_exits_2(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["check", "--indent", "2"])
+    assert result.exit_code == 2
+    assert "--indent requires --json" in result.stderr
+
+
+def test_check_indent_validation_precedes_project_loading(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["check", "--config", "missing.yml", "--indent", "0"])
+    assert result.exit_code == 2
+    assert "--indent requires --json" in result.stderr
+    assert "config file not found" not in result.stderr
+
+
+def test_check_negative_indent_is_rejected(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["check", "--json", "--indent", "-1"])
+    assert result.exit_code == 2
+
+
 def test_check_only_filters_human_output(lattice_dir: Path, monkeypatch):
     monkeypatch.chdir(lattice_dir)
     result = runner.invoke(app, ["check", "--only", "STALE"])
@@ -286,6 +457,37 @@ def test_impact_lists_dependents(lattice_dir: Path, monkeypatch):
     result = runner.invoke(app, ["impact", "art-direction#accent", "--json"])
     payload = json.loads(result.stdout)
     assert "pc-design" in {n["id"] for n in payload["affected"]}
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["lint"],
+        ["impact", "art-direction#accent"],
+        ["linear"],
+    ],
+)
+def test_indent_without_json_exits_2_before_project_loading(tmp_path: Path, monkeypatch, args):
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, [*args, "--indent", "2"])
+    assert result.exit_code == 2
+    assert "--indent requires --json" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("args", "expected_exit"),
+    [
+        (["lint"], 0),
+        (["impact", "art-direction#accent"], 0),
+    ],
+)
+def test_offline_json_indent_round_trips(lattice_dir: Path, monkeypatch, args, expected_exit):
+    monkeypatch.chdir(lattice_dir)
+    compact = runner.invoke(app, [*args, "--json"])
+    pretty = runner.invoke(app, [*args, "--json", "--indent", "2"])
+    assert compact.exit_code == pretty.exit_code == expected_exit
+    assert json.loads(pretty.stdout) == json.loads(compact.stdout)
+    assert "\n  " in pretty.stdout
 
 
 def _chain_docs(tmp_path: Path) -> Path:
@@ -710,6 +912,35 @@ def test_main_passes_systemexit_through_unchanged(monkeypatch):
     assert info.value.code == 1
 
 
+def test_main_sets_no_color_env_before_app_runs(monkeypatch):
+    # typer/click build their own rich_utils consoles (help text, parameter-validation
+    # errors) from scratch on demand; those are untouched by _disable_color() and only
+    # honor NO_COLOR if it is already set in the environment before app() parses argv.
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(sys, "argv", ["game-lattice", "--no-color", "check"])
+    seen = {}
+
+    def fake_app():
+        seen["NO_COLOR"] = os.environ.get("NO_COLOR")
+
+    monkeypatch.setattr(cli_mod, "app", fake_app)
+    cli_mod.main()
+    assert seen["NO_COLOR"] == "1"
+
+
+def test_main_leaves_no_color_env_unset_without_flag(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(sys, "argv", ["game-lattice", "check"])
+    seen = {}
+
+    def fake_app():
+        seen["NO_COLOR"] = os.environ.get("NO_COLOR")
+
+    monkeypatch.setattr(cli_mod, "app", fake_app)
+    cli_mod.main()
+    assert seen["NO_COLOR"] is None
+
+
 def _fake_fetch(tickets):
     def fetch(_identifiers, _team, _client=None):
         return tickets, {}
@@ -738,6 +969,17 @@ def test_linear_audit_json_reports_danger(lattice_dir, monkeypatch):
     danger = [f for f in payload["findings"] if f["severity"] == "DANGER"]
     assert danger
     assert danger[0]["ticket_ref"] == "PC-228"
+
+
+def test_linear_json_indent_round_trips(lattice_dir: Path, monkeypatch):
+    ticket = _ticket(TicketState(name="Done", type="completed"))
+    monkeypatch.setattr(cli_mod, "fetch_tickets", _fake_fetch({"PC-228": ticket}))
+    monkeypatch.chdir(lattice_dir)
+    compact = runner.invoke(app, ["linear", "--json"])
+    pretty = runner.invoke(app, ["linear", "--json", "--indent", "2"])
+    assert compact.exit_code == pretty.exit_code == 0
+    assert json.loads(pretty.stdout) == json.loads(compact.stdout)
+    assert '\n  "findings": [\n' in pretty.stdout
 
 
 def test_linear_positional_target_scopes_audit(lattice_dir, monkeypatch):

@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Annotated, NoReturn
 
 import typer
+import typer.rich_utils
 from rich.console import Console
 from rich.markup import escape
 
@@ -43,6 +45,10 @@ _err = Console(stderr=True)
 
 ConfigOpt = Annotated[Path | None, typer.Option("--config", help="Path to .game-lattice.yml.")]
 JsonOpt = Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")]
+IndentOpt = Annotated[
+    int | None,
+    typer.Option("--indent", min=0, help="Pretty-print JSON with this indent (requires --json)."),
+]
 
 _STATE_COL_WIDTH = 13  # widest EdgeState ("UNRECONCILED") is 12 chars, plus one trailing space
 
@@ -162,6 +168,13 @@ def _exit_on_project_error() -> Iterator[None]:
         raise typer.Exit(2) from exc
 
 
+def _validate_indent(indent: int | None, *, json_out: bool) -> None:
+    """Reject JSON indentation when JSON output is disabled."""
+    if indent is not None and not json_out:
+        _err.print("[red]error[/red]: --indent requires --json")
+        raise typer.Exit(2)
+
+
 def _parse_only_states(only: list[str] | None) -> frozenset[str] | None:
     """Normalize and validate the ``--only`` flag's values.
 
@@ -203,6 +216,13 @@ def _filter_statuses(statuses: list[EdgeStatus], only: frozenset[str] | None) ->
     return [status for status in statuses if status.state in only]
 
 
+def _disable_color() -> None:
+    """Replace the CLI consoles with explicit no-color consoles."""
+    global _out, _err  # noqa: PLW0603
+    _out = Console(no_color=True)
+    _err = Console(stderr=True, no_color=True)
+
+
 def _version_callback(value: bool) -> None:
     if value:
         _out.print(__version__)
@@ -211,7 +231,7 @@ def _version_callback(value: bool) -> None:
 
 @app.callback()
 def main_callback(
-    version: Annotated[
+    version: Annotated[  # noqa: ARG001
         bool,
         typer.Option(
             "--version",
@@ -220,8 +240,11 @@ def main_callback(
             help="Show the version and exit.",
         ),
     ] = False,
+    no_color: Annotated[bool, typer.Option("--no-color", help="Disable colored output.")] = False,
 ) -> None:
     """game-lattice: documentation traceability engine."""
+    if no_color:
+        _disable_color()
 
 
 def _load(config: Path | None) -> Lattice:
@@ -247,6 +270,7 @@ def _skip_summary(result: LintResult) -> str:
 def check(
     config: ConfigOpt = None,
     json_out: JsonOpt = False,
+    indent: IndentOpt = None,
     fmt: Annotated[str, typer.Option("--format", help="human, json, or github.")] = "human",
     only: Annotated[
         list[str] | None,
@@ -261,6 +285,7 @@ def check(
 ) -> None:
     """Classify every edge; exit 1 on drift, 2 on tool error."""
     report_format = _resolve_report_format(fmt, json_out)
+    _validate_indent(indent, json_out=report_format == "json")
     only_states = _parse_only_states(only)
     with _exit_on_project_error():
         lattice = _load(config)
@@ -280,7 +305,7 @@ def check(
                 for status in displayed
             ]
         }
-        typer.echo(json.dumps(payload))
+        typer.echo(json.dumps(payload, indent=indent))
     elif report_format == "github":
         for status in displayed:
             if status.state == "OK":
@@ -308,10 +333,12 @@ def check(
 def lint(
     config: ConfigOpt = None,
     json_out: JsonOpt = False,
+    indent: IndentOpt = None,
     fmt: Annotated[str, typer.Option("--format", help="human, json, or github.")] = "human",
 ) -> None:
     """Validate the authority ladder; exit 1 on a violation, 2 on tool error."""
     report_format = _resolve_report_format(fmt, json_out)
+    _validate_indent(indent, json_out=report_format == "json")
     with _exit_on_project_error():
         lattice = _load(config)
         result = lint_lattice(lattice)
@@ -337,7 +364,7 @@ def lint(
                 for skipped in result.skipped
             ],
         }
-        typer.echo(json.dumps(payload))
+        typer.echo(json.dumps(payload, indent=indent))
     elif report_format == "github":
         for violation in result.violations:
             path = lattice.nodes_by_id[violation.source_id].path
@@ -366,12 +393,14 @@ def impact(
     token: str,
     config: ConfigOpt = None,
     json_out: JsonOpt = False,
+    indent: IndentOpt = None,
     depth: Annotated[
         int | None,
         typer.Option("--depth", min=1, help="Limit the walk to this many hops from the target."),
     ] = None,
 ) -> None:
     """List every downstream doc affected by a change to TOKEN."""
+    _validate_indent(indent, json_out=json_out)
     with _exit_on_project_error():
         lattice = _load(config)
         affected = impact_walk(lattice, token, max_depth=depth)
@@ -388,7 +417,7 @@ def impact(
                 for node, node_depth in affected
             ]
         }
-        typer.echo(json.dumps(payload))
+        typer.echo(json.dumps(payload, indent=indent))
     else:
         for node, _node_depth in affected:
             tickets = ", ".join(node.tickets) if node.tickets else "-"
@@ -556,8 +585,10 @@ def linear(  # noqa: PLR0913
     ] = False,
     config: ConfigOpt = None,
     json_out: JsonOpt = False,
+    indent: IndentOpt = None,
 ) -> None:
     """Report tickets shipped against a spec that has since drifted."""
+    _validate_indent(indent, json_out=json_out)
     if from_id is not None and target:
         _err.print("[red]error[/red]: pass a positional target or --from, not both")
         raise typer.Exit(2)
@@ -572,7 +603,7 @@ def linear(  # noqa: PLR0913
         tickets, rejected = fetch_tickets(refs, project.config.linear_team)
         findings = stale_shipped(lattice, trigger, tickets, rejected)
     if json_out:
-        typer.echo(json.dumps(findings_json(findings)))
+        typer.echo(json.dumps(findings_json(findings), indent=indent))
     else:
         render_findings(_out, findings)
     if exit_code:
@@ -703,6 +734,18 @@ def main() -> None:
     code 2 instead of Python's default 1, which ``check`` reserves to mean "drift
     detected". Intended exits raised by typer (``SystemExit``) propagate unchanged.
     """
+    # Neutralize color before typer/click parse argv: --help and parameter-validation errors
+    # (like a bad --indent) are rendered by typer's own rich_utils console before main_callback
+    # runs, so _disable_color() never reaches them. Setting NO_COLOR handles Rich color, but
+    # typer forces terminal styling whenever GITHUB_ACTIONS/FORCE_COLOR/PY_COLORS is set (as CI
+    # is), which keeps bold/dim escapes on even with NO_COLOR. Setting rich_utils.COLOR_SYSTEM to
+    # None (its documented disable switch, read afresh by each _get_rich_console call) makes those
+    # consoles emit plain text unconditionally, independent of the terminal-forcing env vars.
+    # Honor the --no-color flag and the documented NO_COLOR variable alike, using the no-color.org
+    # rule (present and non-empty) that rich itself applies to our module-level consoles.
+    if "--no-color" in sys.argv[1:] or os.environ.get("NO_COLOR", "") != "":
+        os.environ["NO_COLOR"] = "1"
+        typer.rich_utils.COLOR_SYSTEM = None
     try:
         app()
     except ProjectError as exc:
