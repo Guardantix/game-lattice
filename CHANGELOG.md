@@ -19,6 +19,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Moved `check`, `lint`, and `impact` JSON builders beside their result types and centralized their
+  human console output in a dedicated report renderer, leaving the CLI as dispatch-only wiring
+  (#29).
 - Centralized CLI `ProjectError` handling behind the shared tool-error exit path (#30).
 - Internal performance: `check` and `reconcile` memoize target-content hashes within each run,
   avoiding repeated section extraction and hashing for edges that share a target (#25).

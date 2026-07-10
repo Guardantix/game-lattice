@@ -5,7 +5,6 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import get_args
 
 import pytest
 from rich.console import Console
@@ -15,12 +14,10 @@ from typer.testing import CliRunner
 import game_lattice.cli as cli_mod
 from game_lattice import __version__
 from game_lattice.cli import (
-    _STATE_COLORS,
     _escape_github_message,
     _escape_github_property,
     app,
 )
-from game_lattice.constants import EdgeState
 from game_lattice.error_types import ConfigError
 from game_lattice.tickets import Ticket, TicketState
 
@@ -286,10 +283,6 @@ def test_report_commands_reject_unknown_format_even_with_json(
 
     assert result.exit_code == 2
     assert "githu" in result.stderr
-
-
-def test_state_colors_cover_every_edge_state():
-    assert set(_STATE_COLORS) == set(get_args(EdgeState))
 
 
 def test_check_json_reports_states(lattice_dir: Path, monkeypatch):

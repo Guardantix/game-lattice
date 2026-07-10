@@ -6,6 +6,29 @@ from .error_types import ValidationError
 from .model import Lattice, Node, TargetId, parse_ref
 
 
+def impact_json(affected: list[tuple[Node, int]]) -> dict:
+    """Build the JSON-ready impact report payload.
+
+    Args:
+        affected: Affected nodes paired with their minimum impact depths.
+
+    Returns:
+        A plain dictionary containing the ordered affected-node payloads.
+    """
+    return {
+        "affected": [
+            {
+                "id": node.id,
+                "title": node.title,
+                "path": str(node.path),
+                "tickets": list(node.tickets),
+                "depth": node_depth,
+            }
+            for node, node_depth in affected
+        ]
+    }
+
+
 def expand_targets(lattice: Lattice, token: str) -> set[TargetId]:
     """Expand an impact token into the full set of TargetIds it touches.
 

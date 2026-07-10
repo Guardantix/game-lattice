@@ -15,26 +15,27 @@ from rich.console import Console
 from rich.markup import escape
 
 from . import __version__
-from .check import EdgeStatus, check_lattice, has_drift
+from .check import EdgeStatus, check_lattice, has_drift, statuses_json
 from .config import DEFAULT_CONFIG_NAME, load_config
 from .constants import (
     VALID_EDGE_STATES,
     VALID_GRAPH_FORMATS,
     VALID_REPORT_FORMATS,
-    EdgeState,
     ReportFormat,
 )
 from .error_types import ConfigError, ProjectError, UnreadableDocError
 from .impact import impact as impact_walk
+from .impact import impact_json
 from .linear_fetch import fetch_tickets
 from .linear_query import is_valid_team_key
 from .linear_render import findings_json, render_findings
-from .lint import LintResult, lint_lattice
+from .lint import lint_json, lint_lattice
 from .model import Lattice
 from .orchestrate import load_lattice
 from .reconcile import plan_rewrites
 from .reconcile import reconcile as plan_reconcile
 from .render import to_dot, to_json, to_mermaid
+from .report_render import render_impact, render_lint, render_statuses
 from .scaffold import build_scaffold
 from .stale_shipped import build_audit_trigger, build_from_trigger, stale_shipped
 from .text_utils import strip_control_chars
@@ -49,17 +50,6 @@ IndentOpt = Annotated[
     int | None,
     typer.Option("--indent", min=0, help="Pretty-print JSON with this indent (requires --json)."),
 ]
-
-_STATE_COL_WIDTH = 13  # widest EdgeState ("UNRECONCILED") is 12 chars, plus one trailing space
-
-# Tied to the EdgeState Literal by test_state_colors_cover_every_edge_state: a new state member
-# without a color here fails that test instead of raising KeyError at render time.
-_STATE_COLORS: dict[EdgeState, str] = {
-    "OK": "green",
-    "STALE": "yellow",
-    "UNRECONCILED": "yellow",
-    "BROKEN": "red",
-}
 
 
 def _escape_github_message(value: str) -> str:
@@ -253,19 +243,6 @@ def _load(config: Path | None) -> Lattice:
     return load_lattice(project)
 
 
-def _skip_summary(result: LintResult) -> str:
-    """Render the one-line coverage summary printed after any human lint run."""
-    violations = len(result.violations)
-    unranked = len(result.skipped)
-    targets = sum(1 for skipped in result.skipped if skipped.reason == "target-unannotated")
-    sources = sum(1 for skipped in result.skipped if skipped.reason == "source-unannotated")
-    label = "violation" if violations == 1 else "violations"
-    line = f"{violations} ladder {label}, {unranked} edges unranked"
-    if unranked:
-        line += f" ({targets} target unannotated, {sources} source unannotated)"
-    return line
-
-
 @app.command()
 def check(
     config: ConfigOpt = None,
@@ -292,20 +269,7 @@ def check(
         statuses = check_lattice(lattice)
     displayed = _filter_statuses(statuses, only_states)
     if report_format == "json":
-        payload = {
-            "edges": [
-                {
-                    "source_id": status.source_id,
-                    "target_ref": status.target_ref,
-                    "target_id": status.target_id.as_ref() if status.target_id else None,
-                    "state": status.state,
-                    "expected": status.expected,
-                    "actual": status.actual,
-                }
-                for status in displayed
-            ]
-        }
-        typer.echo(json.dumps(payload, indent=indent))
+        typer.echo(json.dumps(statuses_json(displayed), indent=indent))
     elif report_format == "github":
         for status in displayed:
             if status.state == "OK":
@@ -320,12 +284,7 @@ def check(
                 )
             )
     else:
-        for status in displayed:
-            color = _STATE_COLORS[status.state]
-            _out.print(
-                f"[{color}]{status.state:<{_STATE_COL_WIDTH}}[/{color}] "
-                f"{escape(status.source_id)} -> {escape(status.target_ref)}"
-            )
+        render_statuses(_out, displayed)
     raise typer.Exit(1 if has_drift(statuses) else 0)
 
 
@@ -343,28 +302,7 @@ def lint(
         lattice = _load(config)
         result = lint_lattice(lattice)
     if report_format == "json":
-        payload = {
-            "violations": [
-                {
-                    "source_id": violation.source_id,
-                    "source_authority": violation.source_authority,
-                    "target_id": violation.target_id.as_ref(),
-                    "target_ref": violation.target_ref,
-                    "target_authority": violation.target_authority,
-                }
-                for violation in result.violations
-            ],
-            "skipped": [
-                {
-                    "source_id": skipped.source_id,
-                    "target_ref": skipped.target_ref,
-                    "target_id": skipped.target_id.as_ref(),
-                    "reason": skipped.reason,
-                }
-                for skipped in result.skipped
-            ],
-        }
-        typer.echo(json.dumps(payload, indent=indent))
+        typer.echo(json.dumps(lint_json(result), indent=indent))
     elif report_format == "github":
         for violation in result.violations:
             path = lattice.nodes_by_id[violation.source_id].path
@@ -378,13 +316,7 @@ def lint(
                 )
             )
     else:
-        for violation in result.violations:
-            _out.print(
-                f"[red]VIOLATION[/red]  {escape(violation.source_id)} "
-                f"({violation.source_authority}) -> {escape(violation.target_ref)} "
-                f"({violation.target_authority})"
-            )
-        _out.print(_skip_summary(result))
+        render_lint(_out, result)
     raise typer.Exit(1 if result.violations else 0)
 
 
@@ -405,23 +337,9 @@ def impact(
         lattice = _load(config)
         affected = impact_walk(lattice, token, max_depth=depth)
     if json_out:
-        payload = {
-            "affected": [
-                {
-                    "id": node.id,
-                    "title": node.title,
-                    "path": str(node.path),
-                    "tickets": list(node.tickets),
-                    "depth": node_depth,
-                }
-                for node, node_depth in affected
-            ]
-        }
-        typer.echo(json.dumps(payload, indent=indent))
+        typer.echo(json.dumps(impact_json(affected), indent=indent))
     else:
-        for node, _node_depth in affected:
-            tickets = ", ".join(node.tickets) if node.tickets else "-"
-            _out.print(f"{escape(node.id)}  ({escape(str(node.path))})  tickets: {escape(tickets)}")
+        render_impact(_out, affected)
 
 
 Rewrite = tuple[Path, str, set[str]]

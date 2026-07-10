@@ -6,7 +6,13 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from game_lattice.constants import AUTHORITY_LADDER
-from game_lattice.lint import LintResult, lint_lattice
+from game_lattice.lint import (
+    LadderViolation,
+    LintResult,
+    SkippedEdge,
+    lint_json,
+    lint_lattice,
+)
 from game_lattice.loader import build_lattice
 from game_lattice.model import NodeMeta, ParsedDoc, RawEdge, TargetId
 
@@ -26,6 +32,48 @@ def _doc(id_, authority=None, derives=(), body="x\n"):
 
 def _lattice(*docs):
     return build_lattice(list(docs))
+
+
+def test_lint_json_returns_exact_payload_shape():
+    result = LintResult(
+        violations=(
+            LadderViolation(
+                source_id="binding-doc",
+                source_authority="binding",
+                target_id=TargetId("draft", "idea"),
+                target_ref="draft#idea",
+                target_authority="exploratory",
+            ),
+        ),
+        skipped=(
+            SkippedEdge(
+                source_id="unranked-doc",
+                target_ref="unknown-rank",
+                target_id=TargetId("unknown-rank"),
+                reason="target-unannotated",
+            ),
+        ),
+    )
+
+    assert lint_json(result) == {
+        "violations": [
+            {
+                "source_id": "binding-doc",
+                "source_authority": "binding",
+                "target_id": "draft#idea",
+                "target_ref": "draft#idea",
+                "target_authority": "exploratory",
+            }
+        ],
+        "skipped": [
+            {
+                "source_id": "unranked-doc",
+                "target_ref": "unknown-rank",
+                "target_id": "unknown-rank",
+                "reason": "target-unannotated",
+            }
+        ],
+    }
 
 
 def test_binding_deriving_from_derived_is_a_violation():

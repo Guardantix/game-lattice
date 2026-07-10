@@ -19,6 +19,30 @@ class EdgeStatus:
     actual: str | None
 
 
+def statuses_json(statuses: list[EdgeStatus]) -> dict:
+    """Build the JSON-ready check report payload.
+
+    Args:
+        statuses: Edge classifications to serialize.
+
+    Returns:
+        A plain dictionary containing the ordered edge payloads.
+    """
+    return {
+        "edges": [
+            {
+                "source_id": status.source_id,
+                "target_ref": status.target_ref,
+                "target_id": status.target_id.as_ref() if status.target_id else None,
+                "state": status.state,
+                "expected": status.expected,
+                "actual": status.actual,
+            }
+            for status in statuses
+        ]
+    }
+
+
 def check_lattice(lattice: Lattice) -> list[EdgeStatus]:
     """Classify every edge in the lattice.
 

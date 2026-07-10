@@ -5,13 +5,39 @@ from pathlib import Path
 import pytest
 
 from game_lattice.error_types import ValidationError
-from game_lattice.impact import expand_targets, impact
+from game_lattice.impact import expand_targets, impact, impact_json
 from game_lattice.loader import build_lattice
 from game_lattice.model import NodeMeta, ParsedDoc, RawEdge, TargetId
 
 
 def _doc(path: str, body: str, **meta) -> ParsedDoc:
     return ParsedDoc(Path(path), NodeMeta(**meta), body)
+
+
+def test_impact_json_returns_exact_payload_shape():
+    lattice = build_lattice(
+        [
+            _doc(
+                "docs/affected.md",
+                "body\n",
+                id="affected",
+                title="Affected Doc",
+                tickets=["GAME-1", "GAME-2"],
+            )
+        ]
+    )
+
+    assert impact_json([(lattice.nodes_by_id["affected"], 2)]) == {
+        "affected": [
+            {
+                "id": "affected",
+                "title": "Affected Doc",
+                "path": "docs/affected.md",
+                "tickets": ["GAME-1", "GAME-2"],
+                "depth": 2,
+            }
+        ]
+    }
 
 
 def test_section_token_expands_to_ancestors_and_file():
