@@ -119,20 +119,25 @@ Add this test after `test_parse_meta_returns_node`:
 def test_parse_meta_reuses_safe_yaml_loader(monkeypatch):
     raw_documents = ["id: first\n", "id: second\n"]
     yaml = frontmatter_parser_module._YAML
+    yaml_type = type(yaml)
     calls: list[str] = []
-    original_load = yaml.load
+    original_load = yaml_type.load
 
-    def counting_load(raw_meta: str):
+    def counting_load(self, raw_meta: str):
+        assert self is yaml
         calls.append(raw_meta)
-        return original_load(raw_meta)
+        return original_load(self, raw_meta)
 
-    monkeypatch.setattr(yaml, "load", counting_load)
+    monkeypatch.setattr(yaml_type, "load", counting_load)
 
     metas = [parse_meta(raw, Path(f"{index}.md")) for index, raw in enumerate(raw_documents)]
 
     assert [meta.id for meta in metas if meta is not None] == ["first", "second"]
     assert calls == raw_documents
 ```
+
+Patching the defining class lets pytest restore the method without leaving a shadowing
+`load` attribute on the frontmatter YAML singleton.
 
 - [ ] **Step 2: Run the test and verify RED**
 
@@ -198,14 +203,16 @@ Add this test after `test_loads_and_resolves_roots`:
 ```python
 def test_load_config_reuses_safe_yaml_loader(monkeypatch, tmp_path: Path):
     yaml = config_module._YAML
+    yaml_type = type(yaml)
     calls: list[str] = []
-    original_load = yaml.load
+    original_load = yaml_type.load
 
-    def counting_load(text: str):
+    def counting_load(self, text: str):
+        assert self is yaml
         calls.append(text)
-        return original_load(text)
+        return original_load(self, text)
 
-    monkeypatch.setattr(yaml, "load", counting_load)
+    monkeypatch.setattr(yaml_type, "load", counting_load)
     projects = [tmp_path / "first", tmp_path / "second"]
     for project in projects:
         project.mkdir()
@@ -214,6 +221,9 @@ def test_load_config_reuses_safe_yaml_loader(monkeypatch, tmp_path: Path):
 
     assert calls == ["docs_roots: [docs]\n", "docs_roots: [docs]\n"]
 ```
+
+Patching the defining class lets pytest restore the method without leaving a shadowing
+`load` attribute on the config YAML singleton.
 
 - [ ] **Step 2: Run the test and verify RED**
 
@@ -262,6 +272,41 @@ Expected: all config tests PASS.
 ```bash
 git add tests/test_config.py src/game_lattice/config.py
 git commit -m "perf: reuse config YAML loader"
+```
+
+- [ ] **Step 6: Add the malformed-config recovery regression**
+
+Add this test after the malformed-YAML test in `tests/test_config.py`:
+
+```python
+def test_safe_yaml_loader_recovers_after_malformed_config(tmp_path: Path):
+    config_path = tmp_path / ".game-lattice.yml"
+    config_path.write_text("docs_roots: [unclosed\n", encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config(None, tmp_path)
+
+    config_path.write_text("docs_roots: [docs]\n", encoding="utf-8")
+
+    project = load_config(None, tmp_path)
+
+    assert project.config.docs_roots == ["docs"]
+```
+
+- [ ] **Step 7: Run the recovery regression**
+
+Run:
+
+```bash
+uv run --group dev pytest tests/test_config.py::test_safe_yaml_loader_recovers_after_malformed_config -q --no-cov
+```
+
+Expected: PASS, proving the same module singleton remains reusable after a parse error.
+
+- [ ] **Step 8: Commit the review-hardening test**
+
+```bash
+git add tests/test_config.py
+git commit -m "test: cover config YAML recovery"
 ```
 
 ### Task 4: Centralize Section Newline Normalization
