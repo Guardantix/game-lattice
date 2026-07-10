@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from game_lattice.check import check_lattice, has_drift
+from game_lattice.check import EdgeStatus, check_lattice, has_drift, statuses_json
 from game_lattice.config import load_config
 from game_lattice.hashing import content_hash
 from game_lattice.loader import build_lattice
@@ -10,6 +10,48 @@ from game_lattice.model import NodeMeta, ParsedDoc, RawEdge, TargetId
 from game_lattice.orchestrate import load_lattice
 from game_lattice.resolve import target_content
 from game_lattice.sections import build_toc, section_span, section_text
+
+
+def test_statuses_json_returns_exact_payload_shape():
+    statuses = [
+        EdgeStatus(
+            source_id="down",
+            target_ref="up#section",
+            target_id=TargetId("up", "section"),
+            state="STALE",
+            expected="old-hash",
+            actual="new-hash",
+        ),
+        EdgeStatus(
+            source_id="broken",
+            target_ref="missing",
+            target_id=None,
+            state="BROKEN",
+            expected=None,
+            actual=None,
+        ),
+    ]
+
+    assert statuses_json(statuses) == {
+        "edges": [
+            {
+                "source_id": "down",
+                "target_ref": "up#section",
+                "target_id": "up#section",
+                "state": "STALE",
+                "expected": "old-hash",
+                "actual": "new-hash",
+            },
+            {
+                "source_id": "broken",
+                "target_ref": "missing",
+                "target_id": None,
+                "state": "BROKEN",
+                "expected": None,
+                "actual": None,
+            },
+        ]
+    }
 
 
 def test_check_classifies_each_state(lattice_dir: Path):

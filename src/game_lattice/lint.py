@@ -36,6 +36,38 @@ class LintResult:
     skipped: tuple[SkippedEdge, ...]
 
 
+def lint_json(result: LintResult) -> dict:
+    """Build the JSON-ready authority-lint report payload.
+
+    Args:
+        result: Authority-lint violations and skipped edges to serialize.
+
+    Returns:
+        A plain dictionary containing ordered violation and skipped-edge payloads.
+    """
+    return {
+        "violations": [
+            {
+                "source_id": violation.source_id,
+                "source_authority": violation.source_authority,
+                "target_id": violation.target_id.as_ref(),
+                "target_ref": violation.target_ref,
+                "target_authority": violation.target_authority,
+            }
+            for violation in result.violations
+        ],
+        "skipped": [
+            {
+                "source_id": skipped.source_id,
+                "target_ref": skipped.target_ref,
+                "target_id": skipped.target_id.as_ref(),
+                "reason": skipped.reason,
+            }
+            for skipped in result.skipped
+        ],
+    }
+
+
 def _rank(authority: Authority) -> int:
     """Return the ladder position of an authority; higher means stronger."""
     return AUTHORITY_LADDER.index(authority)
