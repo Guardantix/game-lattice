@@ -12,6 +12,7 @@ from .model import NodeMeta
 
 _FENCE = "---"
 _BOM = chr(0xFEFF)  # UTF-8 byte-order mark; strip a leading one so the opening fence is detected
+_YAML = YAML(typ="safe")
 
 
 def split_frontmatter(text: str) -> tuple[str | None, str]:
@@ -55,9 +56,8 @@ def parse_meta(raw_meta: str | None, source: Path) -> NodeMeta | None:
     """
     if raw_meta is None:
         return None
-    yaml = YAML(typ="safe")
     try:
-        data: Any = yaml.load(raw_meta)
+        data: Any = _YAML.load(raw_meta)
     except YAMLError as exc:
         msg = f"cannot parse frontmatter in {source}: {exc}"
         raise UnreadableDocError(msg) from exc
