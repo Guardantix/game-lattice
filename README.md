@@ -171,11 +171,11 @@ uv run --group dev ty check src
 
 | Command | What it does | Exits non-zero |
 |---------|--------------|----------------|
-| `check` | Classify every `derives_from` edge as OK / STALE / UNRECONCILED / BROKEN. | 1 on drift, 2 on tool error |
+| `check [--only STATE ...]` | Classify every `derives_from` edge as OK / STALE / UNRECONCILED / BROKEN. | 1 on drift, 2 on tool error |
 | `lint` | Validate the authority ladder (binding > derived > exploratory) over the edges. | 1 on a violation, 2 on tool error |
-| `impact TOKEN` | List every downstream doc affected by a change to TOKEN. | 2 on tool error |
+| `impact TOKEN [--depth N]` | List every downstream doc affected by a change to TOKEN; `--depth N` bounds the walk to N hops. | 2 on tool error |
 | `reconcile [ID] [--ref REF] [--all] [--dry-run]` | Set `seen` to current upstream hashes for the selected edges (the only command that mutates your tracked docs); `--dry-run` previews the plan without writing. | 2 on tool error |
-| `graph [--format mermaid\|dot]` | Emit the edge graph as Mermaid or DOT. | 2 on tool error |
+| `graph [--format mermaid\|dot\|json]` | Emit the edge graph as Mermaid, DOT, or JSON. | 2 on tool error (including an unrecognized `--format`) |
 | `linear [TARGET] [--from ID] [--exit-code] [--warn-exit]` | Report tickets shipped against a spec that has since drifted (needs `LINEAR_API_KEY`). | 1 with `--exit-code` on DANGER/BLOCKED, 2 on tool error |
 | `init [--docs-root ...] [--linear-team KEY]` | Scaffold `.game-lattice.yml` and print pre-commit and CI codegen. | 2 on tool error |
 
@@ -183,6 +183,16 @@ Every command except `init` accepts `--config PATH` (path to `.game-lattice.yml`
 the file in the current directory). `check`, `lint`, `impact`, `reconcile`, and `linear` accept
 `--json` for machine-readable output. Run `uv run game-lattice <command> --help` for the full
 flag list.
+
+`impact` walks the full transitive closure by default. Pass `--depth N` (N >= 1) to bound the
+walk to N hops from TOKEN: `--depth 1` lists only the docs that derive directly from it. Human
+output is unchanged, and each `--json` entry gains a `"depth"` field carrying the minimum number
+of hops at which that doc is reached.
+
+`check` accepts a repeatable `--only STATE` to narrow the display to specific states (case
+insensitive, e.g. `--only stale --only broken`); an unrecognized state exits 2 and names the
+valid set. Filtering is display-only: the exit code always reflects every edge, so `check --only
+OK` on a drifting lattice still exits 1.
 
 ### `reconcile` selectors
 
@@ -262,7 +272,9 @@ ladder) as your gates. Paste each where the output says. Pass `--docs-root` (rep
 loaded lattice, then fetches live ticket status over the Linear GraphQL API to report tickets
 that shipped against a spec that has since drifted. It reads `LINEAR_API_KEY` from the
 environment (export it before running; the error points you to `impact` for the offline view),
-and the client is https-only, redirect-refusing, size-capped, and SSRF-hardened. Set the team
+and the client is https-only, redirect-refusing, size-capped, and SSRF-hardened. A transient
+HTTP 429 or 5xx is retried up to three times with a short backoff (honoring `Retry-After` when
+present, capped) before failing, so a passing rate limit does not fail a CI run. Set the team
 the query targets with `linear_team` in `.game-lattice.yml`, or pass `--linear-team` to `init`.
 Every other command runs fully offline.
 

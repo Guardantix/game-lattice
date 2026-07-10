@@ -8,17 +8,18 @@ merged but no tag, or a tag without the version bump) cannot land.
 
 ## Checklist
 
-1. Bump the version to the new `X.Y.Z` in all three locations:
+1. Bump the version to the new `X.Y.Z` in all four locations:
    - `src/game_lattice/__init__.py` (`__version__`)
    - `pyproject.toml` (`version`)
-   - the `@vX.Y.Z` ref in the README "Adopting game-lattice" `uvx` command (not
-     covered by the version-sync guard, so bump it by hand)
+   - the `@vX.Y.Z` ref in the README "Adopting game-lattice" `uvx` command (a
+     manual edit, but now checked by the version-sync guard)
 2. Run `uv lock` and commit the refreshed `uv.lock`.
 3. Add a `## [X.Y.Z]` section to `CHANGELOG.md` (rename the `## [Unreleased]`
    section if you have been accumulating notes there).
 4. Open the PR and get it green. The `check-version-sync` gate fails the PR if
-   `__version__`, `pyproject.toml`, and the `CHANGELOG.md` heading disagree (the
-   README ref is not gated), so fix any drift before merge.
+   `__version__`, `pyproject.toml`, the `CHANGELOG.md` heading, or a pinned
+   `game-lattice@vX.Y.Z` ref in `README.md` disagree, so fix any drift before
+   merge.
 5. Merge to `main`. On that push, the `release` job:
    - verifies version sync again,
    - smoke-tests the exact commit over `git+...@<sha>`, running `check`, `lint`,
