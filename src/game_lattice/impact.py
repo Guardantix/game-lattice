@@ -74,8 +74,9 @@ def impact(lattice: Lattice, token: str, *, max_depth: int | None = None) -> lis
             if source_id in affected:
                 continue
             affected[source_id] = depth + 1
-            # A source node id is a whole-file target; bridge it to a TargetId to keep walking.
-            queue.append((TargetId(source_id), depth + 1))
-            node = lattice.nodes_by_id[source_id]
-            queue.extend((anchor, depth + 1) for anchor in lattice.anchors_by_path[node.path])
+            if max_depth is None or depth + 1 < max_depth:
+                # A source node id is a whole-file target; bridge it to a TargetId to keep walking.
+                queue.append((TargetId(source_id), depth + 1))
+                node = lattice.nodes_by_id[source_id]
+                queue.extend((anchor, depth + 1) for anchor in lattice.anchors_by_path[node.path])
     return [(lattice.nodes_by_id[node_id], affected[node_id]) for node_id in sorted(affected)]
