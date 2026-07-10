@@ -71,18 +71,27 @@ def _github_annotation(path: Path, root: Path, title: str, message: str) -> str:
 
     The ``file`` property is emitted relative to ``root`` so GitHub Actions can attach
     the annotation to the offending document in the pull request diff; an absolute path
-    would strand the annotation in the run summary, detached from the file.
+    would strand the annotation in the run summary, detached from the file. ``root``
+    should be the invocation ``cwd``, not the resolved project root: a ``--config``
+    pointing at a lattice in a subdirectory (a monorepo layout) must not strip that
+    subdirectory prefix from the reported path, since GitHub Actions checks out the
+    repository at ``GITHUB_WORKSPACE`` and a ``run:`` step's cwd defaults to it. When
+    ``path`` falls outside ``root`` (an out-of-tree ``--config``), the absolute path is
+    used instead of raising.
 
     Args:
-        path: Absolute path of the source document (always inside ``root``).
-        root: Project root the file path is reported relative to.
+        path: Absolute path of the source document.
+        root: Root the file path is reported relative to (the invocation cwd).
         title: Annotation title, before escaping.
         message: Annotation message, before escaping.
 
     Returns:
         A single workflow-command line, with the file path, title, and message escaped.
     """
-    relative = path.relative_to(root)
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        relative = path
     return (
         f"::error file={_escape_github_property(str(relative))},"
         f"title={_escape_github_property(title)}::{_escape_github_message(message)}"
@@ -215,15 +224,10 @@ def main_callback(
     """game-lattice: documentation traceability engine."""
 
 
-def _load_project(config: Path | None) -> tuple[Lattice, Path]:
-    """Load the lattice and return it alongside the resolved project root."""
-    project = load_config(config, Path.cwd())
-    return load_lattice(project), project.project_root
-
-
 def _load(config: Path | None) -> Lattice:
-    lattice, _ = _load_project(config)
-    return lattice
+    """Load the lattice from the resolved project config."""
+    project = load_config(config, Path.cwd())
+    return load_lattice(project)
 
 
 def _skip_summary(result: LintResult) -> str:
@@ -259,7 +263,7 @@ def check(
     report_format = _resolve_report_format(fmt, json_out)
     only_states = _parse_only_states(only)
     with _exit_on_project_error():
-        lattice, project_root = _load_project(config)
+        lattice = _load(config)
         statuses = check_lattice(lattice)
     displayed = _filter_statuses(statuses, only_states)
     if report_format == "json":
@@ -285,7 +289,7 @@ def check(
             typer.echo(
                 _github_annotation(
                     path,
-                    project_root,
+                    Path.cwd(),
                     f"game-lattice {status.state}",
                     f"{status.source_id} -> {status.target_ref} is {status.state}",
                 )
@@ -309,7 +313,7 @@ def lint(
     """Validate the authority ladder; exit 1 on a violation, 2 on tool error."""
     report_format = _resolve_report_format(fmt, json_out)
     with _exit_on_project_error():
-        lattice, project_root = _load_project(config)
+        lattice = _load(config)
         result = lint_lattice(lattice)
     if report_format == "json":
         payload = {
@@ -340,7 +344,7 @@ def lint(
             typer.echo(
                 _github_annotation(
                     path,
-                    project_root,
+                    Path.cwd(),
                     "game-lattice ladder violation",
                     f"{violation.source_id} ({violation.source_authority}) -> "
                     f"{violation.target_ref} ({violation.target_authority})",

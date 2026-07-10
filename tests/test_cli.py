@@ -95,6 +95,32 @@ def test_check_github_escapes_complete_annotation(tmp_path: Path, monkeypatch):
     )
 
 
+def test_check_github_annotation_keeps_config_subdir_prefix(tmp_path: Path, monkeypatch):
+    # A --config pointing at a lattice in a subdirectory (a monorepo layout) must not
+    # strip that subdirectory from the reported path: GitHub Actions checks out the repo
+    # at the invocation cwd, so the annotation needs the full cwd-relative path to land
+    # on the right file in the pull request diff.
+    project = tmp_path / "packages" / "game"
+    docs = project / "docs"
+    docs.mkdir(parents=True)
+    (docs / "down.md").write_text(
+        "---\nid: down\nderives_from:\n  - ref: ghost\n---\n# Down\nbody\n",
+        encoding="utf-8",
+    )
+    (project / ".game-lattice.yml").write_text("docs_roots:\n  - docs\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        app, ["check", "--config", "packages/game/.game-lattice.yml", "--format", "github"]
+    )
+
+    assert result.exit_code == 1
+    assert result.stdout == (
+        "::error file=packages/game/docs/down.md,title=game-lattice BROKEN::"
+        "down -> ghost is BROKEN\n"
+    )
+
+
 def test_check_github_suppresses_ok_edges(tmp_path: Path, monkeypatch):
     _clean_docs(tmp_path)
     monkeypatch.chdir(tmp_path)
