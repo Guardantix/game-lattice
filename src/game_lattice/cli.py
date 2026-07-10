@@ -284,8 +284,8 @@ def check(
     ] = None,
 ) -> None:
     """Classify every edge; exit 1 on drift, 2 on tool error."""
-    _validate_indent(indent, json_out=json_out)
     report_format = _resolve_report_format(fmt, json_out)
+    _validate_indent(indent, json_out=report_format == "json")
     only_states = _parse_only_states(only)
     with _exit_on_project_error():
         lattice = _load(config)
@@ -337,8 +337,8 @@ def lint(
     fmt: Annotated[str, typer.Option("--format", help="human, json, or github.")] = "human",
 ) -> None:
     """Validate the authority ladder; exit 1 on a violation, 2 on tool error."""
-    _validate_indent(indent, json_out=json_out)
     report_format = _resolve_report_format(fmt, json_out)
+    _validate_indent(indent, json_out=report_format == "json")
     with _exit_on_project_error():
         lattice = _load(config)
         result = lint_lattice(lattice)
@@ -741,7 +741,9 @@ def main() -> None:
     # is), which keeps bold/dim escapes on even with NO_COLOR. Setting rich_utils.COLOR_SYSTEM to
     # None (its documented disable switch, read afresh by each _get_rich_console call) makes those
     # consoles emit plain text unconditionally, independent of the terminal-forcing env vars.
-    if "--no-color" in sys.argv[1:]:
+    # Honor the --no-color flag and the documented NO_COLOR variable alike, using the no-color.org
+    # rule (present and non-empty) that rich itself applies to our module-level consoles.
+    if "--no-color" in sys.argv[1:] or os.environ.get("NO_COLOR", "") != "":
         os.environ["NO_COLOR"] = "1"
         typer.rich_utils.COLOR_SYSTEM = None
     try:

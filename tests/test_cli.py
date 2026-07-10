@@ -110,6 +110,26 @@ def test_no_color_suppresses_typer_rendered_colors(argv):
     assert "\x1b[" not in combined, combined
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["game-lattice", "--help"],
+        ["game-lattice", "check", "--json", "--indent", "-1"],
+    ],
+)
+def test_no_color_env_var_suppresses_typer_rendered_colors(argv):
+    # The documented NO_COLOR environment variable, not just the --no-color flag, must reach
+    # typer's own rich_utils consoles: with a forcing FORCE_COLOR set, NO_COLOR alone otherwise
+    # leaves help and parse errors styled. Regression test for that env-only review finding.
+    env: dict[str, str] = dict(os.environ)
+    env["FORCE_COLOR"] = "1"
+    env["TERM"] = "xterm-256color"
+    env["NO_COLOR"] = "1"
+    result = _run_cli_subprocess(argv, env)
+    combined = result.stdout + result.stderr
+    assert "\x1b[" not in combined, combined
+
+
 def test_global_help_lists_no_color(monkeypatch):
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
@@ -309,6 +329,25 @@ def test_check_json_zero_indent_round_trips_to_compact_payload(lattice_dir: Path
     assert compact.exit_code == zero_indent.exit_code == 1
     assert json.loads(zero_indent.stdout) == json.loads(compact.stdout)
     assert '\n"edges": [\n' in zero_indent.stdout
+
+
+def test_check_format_json_accepts_indent(lattice_dir: Path, monkeypatch):
+    # --format json is the documented equivalent of --json, so --indent must be honored with it.
+    monkeypatch.chdir(lattice_dir)
+    via_flag = runner.invoke(app, ["check", "--json", "--indent", "2"])
+    via_format = runner.invoke(app, ["check", "--format", "json", "--indent", "2"])
+    assert via_flag.exit_code == via_format.exit_code == 1
+    assert via_format.stdout == via_flag.stdout
+    assert '\n  "edges": [\n' in via_format.stdout
+
+
+def test_lint_format_json_accepts_indent(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    via_flag = runner.invoke(app, ["lint", "--json", "--indent", "2"])
+    via_format = runner.invoke(app, ["lint", "--format", "json", "--indent", "2"])
+    assert via_flag.exit_code == via_format.exit_code
+    assert via_format.stdout == via_flag.stdout
+    assert json.loads(via_format.stdout) == json.loads(via_flag.stdout)
 
 
 def test_check_indent_without_json_exits_2(lattice_dir: Path, monkeypatch):
