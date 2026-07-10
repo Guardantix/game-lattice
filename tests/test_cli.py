@@ -15,12 +15,27 @@ from typer.testing import CliRunner
 
 import game_lattice.cli as cli_mod
 from game_lattice import __version__
-from game_lattice.cli import _STATE_COLORS, app
+from game_lattice.cli import (
+    _STATE_COLORS,
+    _escape_github_message,
+    _escape_github_property,
+    app,
+)
 from game_lattice.constants import EdgeState
 from game_lattice.error_types import ConfigError
 from game_lattice.tickets import Ticket, TicketState
 
 runner = CliRunner()
+
+
+def test_escape_github_message_encodes_workflow_command_metacharacters():
+    assert _escape_github_message("100%\rfirst\nsecond: a,b") == ("100%25%0Dfirst%0Asecond: a,b")
+
+
+def test_escape_github_property_encodes_message_and_property_metacharacters():
+    assert _escape_github_property("100%\rfirst\nsecond: a,b") == (
+        "100%25%0Dfirst%0Asecond%3A a%2Cb"
+    )
 
 
 def test_version_flag():
@@ -136,6 +151,126 @@ def test_check_human_output_is_byte_identical(lattice_dir: Path, monkeypatch):
         "STALE         pc-design -> art-direction#accent\n"
         "UNRECONCILED  pc-design -> art-direction#motion\n"
     )
+
+
+def test_check_github_emits_each_drift_annotation(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["check", "--format", "github"])
+
+    assert result.exit_code == 1
+    gdd_path = "docs/gdd.md"
+    pc_path = "docs/pc-design.md"
+    assert result.stdout == (
+        f"::error file={gdd_path},title=game-lattice BROKEN::"
+        "gdd -> ghost is BROKEN\n"
+        f"::error file={pc_path},title=game-lattice STALE::"
+        "pc-design -> art-direction#accent is STALE\n"
+        f"::error file={pc_path},title=game-lattice UNRECONCILED::"
+        "pc-design -> art-direction#motion is UNRECONCILED\n"
+    )
+
+
+def test_check_github_escapes_complete_annotation(tmp_path: Path, monkeypatch):
+    # Metacharacters live in a subdirectory under docs (part of the repo-relative path)
+    # so escaping of the emitted file= property is exercised; the project root is stripped.
+    weird = tmp_path / "docs" / "sub%:,\nline"
+    weird.mkdir(parents=True)
+    (weird / "down.md").write_text(
+        '---\nid: "down%:,\\r\\nline"\nderives_from:\n'
+        '  - ref: "ghost%:,\\r\\nline"\n---\n# Down\nbody\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["check", "--format", "github"])
+
+    assert result.exit_code == 1
+    expected_path = _escape_github_property("docs/sub%:,\nline/down.md")
+    assert result.stdout == (
+        f"::error file={expected_path},"
+        "title=game-lattice BROKEN::"
+        "down%25:,%0D%0Aline -> ghost%25:,%0D%0Aline is BROKEN\n"
+    )
+
+
+def test_check_github_annotation_keeps_config_subdir_prefix(tmp_path: Path, monkeypatch):
+    # A --config pointing at a lattice in a subdirectory (a monorepo layout) must not
+    # strip that subdirectory from the reported path: GitHub Actions checks out the repo
+    # at the invocation cwd, so the annotation needs the full cwd-relative path to land
+    # on the right file in the pull request diff.
+    project = tmp_path / "packages" / "game"
+    docs = project / "docs"
+    docs.mkdir(parents=True)
+    (docs / "down.md").write_text(
+        "---\nid: down\nderives_from:\n  - ref: ghost\n---\n# Down\nbody\n",
+        encoding="utf-8",
+    )
+    (project / ".game-lattice.yml").write_text("docs_roots:\n  - docs\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        app, ["check", "--config", "packages/game/.game-lattice.yml", "--format", "github"]
+    )
+
+    assert result.exit_code == 1
+    assert result.stdout == (
+        "::error file=packages/game/docs/down.md,title=game-lattice BROKEN::"
+        "down -> ghost is BROKEN\n"
+    )
+
+
+def test_check_github_suppresses_ok_edges(tmp_path: Path, monkeypatch):
+    _clean_docs(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    assert runner.invoke(app, ["reconcile", "down"]).exit_code == 0
+
+    result = runner.invoke(app, ["check", "--format", "github"])
+
+    assert result.exit_code == 0
+    assert result.stdout == ""
+
+
+def test_check_format_json_matches_json_alias(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    alias = runner.invoke(app, ["check", "--json"])
+    explicit = runner.invoke(app, ["check", "--format", "json"])
+
+    assert explicit.exit_code == alias.exit_code == 1
+    assert explicit.stdout == alias.stdout
+
+
+@pytest.mark.parametrize("command", ["check", "lint"])
+def test_report_commands_reject_json_github_conflict(lattice_dir: Path, monkeypatch, command: str):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, [command, "--json", "--format", "github"])
+
+    assert result.exit_code == 2
+    assert "--json" in result.stderr
+    assert "--format github" in result.stderr
+
+
+@pytest.mark.parametrize("command", ["check", "lint"])
+def test_report_commands_reject_unknown_format(lattice_dir: Path, monkeypatch, command: str):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, [command, "--format", "nonsense"])
+
+    assert result.exit_code == 2
+    assert "nonsense" in result.stderr
+    assert "human" in result.stderr
+    assert "json" in result.stderr
+    assert "github" in result.stderr
+
+
+@pytest.mark.parametrize("command", ["check", "lint"])
+def test_report_commands_reject_unknown_format_even_with_json(
+    lattice_dir: Path, monkeypatch, command: str
+):
+    # --json must not mask a typoed --format; the bad format still fails loudly.
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, [command, "--json", "--format", "githu"])
+
+    assert result.exit_code == 2
+    assert "githu" in result.stderr
 
 
 def test_state_colors_cover_every_edge_state():
@@ -1030,6 +1165,72 @@ def test_lint_exits_1_on_violation(tmp_path: Path, monkeypatch):
     result = runner.invoke(app, ["lint"])
     assert result.exit_code == 1
     assert "VIOLATION" in result.stdout
+
+
+def test_lint_github_emits_each_violation_annotation(tmp_path: Path, monkeypatch):
+    _write_lint_docs(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["lint", "--format", "github"])
+
+    assert result.exit_code == 1
+    down_path = "docs/down.md"
+    assert result.stdout == (
+        f"::error file={down_path},title=game-lattice ladder violation::"
+        "down (binding) -> up (derived)\n"
+    )
+
+
+def test_lint_github_escapes_complete_annotation(tmp_path: Path, monkeypatch):
+    # Metacharacters live in a subdirectory under docs (part of the repo-relative path)
+    # so escaping of the emitted file= property is exercised; the project root is stripped.
+    weird = tmp_path / "docs" / "sub%:,\nline"
+    weird.mkdir(parents=True)
+    (weird / "up.md").write_text(
+        '---\nid: "up%:,\\r\\nline"\nauthority: derived\n---\n# Up\nbody\n',
+        encoding="utf-8",
+    )
+    (weird / "down.md").write_text(
+        '---\nid: "down%:,\\r\\nline"\nauthority: binding\nderives_from:\n'
+        '  - ref: "up%:,\\r\\nline"\n---\n# Down\nbody\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["lint", "--format", "github"])
+
+    assert result.exit_code == 1
+    expected_path = _escape_github_property("docs/sub%:,\nline/down.md")
+    assert result.stdout == (
+        f"::error file={expected_path},"
+        "title=game-lattice ladder violation::"
+        "down%25:,%0D%0Aline (binding) -> up%25:,%0D%0Aline (derived)\n"
+    )
+
+
+def test_lint_github_suppresses_skipped_edges(tmp_path: Path, monkeypatch):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "up.md").write_text("---\nid: up\n---\n# Up\nbody\n", encoding="utf-8")
+    (docs / "down.md").write_text(
+        "---\nid: down\nauthority: binding\nderives_from:\n  - ref: up\n---\n# Down\nbody\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["lint", "--format", "github"])
+
+    assert result.exit_code == 0
+    assert result.stdout == ""
+
+
+def test_lint_format_json_matches_json_alias(tmp_path: Path, monkeypatch):
+    _write_lint_docs(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    alias = runner.invoke(app, ["lint", "--json"])
+    explicit = runner.invoke(app, ["lint", "--format", "json"])
+
+    assert explicit.exit_code == alias.exit_code == 1
+    assert explicit.stdout == alias.stdout
 
 
 def test_lint_json_lists_violations(tmp_path: Path, monkeypatch):

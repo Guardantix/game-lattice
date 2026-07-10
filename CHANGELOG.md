@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `check`, `lint`, `impact`, and `linear` accept `--indent N` with `--json`, and the global
   `--no-color` option explicitly disables colored output (#20).
+- `check --format github` and `lint --format github` emit escaped GitHub Actions error
+  annotations with repo-relative file paths so findings attach inline to the offending doc in
+  the pull request diff, while preserving the existing gate exit codes; both commands also accept
+  `--format human|json`, and `--json` remains the JSON alias (#18).
 
 ### Changed
 
