@@ -35,6 +35,9 @@ VALID_SKIP_REASONS: frozenset[str] = frozenset(get_args(SkipReason))
 GraphFormat = Literal["mermaid", "dot", "json"]
 VALID_GRAPH_FORMATS: frozenset[str] = frozenset(get_args(GraphFormat))
 
+ReportFormat = Literal["human", "json", "github"]
+VALID_REPORT_FORMATS: frozenset[str] = frozenset(get_args(ReportFormat))
+
 # Control-range boundaries for text sanitization. C0 (below 0x20) and DEL (0x7F) are the
 # ASCII controls; C1 (0x80 to 0x9F) are 8-bit controls that still drive terminals (for
 # example 0x9B is a single-byte CSI introducer, 0x85 is NEL), so they are stripped too.

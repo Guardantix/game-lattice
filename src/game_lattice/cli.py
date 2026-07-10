@@ -6,7 +6,7 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import typer
 from rich.console import Console
@@ -15,7 +15,13 @@ from rich.markup import escape
 from . import __version__
 from .check import EdgeStatus, check_lattice, has_drift
 from .config import DEFAULT_CONFIG_NAME, load_config
-from .constants import VALID_EDGE_STATES, VALID_GRAPH_FORMATS, EdgeState
+from .constants import (
+    VALID_EDGE_STATES,
+    VALID_GRAPH_FORMATS,
+    VALID_REPORT_FORMATS,
+    EdgeState,
+    ReportFormat,
+)
 from .error_types import ConfigError, ProjectError, UnreadableDocError
 from .impact import impact as impact_walk
 from .linear_fetch import fetch_tickets
@@ -48,6 +54,90 @@ _STATE_COLORS: dict[EdgeState, str] = {
     "UNRECONCILED": "yellow",
     "BROKEN": "red",
 }
+
+
+def _escape_github_message(value: str) -> str:
+    """Escape a GitHub workflow-command message value."""
+    return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def _escape_github_property(value: str) -> str:
+    """Escape a GitHub workflow-command property value."""
+    return _escape_github_message(value).replace(":", "%3A").replace(",", "%2C")
+
+
+def _github_annotation(path: Path, root: Path, title: str, message: str) -> str:
+    """Render one ``::error`` GitHub Actions annotation for a finding.
+
+    The ``file`` property is emitted relative to ``root`` so GitHub Actions can attach
+    the annotation to the offending document in the pull request diff; an absolute path
+    would strand the annotation in the run summary, detached from the file. ``root``
+    should be the invocation ``cwd``, not the resolved project root: a ``--config``
+    pointing at a lattice in a subdirectory (a monorepo layout) must not strip that
+    subdirectory prefix from the reported path, since GitHub Actions checks out the
+    repository at ``GITHUB_WORKSPACE`` and a ``run:`` step's cwd defaults to it. When
+    ``path`` falls outside ``root`` (an out-of-tree ``--config``), the absolute path is
+    used instead of raising.
+
+    Args:
+        path: Absolute path of the source document.
+        root: Root the file path is reported relative to (the invocation cwd).
+        title: Annotation title, before escaping.
+        message: Annotation message, before escaping.
+
+    Returns:
+        A single workflow-command line, with the file path, title, and message escaped.
+    """
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        relative = path
+    return (
+        f"::error file={_escape_github_property(str(relative))},"
+        f"title={_escape_github_property(title)}::{_escape_github_message(message)}"
+    )
+
+
+def _reject_bad_format(fmt: str, valid: frozenset[str]) -> NoReturn:
+    """Print the standard unsupported-format error and exit 2.
+
+    Args:
+        fmt: The rejected ``--format`` value.
+        valid: The formats the command accepts.
+
+    Raises:
+        typer.Exit: Always, with exit code 2.
+    """
+    options = ", ".join(sorted(valid))
+    _err.print(f"[red]error[/red]: --format {escape(f'{fmt!r}')} must be one of: {options}")
+    raise typer.Exit(2)
+
+
+def _resolve_report_format(fmt: str, json_out: bool) -> ReportFormat:
+    """Validate output flags and return the effective report format.
+
+    ``--format`` is validated before the ``--json`` alias is honored, so a typoed or
+    unsupported format fails loudly with exit 2 rather than being silently masked by
+    a concurrent ``--json``.
+
+    Args:
+        fmt: Explicit ``--format`` value.
+        json_out: Whether the legacy ``--json`` alias was supplied.
+
+    Returns:
+        ``human``, ``json``, or ``github``.
+
+    Raises:
+        typer.Exit: Exit code 2 for a conflicting or unsupported selection.
+    """
+    if fmt not in VALID_REPORT_FORMATS:
+        _reject_bad_format(fmt, VALID_REPORT_FORMATS)
+    if json_out and fmt == "github":
+        _err.print("[red]error[/red]: --json cannot be combined with --format github")
+        raise typer.Exit(2)
+    if json_out:
+        return "json"
+    return fmt  # ty: ignore[invalid-return-type]
 
 
 def _print_project_error(exc: ProjectError) -> None:
@@ -135,6 +225,7 @@ def main_callback(
 
 
 def _load(config: Path | None) -> Lattice:
+    """Load the lattice from the resolved project config."""
     project = load_config(config, Path.cwd())
     return load_lattice(project)
 
@@ -156,6 +247,7 @@ def _skip_summary(result: LintResult) -> str:
 def check(
     config: ConfigOpt = None,
     json_out: JsonOpt = False,
+    fmt: Annotated[str, typer.Option("--format", help="human, json, or github.")] = "human",
     only: Annotated[
         list[str] | None,
         typer.Option(
@@ -168,12 +260,13 @@ def check(
     ] = None,
 ) -> None:
     """Classify every edge; exit 1 on drift, 2 on tool error."""
+    report_format = _resolve_report_format(fmt, json_out)
     only_states = _parse_only_states(only)
     with _exit_on_project_error():
         lattice = _load(config)
         statuses = check_lattice(lattice)
     displayed = _filter_statuses(statuses, only_states)
-    if json_out:
+    if report_format == "json":
         payload = {
             "edges": [
                 {
@@ -188,6 +281,19 @@ def check(
             ]
         }
         typer.echo(json.dumps(payload))
+    elif report_format == "github":
+        for status in displayed:
+            if status.state == "OK":
+                continue
+            path = lattice.nodes_by_id[status.source_id].path
+            typer.echo(
+                _github_annotation(
+                    path,
+                    Path.cwd(),
+                    f"game-lattice {status.state}",
+                    f"{status.source_id} -> {status.target_ref} is {status.state}",
+                )
+            )
     else:
         for status in displayed:
             color = _STATE_COLORS[status.state]
@@ -199,12 +305,17 @@ def check(
 
 
 @app.command()
-def lint(config: ConfigOpt = None, json_out: JsonOpt = False) -> None:
+def lint(
+    config: ConfigOpt = None,
+    json_out: JsonOpt = False,
+    fmt: Annotated[str, typer.Option("--format", help="human, json, or github.")] = "human",
+) -> None:
     """Validate the authority ladder; exit 1 on a violation, 2 on tool error."""
+    report_format = _resolve_report_format(fmt, json_out)
     with _exit_on_project_error():
         lattice = _load(config)
         result = lint_lattice(lattice)
-    if json_out:
+    if report_format == "json":
         payload = {
             "violations": [
                 {
@@ -227,6 +338,18 @@ def lint(config: ConfigOpt = None, json_out: JsonOpt = False) -> None:
             ],
         }
         typer.echo(json.dumps(payload))
+    elif report_format == "github":
+        for violation in result.violations:
+            path = lattice.nodes_by_id[violation.source_id].path
+            typer.echo(
+                _github_annotation(
+                    path,
+                    Path.cwd(),
+                    "game-lattice ladder violation",
+                    f"{violation.source_id} ({violation.source_authority}) -> "
+                    f"{violation.target_ref} ({violation.target_authority})",
+                )
+            )
     else:
         for violation in result.violations:
             _out.print(
@@ -401,9 +524,7 @@ def graph(
 ) -> None:
     """Emit the edge graph as Mermaid, DOT, or JSON."""
     if fmt not in VALID_GRAPH_FORMATS:
-        valid = ", ".join(sorted(VALID_GRAPH_FORMATS))
-        _err.print(f"[red]error[/red]: --format {escape(f'{fmt!r}')} must be one of: {valid}")
-        raise typer.Exit(2)
+        _reject_bad_format(fmt, VALID_GRAPH_FORMATS)
     with _exit_on_project_error():
         lattice = _load(config)
         stale = {

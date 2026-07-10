@@ -10,6 +10,7 @@ from game_lattice.constants import (
     VALID_LAYERS,
     VALID_LINEAR_STATE_TYPES,
     VALID_LOCATION_KINDS,
+    VALID_REPORT_FORMATS,
     VALID_SEVERITIES,
     VALID_SKIP_REASONS,
     VALID_STATUSES,
@@ -19,6 +20,7 @@ from game_lattice.constants import (
     Layer,
     LinearStateType,
     LocationKind,
+    ReportFormat,
     Severity,
     SkipReason,
     Status,
@@ -52,6 +54,11 @@ def test_edge_states_match_literal():
 def test_location_kinds_match_literal():
     assert frozenset(get_args(LocationKind)) == VALID_LOCATION_KINDS
     assert {"file", "section"} == set(VALID_LOCATION_KINDS)
+
+
+def test_report_formats_match_literal():
+    assert frozenset(get_args(ReportFormat)) == VALID_REPORT_FORMATS
+    assert {"human", "json", "github"} == set(VALID_REPORT_FORMATS)
 
 
 def test_linear_state_types_match_literal():
