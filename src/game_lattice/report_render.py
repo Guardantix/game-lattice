@@ -1,4 +1,9 @@
-"""Render check, lint, and impact reports to a console; mirrors linear_render.py."""
+"""Render check, lint, and impact reports to a console.
+
+Holds the human console renderers for these commands; their JSON payload builders live
+beside their result types in check.py/impact.py/lint.py, so this is the render half of
+what linear_render.py keeps in one module.
+"""
 
 from rich.console import Console
 from rich.markup import escape
