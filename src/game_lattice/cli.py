@@ -736,8 +736,11 @@ def main() -> None:
     # Set NO_COLOR before typer/click parse argv: their own rich_utils consoles (used for
     # --help and parameter-validation errors like a bad --indent) build fresh Console
     # instances that read this env var, and are otherwise untouched by _disable_color().
+    # Drop FORCE_COLOR too: an ambient force-color signal (set in CI here) otherwise overrides
+    # NO_COLOR and keeps styling on, so an explicit --no-color flag must win over the env var.
     if "--no-color" in sys.argv[1:]:
         os.environ["NO_COLOR"] = "1"
+        os.environ.pop("FORCE_COLOR", None)
     try:
         app()
     except ProjectError as exc:

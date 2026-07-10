@@ -9,7 +9,6 @@ from typing import get_args
 
 import pytest
 from rich.console import Console
-from rich.style import Style
 from rich.text import Text
 from typer.testing import CliRunner
 
@@ -99,20 +98,16 @@ def _run_cli_subprocess(argv: list[str], env: dict[str, str]) -> subprocess.Comp
 def test_no_color_suppresses_typer_rendered_colors(argv):
     # These two invocations never reach _out/_err: --help and a --indent range failure
     # are rendered by typer's own rich_utils consoles before or outside main_callback.
-    # Regression test for the review finding that --no-color left them colored.
+    # Regression test for the review finding that --no-color left them styled: even with an
+    # ambient FORCE_COLOR (as CI sets), the explicit flag must yield escape-free captured output,
+    # so we assert on raw ANSI, not just color spans (bold/dim escapes would otherwise survive).
     env: dict[str, str] = dict(os.environ)
     env["FORCE_COLOR"] = "1"
     env["TERM"] = "xterm-256color"
     env.pop("NO_COLOR", None)
     result = _run_cli_subprocess(argv, env)
     combined = result.stdout + result.stderr
-    parsed = Text.from_ansi(combined)
-    colored_spans = [
-        span
-        for span in parsed.spans
-        if isinstance(span.style, Style) and span.style.color is not None
-    ]
-    assert not colored_spans, combined
+    assert "\x1b[" not in combined, combined
 
 
 def test_global_help_lists_no_color(monkeypatch):
