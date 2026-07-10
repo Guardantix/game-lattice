@@ -249,12 +249,17 @@ def check(
 
 
 @app.command()
-def lint(config: ConfigOpt = None, json_out: JsonOpt = False) -> None:
+def lint(
+    config: ConfigOpt = None,
+    json_out: JsonOpt = False,
+    fmt: Annotated[str, typer.Option("--format", help="human, json, or github.")] = "human",
+) -> None:
     """Validate the authority ladder; exit 1 on a violation, 2 on tool error."""
+    report_format = _resolve_report_format(fmt, json_out)
     with _exit_on_project_error():
         lattice = _load(config)
         result = lint_lattice(lattice)
-    if json_out:
+    if report_format == "json":
         payload = {
             "violations": [
                 {
@@ -277,6 +282,17 @@ def lint(config: ConfigOpt = None, json_out: JsonOpt = False) -> None:
             ],
         }
         typer.echo(json.dumps(payload))
+    elif report_format == "github":
+        for violation in result.violations:
+            path = lattice.nodes_by_id[violation.source_id].path
+            title = _escape_github_property("game-lattice ladder violation")
+            message = _escape_github_message(
+                f"{violation.source_id} ({violation.source_authority}) -> "
+                f"{violation.target_ref} ({violation.target_authority})"
+            )
+            typer.echo(
+                f"::error file={_escape_github_property(str(path))},title={title}::{message}"
+            )
     else:
         for violation in result.violations:
             _out.print(

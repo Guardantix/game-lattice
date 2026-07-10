@@ -90,18 +90,20 @@ def test_check_format_json_matches_json_alias(lattice_dir: Path, monkeypatch):
     assert explicit.stdout == alias.stdout
 
 
-def test_check_rejects_json_github_conflict(lattice_dir: Path, monkeypatch):
+@pytest.mark.parametrize("command", ["check", "lint"])
+def test_report_commands_reject_json_github_conflict(lattice_dir: Path, monkeypatch, command: str):
     monkeypatch.chdir(lattice_dir)
-    result = runner.invoke(app, ["check", "--json", "--format", "github"])
+    result = runner.invoke(app, [command, "--json", "--format", "github"])
 
     assert result.exit_code == 2
     assert "--json" in result.stderr
     assert "--format github" in result.stderr
 
 
-def test_check_rejects_unknown_format(lattice_dir: Path, monkeypatch):
+@pytest.mark.parametrize("command", ["check", "lint"])
+def test_report_commands_reject_unknown_format(lattice_dir: Path, monkeypatch, command: str):
     monkeypatch.chdir(lattice_dir)
-    result = runner.invoke(app, ["check", "--format", "nonsense"])
+    result = runner.invoke(app, [command, "--format", "nonsense"])
 
     assert result.exit_code == 2
     assert "nonsense" in result.stderr
@@ -892,6 +894,44 @@ def test_lint_exits_1_on_violation(tmp_path: Path, monkeypatch):
     result = runner.invoke(app, ["lint"])
     assert result.exit_code == 1
     assert "VIOLATION" in result.stdout
+
+
+def test_lint_github_emits_each_violation_annotation(tmp_path: Path, monkeypatch):
+    _write_lint_docs(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["lint", "--format", "github"])
+
+    assert result.exit_code == 1
+    assert result.stdout == (
+        f"::error file={tmp_path / 'docs/down.md'},title=game-lattice ladder violation::"
+        "down (binding) -> up (derived)\n"
+    )
+
+
+def test_lint_github_suppresses_skipped_edges(tmp_path: Path, monkeypatch):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "up.md").write_text("---\nid: up\n---\n# Up\nbody\n", encoding="utf-8")
+    (docs / "down.md").write_text(
+        "---\nid: down\nauthority: binding\nderives_from:\n  - ref: up\n---\n# Down\nbody\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["lint", "--format", "github"])
+
+    assert result.exit_code == 0
+    assert result.stdout == ""
+
+
+def test_lint_format_json_matches_json_alias(tmp_path: Path, monkeypatch):
+    _write_lint_docs(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    alias = runner.invoke(app, ["lint", "--json"])
+    explicit = runner.invoke(app, ["lint", "--format", "json"])
+
+    assert explicit.exit_code == alias.exit_code == 1
+    assert explicit.stdout == alias.stdout
 
 
 def test_lint_json_lists_violations(tmp_path: Path, monkeypatch):
