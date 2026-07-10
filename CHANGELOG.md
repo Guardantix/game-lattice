@@ -4,44 +4,38 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.7.0] - 2026-07-09
 
 ### Added
 
-- `reconcile` gained `--dry-run` (preview the plan without writing) and `--json` (single-line
-  machine-readable plan output, `{"dry_run": ..., "reconciled": [{"path", "ref", "new_seen"}, ...]}`
-  sorted by path then ref), matching the JSON convention already used by `check`/`lint`/`impact`.
-- `impact` now accepts `--depth N` (N >= 1) to bound the reverse walk to N hops from the target,
-  and each `--json` entry gains a `depth` field carrying the minimum number of hops at which that
-  doc is reached. The walk is breadth-first; unbounded output reports the same node set as before.
-- `graph --format json` emits a node/edge dump (`{"nodes": [...], "edges": [...]}`) for
-  programmatic consumers, with the same collapsed edge set as the Mermaid and DOT renderers.
-- `check --only STATE` (repeatable, case insensitive) to narrow human and JSON output to specific
-  edge states. Filtering is display-only; the exit code still reflects every edge.
-- The release job now publishes a GitHub Release for each tag it cuts, taking the body from the
-  matching `## [X.Y.Z]` section of `CHANGELOG.md`. A new pure helper (`version_check.changelog_section`)
-  extracts the section and `scripts/extract_release_notes.py` prints it, failing the release if that
-  section is missing or empty.
+- `check --only STATE` (repeatable) filters human and JSON output by edge state; the exit code
+  still reflects every edge (#19).
+- `graph --format json` emits a machine-readable node and edge dump that matches the Mermaid and
+  DOT edge collapsing (#21).
+- `impact --depth N` bounds the reverse walk, and `impact --json` entries now carry a `depth`
+  field (#22).
+- `reconcile --dry-run` previews the plan without writing, and `reconcile --json` emits a
+  machine-readable plan for both dry and real runs (#17).
+- The Linear client retries transient HTTP 429 and 5xx failures with bounded backoff, honoring
+  `Retry-After` up to a 30 second cap (#24).
+- The version-sync guard now also checks README pinned install refs (`game-lattice@vX.Y.Z`)
+  against `__version__` (#34).
+- The release job now publishes a GitHub Release for each tag it cuts, with the body taken from
+  the matching `## [X.Y.Z]` CHANGELOG section; `scripts/extract_release_notes.py` (pure core
+  `version_check.changelog_section`) extracts it and fails the release if that section is missing
+  or empty (#47).
 
 ### Changed
 
-- `linear` now retries a transient Linear HTTP 429 or 5xx up to three times with a short backoff
-  (honoring a non-negative integer `Retry-After` header, capped at 30 seconds) before failing, so
-  a passing rate limit no longer fails a CI run. Every other HTTP code and all network errors keep
-  their one-shot behavior.
-- The version-sync guard now also checks the README's pinned `game-lattice@vX.Y.Z` install
-  refs against `__version__`, so a stale README pin fails `check_version_sync.py` instead of
-  shipping silently.
-- `graph --format` now rejects any value other than `mermaid`, `dot`, or `json` with an exit
-  2 error naming the valid formats, instead of silently falling back to Mermaid.
-- Replaced the O(headings^2) ancestor computation in `loader._record_ancestors` with a single
-  document-order stack pass, so lattice builds no longer go quadratic on heading-dense docs.
-  Ancestor maps are unchanged; a differential test verifies parity with the prior implementation.
+- `graph --format` now rejects unknown formats with exit 2 instead of silently rendering
+  Mermaid (#21).
+- Ancestor recording in the loader is a single stack pass instead of a quadratic scan (#26).
+- CI runs the code-quality job on both Python 3.13 and 3.14 (#33).
 
 ### Removed
 
-- Pruned the unused `local_now`, `parse_iso`, and `format_iso` helpers from `datetime_utils.py`;
-  `utc_now` remains the single sanctioned current-time entry point.
+- Unused `datetime_utils` helpers (`local_now`, `parse_iso`, `format_iso`); `utc_now` remains the
+  single sanctioned current-time entry point (#35).
 
 ## [0.6.0] - 2026-07-05
 
