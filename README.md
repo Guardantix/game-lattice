@@ -186,9 +186,9 @@ flag list.
 
 `check` and `lint` also accept `--format human|json|github`. `human` is the default, and `json`
 is equivalent to the existing `--json` alias. `github` emits one escaped GitHub Actions `::error`
-workflow command per drift finding or ladder violation, so findings appear as pull-request
-annotations. Output selection never changes gate exit codes. Do not combine `--json` with
-`--format github`.
+workflow command per drift finding or ladder violation, each with a repo-relative file path, so
+findings attach inline to the offending doc in the pull-request diff. Output selection never
+changes gate exit codes. Do not combine `--json` with `--format github`.
 
 `impact` walks the full transitive closure by default. Pass `--depth N` (N >= 1) to bound the
 walk to N hops from TOKEN: `--depth 1` lists only the docs that derive directly from it. Human

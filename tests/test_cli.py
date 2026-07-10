@@ -60,8 +60,8 @@ def test_check_github_emits_each_drift_annotation(lattice_dir: Path, monkeypatch
     result = runner.invoke(app, ["check", "--format", "github"])
 
     assert result.exit_code == 1
-    gdd_path = _escape_github_property(str(lattice_dir / "docs/gdd.md"))
-    pc_path = _escape_github_property(str(lattice_dir / "docs/pc-design.md"))
+    gdd_path = "docs/gdd.md"
+    pc_path = "docs/pc-design.md"
     assert result.stdout == (
         f"::error file={gdd_path},title=game-lattice BROKEN::"
         "gdd -> ghost is BROKEN\n"
@@ -73,20 +73,21 @@ def test_check_github_emits_each_drift_annotation(lattice_dir: Path, monkeypatch
 
 
 def test_check_github_escapes_complete_annotation(tmp_path: Path, monkeypatch):
-    root = tmp_path / "project%:,\nline"
-    docs = root / "docs"
-    docs.mkdir(parents=True)
-    (docs / "down.md").write_text(
+    # Metacharacters live in a subdirectory under docs (part of the repo-relative path)
+    # so escaping of the emitted file= property is exercised; the project root is stripped.
+    weird = tmp_path / "docs" / "sub%:,\nline"
+    weird.mkdir(parents=True)
+    (weird / "down.md").write_text(
         '---\nid: "down%:,\\r\\nline"\nderives_from:\n'
         '  - ref: "ghost%:,\\r\\nline"\n---\n# Down\nbody\n',
         encoding="utf-8",
     )
-    monkeypatch.chdir(root)
+    monkeypatch.chdir(tmp_path)
 
     result = runner.invoke(app, ["check", "--format", "github"])
 
     assert result.exit_code == 1
-    expected_path = _escape_github_property(str(root / "docs/down.md"))
+    expected_path = _escape_github_property("docs/sub%:,\nline/down.md")
     assert result.stdout == (
         f"::error file={expected_path},"
         "title=game-lattice BROKEN::"
@@ -134,6 +135,18 @@ def test_report_commands_reject_unknown_format(lattice_dir: Path, monkeypatch, c
     assert "human" in result.stderr
     assert "json" in result.stderr
     assert "github" in result.stderr
+
+
+@pytest.mark.parametrize("command", ["check", "lint"])
+def test_report_commands_reject_unknown_format_even_with_json(
+    lattice_dir: Path, monkeypatch, command: str
+):
+    # --json must not mask a typoed --format; the bad format still fails loudly.
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, [command, "--json", "--format", "githu"])
+
+    assert result.exit_code == 2
+    assert "githu" in result.stderr
 
 
 def test_state_colors_cover_every_edge_state():
@@ -926,7 +939,7 @@ def test_lint_github_emits_each_violation_annotation(tmp_path: Path, monkeypatch
     result = runner.invoke(app, ["lint", "--format", "github"])
 
     assert result.exit_code == 1
-    down_path = _escape_github_property(str(tmp_path / "docs/down.md"))
+    down_path = "docs/down.md"
     assert result.stdout == (
         f"::error file={down_path},title=game-lattice ladder violation::"
         "down (binding) -> up (derived)\n"
@@ -934,24 +947,25 @@ def test_lint_github_emits_each_violation_annotation(tmp_path: Path, monkeypatch
 
 
 def test_lint_github_escapes_complete_annotation(tmp_path: Path, monkeypatch):
-    root = tmp_path / "project%:,\nline"
-    docs = root / "docs"
-    docs.mkdir(parents=True)
-    (docs / "up.md").write_text(
+    # Metacharacters live in a subdirectory under docs (part of the repo-relative path)
+    # so escaping of the emitted file= property is exercised; the project root is stripped.
+    weird = tmp_path / "docs" / "sub%:,\nline"
+    weird.mkdir(parents=True)
+    (weird / "up.md").write_text(
         '---\nid: "up%:,\\r\\nline"\nauthority: derived\n---\n# Up\nbody\n',
         encoding="utf-8",
     )
-    (docs / "down.md").write_text(
+    (weird / "down.md").write_text(
         '---\nid: "down%:,\\r\\nline"\nauthority: binding\nderives_from:\n'
         '  - ref: "up%:,\\r\\nline"\n---\n# Down\nbody\n',
         encoding="utf-8",
     )
-    monkeypatch.chdir(root)
+    monkeypatch.chdir(tmp_path)
 
     result = runner.invoke(app, ["lint", "--format", "github"])
 
     assert result.exit_code == 1
-    expected_path = _escape_github_property(str(root / "docs/down.md"))
+    expected_path = _escape_github_property("docs/sub%:,\nline/down.md")
     assert result.stdout == (
         f"::error file={expected_path},"
         "title=game-lattice ladder violation::"

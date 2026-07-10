@@ -6,7 +6,7 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import typer
 from rich.console import Console
@@ -66,8 +66,50 @@ def _escape_github_property(value: str) -> str:
     return _escape_github_message(value).replace(":", "%3A").replace(",", "%2C")
 
 
+def _github_annotation(path: Path, root: Path, title: str, message: str) -> str:
+    """Render one ``::error`` GitHub Actions annotation for a finding.
+
+    The ``file`` property is emitted relative to ``root`` so GitHub Actions can attach
+    the annotation to the offending document in the pull request diff; an absolute path
+    would strand the annotation in the run summary, detached from the file.
+
+    Args:
+        path: Absolute path of the source document (always inside ``root``).
+        root: Project root the file path is reported relative to.
+        title: Annotation title, before escaping.
+        message: Annotation message, before escaping.
+
+    Returns:
+        A single workflow-command line, with the file path, title, and message escaped.
+    """
+    relative = path.relative_to(root)
+    return (
+        f"::error file={_escape_github_property(str(relative))},"
+        f"title={_escape_github_property(title)}::{_escape_github_message(message)}"
+    )
+
+
+def _reject_bad_format(fmt: str, valid: frozenset[str]) -> NoReturn:
+    """Print the standard unsupported-format error and exit 2.
+
+    Args:
+        fmt: The rejected ``--format`` value.
+        valid: The formats the command accepts.
+
+    Raises:
+        typer.Exit: Always, with exit code 2.
+    """
+    options = ", ".join(sorted(valid))
+    _err.print(f"[red]error[/red]: --format {escape(f'{fmt!r}')} must be one of: {options}")
+    raise typer.Exit(2)
+
+
 def _resolve_report_format(fmt: str, json_out: bool) -> ReportFormat:
     """Validate output flags and return the effective report format.
+
+    ``--format`` is validated before the ``--json`` alias is honored, so a typoed or
+    unsupported format fails loudly with exit 2 rather than being silently masked by
+    a concurrent ``--json``.
 
     Args:
         fmt: Explicit ``--format`` value.
@@ -79,16 +121,14 @@ def _resolve_report_format(fmt: str, json_out: bool) -> ReportFormat:
     Raises:
         typer.Exit: Exit code 2 for a conflicting or unsupported selection.
     """
+    if fmt not in VALID_REPORT_FORMATS:
+        _reject_bad_format(fmt, VALID_REPORT_FORMATS)
     if json_out and fmt == "github":
         _err.print("[red]error[/red]: --json cannot be combined with --format github")
         raise typer.Exit(2)
     if json_out:
         return "json"
-    if fmt in VALID_REPORT_FORMATS:
-        return fmt  # ty: ignore[invalid-return-type]
-    valid = ", ".join(sorted(VALID_REPORT_FORMATS))
-    _err.print(f"[red]error[/red]: --format {escape(f'{fmt!r}')} must be one of: {valid}")
-    raise typer.Exit(2)
+    return fmt  # ty: ignore[invalid-return-type]
 
 
 def _print_project_error(exc: ProjectError) -> None:
@@ -175,9 +215,15 @@ def main_callback(
     """game-lattice: documentation traceability engine."""
 
 
-def _load(config: Path | None) -> Lattice:
+def _load_project(config: Path | None) -> tuple[Lattice, Path]:
+    """Load the lattice and return it alongside the resolved project root."""
     project = load_config(config, Path.cwd())
-    return load_lattice(project)
+    return load_lattice(project), project.project_root
+
+
+def _load(config: Path | None) -> Lattice:
+    lattice, _ = _load_project(config)
+    return lattice
 
 
 def _skip_summary(result: LintResult) -> str:
@@ -213,7 +259,7 @@ def check(
     report_format = _resolve_report_format(fmt, json_out)
     only_states = _parse_only_states(only)
     with _exit_on_project_error():
-        lattice = _load(config)
+        lattice, project_root = _load_project(config)
         statuses = check_lattice(lattice)
     displayed = _filter_statuses(statuses, only_states)
     if report_format == "json":
@@ -236,12 +282,13 @@ def check(
             if status.state == "OK":
                 continue
             path = lattice.nodes_by_id[status.source_id].path
-            title = _escape_github_property(f"game-lattice {status.state}")
-            message = _escape_github_message(
-                f"{status.source_id} -> {status.target_ref} is {status.state}"
-            )
             typer.echo(
-                f"::error file={_escape_github_property(str(path))},title={title}::{message}"
+                _github_annotation(
+                    path,
+                    project_root,
+                    f"game-lattice {status.state}",
+                    f"{status.source_id} -> {status.target_ref} is {status.state}",
+                )
             )
     else:
         for status in displayed:
@@ -262,7 +309,7 @@ def lint(
     """Validate the authority ladder; exit 1 on a violation, 2 on tool error."""
     report_format = _resolve_report_format(fmt, json_out)
     with _exit_on_project_error():
-        lattice = _load(config)
+        lattice, project_root = _load_project(config)
         result = lint_lattice(lattice)
     if report_format == "json":
         payload = {
@@ -290,13 +337,14 @@ def lint(
     elif report_format == "github":
         for violation in result.violations:
             path = lattice.nodes_by_id[violation.source_id].path
-            title = _escape_github_property("game-lattice ladder violation")
-            message = _escape_github_message(
-                f"{violation.source_id} ({violation.source_authority}) -> "
-                f"{violation.target_ref} ({violation.target_authority})"
-            )
             typer.echo(
-                f"::error file={_escape_github_property(str(path))},title={title}::{message}"
+                _github_annotation(
+                    path,
+                    project_root,
+                    "game-lattice ladder violation",
+                    f"{violation.source_id} ({violation.source_authority}) -> "
+                    f"{violation.target_ref} ({violation.target_authority})",
+                )
             )
     else:
         for violation in result.violations:
@@ -472,9 +520,7 @@ def graph(
 ) -> None:
     """Emit the edge graph as Mermaid, DOT, or JSON."""
     if fmt not in VALID_GRAPH_FORMATS:
-        valid = ", ".join(sorted(VALID_GRAPH_FORMATS))
-        _err.print(f"[red]error[/red]: --format {escape(f'{fmt!r}')} must be one of: {valid}")
-        raise typer.Exit(2)
+        _reject_bad_format(fmt, VALID_GRAPH_FORMATS)
     with _exit_on_project_error():
         lattice = _load(config)
         stale = {
