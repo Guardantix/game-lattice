@@ -122,6 +122,16 @@ jobs:
           git tag "${TAG}" "${GITHUB_SHA}"
           git push origin "${TAG}"
 
+      - name: Publish release notes
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
+          VERSION: ${{ steps.target.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          uv run --no-sync python scripts/extract_release_notes.py "${VERSION}" > release-notes.md
+          gh release create "${TAG}" --title "${TAG}" --notes-file release-notes.md --verify-tag
+
       - name: Confirm pinned ref resolves
         if: steps.gate.outputs.proceed == 'true'
         env:

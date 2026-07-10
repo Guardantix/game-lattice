@@ -5,6 +5,34 @@ import tomllib
 
 _VERSION_HEADING = re.compile(r"^##\s*\[(?P<version>\d+\.\d+\.\d+)\]", re.MULTILINE)
 _PINNED_REF = re.compile(r"game-lattice@v(?P<version>\d+\.\d+\.\d+)")
+_ANY_HEADING = re.compile(r"^##\s*\[", re.MULTILINE)
+
+
+def changelog_section(changelog_text: str, version: str) -> str | None:
+    """Return the body of the ``## [version]`` changelog section, or None if absent.
+
+    The body is everything between that heading and the next ``## [`` heading (or the
+    end of the document for the final section), trimmed of leading and trailing blank
+    lines. Only ``## [`` lines bound a section, so a fenced code block whose content
+    starts with ``## `` does not truncate the notes. A section that exists but has no
+    content returns the empty string, so the caller can distinguish a missing heading
+    (None) from an empty one ("").
+
+    Args:
+        changelog_text: The full text of ``CHANGELOG.md``.
+        version: The ``X.Y.Z`` version whose section to extract.
+
+    Returns:
+        The trimmed section body, "" if the heading exists but is empty, or None if
+        no ``## [version]`` heading is present.
+    """
+    heading = re.compile(r"^##\s*\[" + re.escape(version) + r"\].*$", re.MULTILINE)
+    match = heading.search(changelog_text)
+    if match is None:
+        return None
+    following = _ANY_HEADING.search(changelog_text, match.end())
+    end = following.start() if following else len(changelog_text)
+    return changelog_text[match.end() : end].strip()
 
 
 def _pyproject_version(pyproject_text: str) -> str | None:

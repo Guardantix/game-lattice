@@ -15,7 +15,8 @@ merged but no tag, or a tag without the version bump) cannot land.
      manual edit, but now checked by the version-sync guard)
 2. Run `uv lock` and commit the refreshed `uv.lock`.
 3. Add a `## [X.Y.Z]` section to `CHANGELOG.md` (rename the `## [Unreleased]`
-   section if you have been accumulating notes there).
+   section if you have been accumulating notes there). This section's body becomes
+   the GitHub Release notes the release job publishes, so it must not be empty.
 4. Open the PR and get it green. The `check-version-sync` gate fails the PR if
    `__version__`, `pyproject.toml`, the `CHANGELOG.md` heading, or a pinned
    `game-lattice@vX.Y.Z` ref in `README.md` disagree, so fix any drift before
@@ -25,7 +26,15 @@ merged but no tag, or a tag without the version bump) cannot land.
    - smoke-tests the exact commit over `git+...@<sha>`, running `check`, `lint`,
      and `init`,
    - creates and pushes the lightweight `vX.Y.Z` tag,
+   - publishes a GitHub Release for that tag, with the body taken from the
+     `## [X.Y.Z]` section of `CHANGELOG.md`,
    - confirms the pinned `@vX.Y.Z` ref resolves.
+
+   The release-notes step runs after the tag is pushed (the tag is the
+   load-bearing artifact). If it fails because the `## [X.Y.Z]` section is empty,
+   the tag still lands; add the notes and publish the Release by hand with
+   `gh release create vX.Y.Z --title vX.Y.Z --notes-file <(...)`, since a re-run
+   will no-op once the tag exists.
 
    An ordinary merge that does not change the version is a safe no-op: the job
    confirms the existing tag points at a commit of the matching version.

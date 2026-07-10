@@ -18,6 +18,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   programmatic consumers, with the same collapsed edge set as the Mermaid and DOT renderers.
 - `check --only STATE` (repeatable, case insensitive) to narrow human and JSON output to specific
   edge states. Filtering is display-only; the exit code still reflects every edge.
+- The release job now publishes a GitHub Release for each tag it cuts, taking the body from the
+  matching `## [X.Y.Z]` section of `CHANGELOG.md`. A new pure helper (`version_check.changelog_section`)
+  extracts the section and `scripts/extract_release_notes.py` prints it, failing the release if that
+  section is missing or empty.
 
 ### Changed
 
