@@ -70,6 +70,27 @@ def test_check_github_emits_each_drift_annotation(lattice_dir: Path, monkeypatch
     )
 
 
+def test_check_github_escapes_complete_annotation(tmp_path: Path, monkeypatch):
+    root = tmp_path / "project%:,\nline"
+    docs = root / "docs"
+    docs.mkdir(parents=True)
+    (docs / "down.md").write_text(
+        '---\nid: "down%:,\\r\\nline"\nderives_from:\n'
+        '  - ref: "ghost%:,\\r\\nline"\n---\n# Down\nbody\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(root)
+
+    result = runner.invoke(app, ["check", "--format", "github"])
+
+    assert result.exit_code == 1
+    assert result.stdout == (
+        f"::error file={tmp_path}/project%25%3A%2C%0Aline/docs/down.md,"
+        "title=game-lattice BROKEN::"
+        "down%25:,%0D%0Aline -> ghost%25:,%0D%0Aline is BROKEN\n"
+    )
+
+
 def test_check_github_suppresses_ok_edges(tmp_path: Path, monkeypatch):
     _clean_docs(tmp_path)
     monkeypatch.chdir(tmp_path)
@@ -905,6 +926,31 @@ def test_lint_github_emits_each_violation_annotation(tmp_path: Path, monkeypatch
     assert result.stdout == (
         f"::error file={tmp_path / 'docs/down.md'},title=game-lattice ladder violation::"
         "down (binding) -> up (derived)\n"
+    )
+
+
+def test_lint_github_escapes_complete_annotation(tmp_path: Path, monkeypatch):
+    root = tmp_path / "project%:,\nline"
+    docs = root / "docs"
+    docs.mkdir(parents=True)
+    (docs / "up.md").write_text(
+        '---\nid: "up%:,\\r\\nline"\nauthority: derived\n---\n# Up\nbody\n',
+        encoding="utf-8",
+    )
+    (docs / "down.md").write_text(
+        '---\nid: "down%:,\\r\\nline"\nauthority: binding\nderives_from:\n'
+        '  - ref: "up%:,\\r\\nline"\n---\n# Down\nbody\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(root)
+
+    result = runner.invoke(app, ["lint", "--format", "github"])
+
+    assert result.exit_code == 1
+    assert result.stdout == (
+        f"::error file={tmp_path}/project%25%3A%2C%0Aline/docs/down.md,"
+        "title=game-lattice ladder violation::"
+        "down%25:,%0D%0Aline (binding) -> up%25:,%0D%0Aline (derived)\n"
     )
 
 
