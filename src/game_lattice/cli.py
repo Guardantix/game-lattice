@@ -37,6 +37,10 @@ _err = Console(stderr=True)
 
 ConfigOpt = Annotated[Path | None, typer.Option("--config", help="Path to .game-lattice.yml.")]
 JsonOpt = Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")]
+IndentOpt = Annotated[
+    int | None,
+    typer.Option("--indent", min=0, help="Pretty-print JSON with this indent (requires --json)."),
+]
 
 _STATE_COL_WIDTH = 13  # widest EdgeState ("UNRECONCILED") is 12 chars, plus one trailing space
 
@@ -70,6 +74,13 @@ def _exit_on_project_error() -> Iterator[None]:
     except ProjectError as exc:
         _print_project_error(exc)
         raise typer.Exit(2) from exc
+
+
+def _validate_indent(indent: int | None, *, json_out: bool) -> None:
+    """Reject JSON indentation when JSON output is disabled."""
+    if indent is not None and not json_out:
+        _err.print("[red]error[/red]: --indent requires --json")
+        raise typer.Exit(2)
 
 
 def _parse_only_states(only: list[str] | None) -> frozenset[str] | None:
@@ -156,6 +167,7 @@ def _skip_summary(result: LintResult) -> str:
 def check(
     config: ConfigOpt = None,
     json_out: JsonOpt = False,
+    indent: IndentOpt = None,
     only: Annotated[
         list[str] | None,
         typer.Option(
@@ -168,6 +180,7 @@ def check(
     ] = None,
 ) -> None:
     """Classify every edge; exit 1 on drift, 2 on tool error."""
+    _validate_indent(indent, json_out=json_out)
     only_states = _parse_only_states(only)
     with _exit_on_project_error():
         lattice = _load(config)
@@ -187,7 +200,7 @@ def check(
                 for status in displayed
             ]
         }
-        typer.echo(json.dumps(payload))
+        typer.echo(json.dumps(payload, indent=indent))
     else:
         for status in displayed:
             color = _STATE_COLORS[status.state]

@@ -65,6 +65,28 @@ def test_check_json_reports_all_states(lattice_dir: Path, monkeypatch):
     assert stale["expected"] != stale["actual"]
 
 
+def test_check_json_indent_round_trips_to_compact_payload(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    compact = runner.invoke(app, ["check", "--json"])
+    pretty = runner.invoke(app, ["check", "--json", "--indent", "2"])
+    assert compact.exit_code == pretty.exit_code == 1
+    assert json.loads(pretty.stdout) == json.loads(compact.stdout)
+    assert '\n  "edges": [\n' in pretty.stdout
+
+
+def test_check_indent_without_json_exits_2(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["check", "--indent", "2"])
+    assert result.exit_code == 2
+    assert "--indent requires --json" in result.stderr
+
+
+def test_check_negative_indent_is_rejected(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["check", "--json", "--indent", "-1"])
+    assert result.exit_code == 2
+
+
 def test_check_only_filters_human_output(lattice_dir: Path, monkeypatch):
     monkeypatch.chdir(lattice_dir)
     result = runner.invoke(app, ["check", "--only", "STALE"])
