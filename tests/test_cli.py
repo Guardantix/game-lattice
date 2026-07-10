@@ -49,6 +49,70 @@ def test_check_json_reports_all_states(lattice_dir: Path, monkeypatch):
     assert stale["expected"] != stale["actual"]
 
 
+def test_check_only_filters_human_output(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["check", "--only", "STALE"])
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert lines
+    assert all("STALE" in line for line in lines)
+
+
+def test_check_only_filters_json_output(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["check", "--json", "--only", "STALE"])
+    payload = json.loads(result.stdout)
+    assert payload["edges"]
+    assert all(edge["state"] == "STALE" for edge in payload["edges"])
+
+
+def test_check_only_is_case_insensitive(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["check", "--only", "stale"])
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert lines
+    assert all("STALE" in line for line in lines)
+
+
+def test_check_only_unknown_state_exits_2(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["check", "--only", "BOGUS"])
+    assert result.exit_code == 2
+    assert "BOGUS" in result.stderr
+    assert "OK" in result.stderr
+    assert "STALE" in result.stderr
+
+
+def test_check_only_unknown_state_with_markup_does_not_crash(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["check", "--only", "BOGUS[/]"])
+    assert result.exit_code == 2
+    assert isinstance(result.exception, SystemExit)
+    assert "BOGUS[/]" in result.stderr
+
+
+def test_check_only_ok_still_exits_1_on_drift(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["check", "--only", "OK"])
+    assert result.exit_code == 1
+    assert not result.stdout.strip()
+
+
+def test_check_only_repeated_flags_combine(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["check", "--json", "--only", "STALE", "--only", "BROKEN"])
+    payload = json.loads(result.stdout)
+    states = {edge["state"] for edge in payload["edges"]}
+    assert states == {"STALE", "BROKEN"}
+
+
+def test_check_without_only_shows_all_states(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["check", "--json"])
+    payload = json.loads(result.stdout)
+    states = {edge["state"] for edge in payload["edges"]}
+    assert states == {"STALE", "UNRECONCILED", "BROKEN"}
+
+
 def test_check_exits_2_on_bad_config(tmp_path: Path, monkeypatch):
     (tmp_path / ".game-lattice.yml").write_text("docs_roots: ['../x']\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
@@ -234,6 +298,46 @@ def test_graph_dot_retains_bracketed_attributes(lattice_dir: Path, monkeypatch):
     assert result.exit_code == 0
     assert result.stdout.startswith("digraph lattice")
     assert "[label=" in result.stdout  # rich markup must not strip DOT attributes
+
+
+def test_graph_emits_json(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["graph", "--format", "json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert {node["id"] for node in payload["nodes"]} == {"art-direction", "pc-design", "gdd"}
+    # gdd's broken 'ghost' ref contributes no edge; the two art-direction sections pc-design
+    # derives from collapse to one edge, same as the mermaid/dot renderers.
+    assert payload["edges"] == [
+        {"upstream": "art-direction", "downstream": "pc-design", "stale": True}
+    ]
+
+
+def test_graph_json_edge_set_matches_mermaid(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    mermaid = runner.invoke(app, ["graph"]).stdout
+    mermaid_edges = {
+        tuple(line.strip().split(" -.-> " if "-.->" in line else " --> "))
+        for line in mermaid.splitlines()
+        if "->" in line
+    }
+    payload = json.loads(runner.invoke(app, ["graph", "--format", "json"]).stdout)
+    # Mermaid sanitizes ids (hyphens become underscores) for its own id syntax; normalize
+    # before comparing so this checks edge-set agreement, not id spelling.
+    json_edges = {
+        (e["upstream"].replace("-", "_"), e["downstream"].replace("-", "_"))
+        for e in payload["edges"]
+    }
+    assert json_edges == mermaid_edges
+
+
+def test_graph_rejects_unknown_format(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["graph", "--format", "dott"])
+    assert result.exit_code == 2
+    assert "mermaid" in result.stderr
+    assert "dot" in result.stderr
+    assert "json" in result.stderr
 
 
 def _clean_docs(tmp_path: Path) -> None:
