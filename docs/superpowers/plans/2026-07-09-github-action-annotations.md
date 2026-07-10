@@ -15,7 +15,9 @@
 **File map:**
 
 - `src/game_lattice/cli.py`: validate output selection, escape workflow-command fields, and render check and lint annotations.
+- `src/game_lattice/constants.py`: define the typed report-format domain and runtime validation set.
 - `tests/test_cli.py`: unit-test both escaping rules and exercise every new CLI contract against real loaded lattices.
+- `tests/test_constants.py`: keep the runtime report-format set tied to its `Literal` domain.
 - `README.md`: document both `--format` options, `--json` compatibility, annotations, and unchanged exits.
 - `CHANGELOG.md`: record the user-visible feature under `## [Unreleased]`.
 
@@ -24,7 +26,9 @@
 **Files:**
 
 - Modify: `tests/test_cli.py`
+- Modify: `tests/test_constants.py`
 - Modify: `src/game_lattice/cli.py`
+- Modify: `src/game_lattice/constants.py`
 
 - [ ] **Step 1: Write direct failing tests for both escape rules**
 
@@ -49,6 +53,11 @@ def test_escape_github_property_encodes_message_and_property_metacharacters():
     assert _escape_github_property("100%\rfirst\nsecond: a,b") == (
         "100%25%0Dfirst%0Asecond%3A a%2Cb"
     )
+
+
+def test_report_formats_match_literal():
+    assert frozenset(get_args(ReportFormat)) == VALID_REPORT_FORMATS
+    assert {"human", "json", "github"} == set(VALID_REPORT_FORMATS)
 ```
 
 - [ ] **Step 2: Run the helper tests and verify RED**
@@ -56,19 +65,26 @@ def test_escape_github_property_encodes_message_and_property_metacharacters():
 Run:
 
 ```bash
-uv run --group dev pytest tests/test_cli.py -k "escape_github" -v
+uv run --group dev pytest --no-cov tests/test_cli.py tests/test_constants.py \
+  -k "escape_github or report_formats" -v
 ```
 
-Expected: collection fails because the two private helpers do not exist.
+Expected: collection fails because the private helpers and typed report-format constants do not
+exist.
 
 - [ ] **Step 3: Implement the minimal escape helpers and format resolver**
 
-Add below `_STATE_COLORS` in `src/game_lattice/cli.py`:
+Add the typed domain to `src/game_lattice/constants.py`:
 
 ```python
-_VALID_REPORT_FORMATS = frozenset({"human", "json", "github"})
+ReportFormat = Literal["human", "json", "github"]
+VALID_REPORT_FORMATS: frozenset[str] = frozenset(get_args(ReportFormat))
+```
 
+Import `ReportFormat` and `VALID_REPORT_FORMATS` in `src/game_lattice/cli.py`, then add below
+`_STATE_COLORS`:
 
+```python
 def _escape_github_message(value: str) -> str:
     """Escape a GitHub workflow-command message value."""
     return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
@@ -79,7 +95,7 @@ def _escape_github_property(value: str) -> str:
     return _escape_github_message(value).replace(":", "%3A").replace(",", "%2C")
 
 
-def _resolve_report_format(fmt: str, json_out: bool) -> str:
+def _resolve_report_format(fmt: str, json_out: bool) -> ReportFormat:
     """Validate output flags and return the effective report format.
 
     Args:
@@ -97,11 +113,15 @@ def _resolve_report_format(fmt: str, json_out: bool) -> str:
         raise typer.Exit(2)
     if json_out:
         return "json"
-    if fmt not in _VALID_REPORT_FORMATS:
-        valid = ", ".join(sorted(_VALID_REPORT_FORMATS))
-        _err.print(f"[red]error[/red]: --format {escape(f'{fmt!r}')} must be one of: {valid}")
-        raise typer.Exit(2)
-    return fmt
+    if fmt == "human":
+        return "human"
+    if fmt == "json":
+        return "json"
+    if fmt == "github":
+        return "github"
+    valid = ", ".join(sorted(VALID_REPORT_FORMATS))
+    _err.print(f"[red]error[/red]: --format {escape(f'{fmt!r}')} must be one of: {valid}")
+    raise typer.Exit(2)
 ```
 
 - [ ] **Step 4: Run the helper tests and verify GREEN**
@@ -109,15 +129,16 @@ def _resolve_report_format(fmt: str, json_out: bool) -> str:
 Run:
 
 ```bash
-uv run --group dev pytest tests/test_cli.py -k "escape_github" -v
+uv run --group dev pytest --no-cov tests/test_cli.py tests/test_constants.py \
+  -k "escape_github or report_formats" -v
 ```
 
-Expected: 2 passed.
+Expected: 3 passed.
 
 - [ ] **Step 5: Commit the first green slice**
 
 ```bash
-git add src/game_lattice/cli.py tests/test_cli.py
+git add src/game_lattice/cli.py src/game_lattice/constants.py tests/test_cli.py tests/test_constants.py
 git commit -m "feat: add GitHub annotation escaping"
 ```
 
@@ -193,7 +214,7 @@ def test_check_rejects_unknown_format(lattice_dir: Path, monkeypatch):
 Run:
 
 ```bash
-uv run --group dev pytest tests/test_cli.py -k "check and (github or format)" -v
+uv run --group dev pytest --no-cov tests/test_cli.py -k "check and (github or format)" -v
 ```
 
 Expected: failures because `check` does not accept `--format`.
@@ -270,7 +291,7 @@ Do not change payload keys, ordering, filtering, colors, or exit calculation.
 Run:
 
 ```bash
-uv run --group dev pytest tests/test_cli.py -k "check" -v
+uv run --group dev pytest --no-cov tests/test_cli.py -k "check" -v
 ```
 
 Expected: all selected tests pass, including pre-existing human byte-identity and `--only` tests.
@@ -361,7 +382,7 @@ parameterized tests instead of keeping duplicate coverage.
 Run:
 
 ```bash
-uv run --group dev pytest tests/test_cli.py -k "lint and (github or format)" -v
+uv run --group dev pytest --no-cov tests/test_cli.py -k "lint and (github or format)" -v
 ```
 
 Expected: failures because `lint` does not accept `--format`.
@@ -431,7 +452,7 @@ def lint(
 Run:
 
 ```bash
-uv run --group dev pytest tests/test_cli.py -v
+uv run --group dev pytest --no-cov tests/test_cli.py -v
 ```
 
 Expected: all CLI tests pass.

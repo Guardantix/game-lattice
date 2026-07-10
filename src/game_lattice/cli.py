@@ -15,7 +15,13 @@ from rich.markup import escape
 from . import __version__
 from .check import EdgeStatus, check_lattice, has_drift
 from .config import DEFAULT_CONFIG_NAME, load_config
-from .constants import VALID_EDGE_STATES, VALID_GRAPH_FORMATS, EdgeState
+from .constants import (
+    VALID_EDGE_STATES,
+    VALID_GRAPH_FORMATS,
+    VALID_REPORT_FORMATS,
+    EdgeState,
+    ReportFormat,
+)
 from .error_types import ConfigError, ProjectError, UnreadableDocError
 from .impact import impact as impact_walk
 from .linear_fetch import fetch_tickets
@@ -48,7 +54,6 @@ _STATE_COLORS: dict[EdgeState, str] = {
     "UNRECONCILED": "yellow",
     "BROKEN": "red",
 }
-_VALID_REPORT_FORMATS = frozenset({"human", "json", "github"})
 
 
 def _escape_github_message(value: str) -> str:
@@ -61,7 +66,7 @@ def _escape_github_property(value: str) -> str:
     return _escape_github_message(value).replace(":", "%3A").replace(",", "%2C")
 
 
-def _resolve_report_format(fmt: str, json_out: bool) -> str:
+def _resolve_report_format(fmt: str, json_out: bool) -> ReportFormat:
     """Validate output flags and return the effective report format.
 
     Args:
@@ -79,11 +84,15 @@ def _resolve_report_format(fmt: str, json_out: bool) -> str:
         raise typer.Exit(2)
     if json_out:
         return "json"
-    if fmt not in _VALID_REPORT_FORMATS:
-        valid = ", ".join(sorted(_VALID_REPORT_FORMATS))
-        _err.print(f"[red]error[/red]: --format {escape(f'{fmt!r}')} must be one of: {valid}")
-        raise typer.Exit(2)
-    return fmt
+    if fmt == "human":
+        return "human"
+    if fmt == "json":
+        return "json"
+    if fmt == "github":
+        return "github"
+    valid = ", ".join(sorted(VALID_REPORT_FORMATS))
+    _err.print(f"[red]error[/red]: --format {escape(f'{fmt!r}')} must be one of: {valid}")
+    raise typer.Exit(2)
 
 
 def _print_project_error(exc: ProjectError) -> None:
