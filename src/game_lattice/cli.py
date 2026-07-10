@@ -331,7 +331,10 @@ def impact(
         typer.Option("--depth", min=1, help="Limit the walk to this many hops from the target."),
     ] = None,
 ) -> None:
-    """List every downstream doc affected by a change to TOKEN."""
+    """List every downstream doc affected by a change to TOKEN.
+
+    Informational only: it always exits 0 (2 on a tool error), so it never gates CI.
+    """
     _validate_indent(indent, json_out=json_out)
     with _exit_on_project_error():
         lattice = _load(config)
@@ -505,7 +508,11 @@ def linear(  # noqa: PLR0913
     json_out: JsonOpt = False,
     indent: IndentOpt = None,
 ) -> None:
-    """Report tickets shipped against a spec that has since drifted."""
+    """Report tickets shipped against a spec that has since drifted.
+
+    Exits 0 unless --exit-code is passed, which gates CI on any DANGER or BLOCKED
+    finding; add --warn-exit to also gate on WARNING. Tool errors always exit 2.
+    """
     _validate_indent(indent, json_out=json_out)
     if from_id is not None and target:
         _err.print("[red]error[/red]: pass a positional target or --from, not both")

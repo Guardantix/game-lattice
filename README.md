@@ -176,8 +176,14 @@ uv run --group dev ty check src
 | `impact TOKEN [--depth N]` | List every downstream doc affected by a change to TOKEN; `--depth N` bounds the walk to N hops. | 2 on tool error |
 | `reconcile [ID] [--ref REF] [--all] [--dry-run]` | Set `seen` to current upstream hashes for the selected edges (the only command that mutates your tracked docs); `--dry-run` previews the plan without writing. | 2 on tool error |
 | `graph [--format mermaid\|dot\|json]` | Emit the edge graph as Mermaid, DOT, or JSON. | 2 on tool error (including an unrecognized `--format`) |
-| `linear [TARGET] [--from ID] [--exit-code] [--warn-exit]` | Report tickets shipped against a spec that has since drifted (needs `LINEAR_API_KEY`). | 1 with `--exit-code` on DANGER/BLOCKED, 2 on tool error |
+| `linear [TARGET] [--from ID] [--exit-code] [--warn-exit]` | Report tickets shipped against a spec that has since drifted (needs `LINEAR_API_KEY`). | 1 with `--exit-code` on DANGER/BLOCKED (or WARNING too under `--warn-exit`), 2 on tool error |
 | `init [--docs-root ...] [--linear-team KEY]` | Scaffold `.game-lattice.yml` and print pre-commit and CI codegen. | 2 on tool error |
+
+Only `check` and `lint` gate by default, exiting 1 when they find drift or an authority inversion.
+`impact`, `reconcile`, `graph`, and `init` are informational and always exit 0 on success (2 only on
+a tool error), so wiring `impact` into a CI gate never turns the build red. `linear` also exits 0 by
+default; pass `--exit-code` to gate on any DANGER or BLOCKED finding, and add `--warn-exit` to gate on
+WARNING as well.
 
 Every command except `init` accepts `--config PATH` (path to `.game-lattice.yml`; defaults to
 the file in the current directory). `check`, `lint`, `impact`, `reconcile`, and `linear` accept
@@ -261,11 +267,17 @@ docs_roots:
 # ignore_globs:           # paths to skip within those roots
 #   - "**/superpowers/plans/**"
 # linear_team: ENG        # the Linear team the `linear` query targets
-# binding_layers: null    # reserved; accepted in config but not yet consulted by lint
+# binding_layers: null    # accepted but inert today; setting it changes nothing (see below)
 ```
 
 All `docs_roots` must resolve inside the project root; an entry that escapes via `..`, an
 absolute path, or a symlink is rejected before any read.
+
+`binding_layers` is accepted in the config for forward compatibility but is inert today: setting it
+changes nothing, because no command consults it. Authority ranking currently lives entirely in
+`lint` (binding > derived > exploratory); see the
+[lint design spec](docs/superpowers/specs/2026-06-28-game-lattice-lint-design.md) for where that
+ranking is defined.
 
 ## Adopting game-lattice in your docs repo
 
@@ -300,6 +312,26 @@ Every other command runs fully offline.
 | `0` | Success; no drift or violations. |
 | `1` | The lattice is coherent but a gate failed: drift (`check`), an authority inversion (`lint`), or (with `--exit-code`) a DANGER/BLOCKED `linear` finding. |
 | `2` | Tool error: the index is incoherent (e.g. a duplicate id), config is invalid, or a path escapes the project root. |
+
+## Troubleshooting
+
+**`LINEAR_API_KEY is not set`.** Only the `linear` command needs a key. Export a Linear API key
+(`export LINEAR_API_KEY=lin_api_...`) before running `linear`, or run `impact` instead: `impact` is
+the fully offline view of the same downstream reach and needs no key.
+
+**Linear returns HTTP 429 or 5xx.** These are transient. The client already retries a bounded
+number of times with a short backoff (honoring `Retry-After` when present, capped), so a passing
+rate limit does not fail the run on its own. If it still fails after those retries, the error tells
+you to wait and re-run; `impact` stays available offline in the meantime.
+
+**A `linear` finding is BLOCKED `not-found`.** A ticket the Linear filter does not return is treated
+as absence, not an error: it grades as a BLOCKED `not-found` finding rather than crashing the
+command. Confirm the ticket id exists and that `linear_team` targets the right team.
+
+**`duplicate id ...` exits 2.** A duplicate id makes the index incoherent, so loading the lattice
+fails with exit 2 (a tool error, distinct from the exit 1 that `check` and `lint` use for drift).
+The message names both registration sites so you can find the clash: either two files share an `id`,
+or a heading's `{#marker}` collides with another heading's computed slug in the same file.
 
 ## Documentation
 
