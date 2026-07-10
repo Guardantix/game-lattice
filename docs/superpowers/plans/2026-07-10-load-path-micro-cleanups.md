@@ -118,17 +118,15 @@ Add this test after `test_parse_meta_returns_node`:
 ```python
 def test_parse_meta_reuses_safe_yaml_loader(monkeypatch):
     raw_documents = ["id: first\n", "id: second\n"]
-    yaml = frontmatter_parser_module._YAML
-    yaml_type = type(yaml)
+    original_yaml = frontmatter_parser_module._YAML
     calls: list[str] = []
-    original_load = yaml_type.load
 
-    def counting_load(self, raw_meta: str):
-        assert self is yaml
-        calls.append(raw_meta)
-        return original_load(self, raw_meta)
+    class TrackingYAML:
+        def load(self, raw_meta: str):
+            calls.append(raw_meta)
+            return original_yaml.load(raw_meta)
 
-    monkeypatch.setattr(yaml_type, "load", counting_load)
+    monkeypatch.setattr(frontmatter_parser_module, "_YAML", TrackingYAML())
 
     metas = [parse_meta(raw, Path(f"{index}.md")) for index, raw in enumerate(raw_documents)]
 
@@ -136,8 +134,8 @@ def test_parse_meta_reuses_safe_yaml_loader(monkeypatch):
     assert calls == raw_documents
 ```
 
-Patching the defining class lets pytest restore the method without leaving a shadowing
-`load` attribute on the frontmatter YAML singleton.
+Replacing only the module singleton keeps the spy local to frontmatter parsing, and pytest restores
+the original singleton after the test.
 
 - [ ] **Step 2: Run the test and verify RED**
 
@@ -202,17 +200,15 @@ Add this test after `test_loads_and_resolves_roots`:
 
 ```python
 def test_load_config_reuses_safe_yaml_loader(monkeypatch, tmp_path: Path):
-    yaml = config_module._YAML
-    yaml_type = type(yaml)
+    original_yaml = config_module._YAML
     calls: list[str] = []
-    original_load = yaml_type.load
 
-    def counting_load(self, text: str):
-        assert self is yaml
-        calls.append(text)
-        return original_load(self, text)
+    class TrackingYAML:
+        def load(self, text: str):
+            calls.append(text)
+            return original_yaml.load(text)
 
-    monkeypatch.setattr(yaml_type, "load", counting_load)
+    monkeypatch.setattr(config_module, "_YAML", TrackingYAML())
     projects = [tmp_path / "first", tmp_path / "second"]
     for project in projects:
         project.mkdir()
@@ -222,8 +218,8 @@ def test_load_config_reuses_safe_yaml_loader(monkeypatch, tmp_path: Path):
     assert calls == ["docs_roots: [docs]\n", "docs_roots: [docs]\n"]
 ```
 
-Patching the defining class lets pytest restore the method without leaving a shadowing
-`load` attribute on the config YAML singleton.
+Replacing only the module singleton keeps the spy local to config parsing, and pytest restores the
+original singleton after the test.
 
 - [ ] **Step 2: Run the test and verify RED**
 

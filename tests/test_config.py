@@ -27,17 +27,15 @@ def test_loads_and_resolves_roots(tmp_path: Path):
 
 
 def test_load_config_reuses_safe_yaml_loader(monkeypatch, tmp_path: Path):
-    yaml = config_module._YAML
-    yaml_type = type(yaml)
+    original_yaml = config_module._YAML
     calls: list[str] = []
-    original_load = yaml_type.load
 
-    def counting_load(self, text: str):
-        assert self is yaml
-        calls.append(text)
-        return original_load(self, text)
+    class TrackingYAML:
+        def load(self, text: str):
+            calls.append(text)
+            return original_yaml.load(text)
 
-    monkeypatch.setattr(yaml_type, "load", counting_load)
+    monkeypatch.setattr(config_module, "_YAML", TrackingYAML())
     projects = [tmp_path / "first", tmp_path / "second"]
     for project in projects:
         project.mkdir()
