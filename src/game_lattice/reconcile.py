@@ -10,9 +10,8 @@ from ruamel.yaml.error import YAMLError
 
 from .error_types import BrokenRefError, UnreadableDocError, ValidationError
 from .frontmatter_parser import split_frontmatter
-from .hashing import content_hash
-from .model import Lattice, parse_ref
-from .resolve import target_content
+from .model import Lattice, TargetId, parse_ref
+from .resolve import cached_target_hash
 
 
 def reconcile(
@@ -50,6 +49,7 @@ def reconcile(
     node_ids = sorted(lattice.nodes_by_id) if reconcile_all else [downstream_id]
     targeting_specific_ref = ref is not None and not reconcile_all
     plan: dict[Path, dict[str, str]] = defaultdict(dict)
+    cache: dict[TargetId, str] = {}
     ref_matched = False
     for node_id in node_ids:
         node = lattice.nodes_by_id[node_id]
@@ -64,7 +64,7 @@ def reconcile(
                         " fix the ref first"
                     )
                 continue
-            new_seen = content_hash(target_content(lattice, edge.target_id))
+            new_seen = cached_target_hash(lattice, edge.target_id, cache)
             if edge.seen is not None and new_seen == edge.seen:
                 continue
             plan[node.path][edge.target_ref] = new_seen

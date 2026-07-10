@@ -3,9 +3,8 @@
 from dataclasses import dataclass
 
 from .constants import EdgeState
-from .hashing import content_hash
 from .model import Edge, Lattice, TargetId
-from .resolve import target_content
+from .resolve import cached_target_hash
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,14 +29,17 @@ def check_lattice(lattice: Lattice) -> list[EdgeStatus]:
         One EdgeStatus per edge, in node-id then edge order.
     """
     statuses: list[EdgeStatus] = []
+    cache: dict[TargetId, str] = {}
     for node_id in sorted(lattice.nodes_by_id):
         node = lattice.nodes_by_id[node_id]
         for edge in node.derives_from:
-            statuses.append(_classify(lattice, node_id, edge))
+            statuses.append(_classify(lattice, node_id, edge, cache))
     return statuses
 
 
-def _classify(lattice: Lattice, source_id: str, edge: Edge) -> EdgeStatus:
+def _classify(
+    lattice: Lattice, source_id: str, edge: Edge, cache: dict[TargetId, str]
+) -> EdgeStatus:
     """Classify one edge as BROKEN, UNRECONCILED, STALE, or OK.
 
     A broken edge (no resolved target) is BROKEN. Otherwise the live target hash is
@@ -46,7 +48,7 @@ def _classify(lattice: Lattice, source_id: str, edge: Edge) -> EdgeStatus:
     """
     if edge.target_id is None:
         return EdgeStatus(source_id, edge.target_ref, None, "BROKEN", edge.seen, None)
-    actual = content_hash(target_content(lattice, edge.target_id))
+    actual = cached_target_hash(lattice, edge.target_id, cache)
     if edge.seen is None:
         return EdgeStatus(source_id, edge.target_ref, edge.target_id, "UNRECONCILED", None, actual)
     state: EdgeState = "OK" if actual == edge.seen else "STALE"

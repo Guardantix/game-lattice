@@ -5,9 +5,10 @@ from pathlib import Path
 import pytest
 
 from game_lattice.error_types import BrokenRefError
+from game_lattice.hashing import content_hash
 from game_lattice.loader import build_lattice
 from game_lattice.model import Lattice, Location, Node, NodeMeta, ParsedDoc, TargetId
-from game_lattice.resolve import node_for_path, target_content
+from game_lattice.resolve import cached_target_hash, node_for_path, target_content
 
 
 def _lattice() -> Lattice:
@@ -52,6 +53,30 @@ def test_target_content_section_exact_via_build_lattice():
 def test_target_content_file_is_whole_body():
     lat = _lattice()
     assert target_content(lat, TargetId("doc")) == lat.nodes_by_id["doc"].body
+
+
+def test_cached_target_hash_hashes_each_target_once(monkeypatch: pytest.MonkeyPatch):
+    calls = 0
+
+    def counting_content_hash(content: str) -> str:
+        nonlocal calls
+        calls += 1
+        return content_hash(content)
+
+    monkeypatch.setattr("game_lattice.resolve.content_hash", counting_content_hash)
+
+    lattice = _lattice()
+    cache: dict[TargetId, str] = {}
+    section_target = TargetId("doc", "accent")
+    file_target = TargetId("doc")
+
+    first = cached_target_hash(lattice, section_target, cache)
+    repeated = cached_target_hash(lattice, section_target, cache)
+    file_hash = cached_target_hash(lattice, file_target, cache)
+
+    assert first == repeated == content_hash(target_content(lattice, section_target))
+    assert file_hash == content_hash(target_content(lattice, file_target))
+    assert calls == 2
 
 
 def test_target_content_broken_raises():
