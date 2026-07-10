@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `check --format github` and `lint --format github` emit escaped GitHub Actions error
+  annotations while preserving the existing gate exit codes; both commands also accept
+  `--format human|json`, and `--json` remains the JSON alias (#18).
+
 ### Changed
 
 - Centralized CLI `ProjectError` handling behind the shared tool-error exit path (#30).

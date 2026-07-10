@@ -171,8 +171,8 @@ uv run --group dev ty check src
 
 | Command | What it does | Exits non-zero |
 |---------|--------------|----------------|
-| `check [--only STATE ...]` | Classify every `derives_from` edge as OK / STALE / UNRECONCILED / BROKEN. | 1 on drift, 2 on tool error |
-| `lint` | Validate the authority ladder (binding > derived > exploratory) over the edges. | 1 on a violation, 2 on tool error |
+| `check [--only STATE ...] [--format human\|json\|github]` | Classify every `derives_from` edge as OK / STALE / UNRECONCILED / BROKEN. | 1 on drift, 2 on tool error |
+| `lint [--format human\|json\|github]` | Validate the authority ladder (binding > derived > exploratory) over the edges. | 1 on a violation, 2 on tool error |
 | `impact TOKEN [--depth N]` | List every downstream doc affected by a change to TOKEN; `--depth N` bounds the walk to N hops. | 2 on tool error |
 | `reconcile [ID] [--ref REF] [--all] [--dry-run]` | Set `seen` to current upstream hashes for the selected edges (the only command that mutates your tracked docs); `--dry-run` previews the plan without writing. | 2 on tool error |
 | `graph [--format mermaid\|dot\|json]` | Emit the edge graph as Mermaid, DOT, or JSON. | 2 on tool error (including an unrecognized `--format`) |
@@ -183,6 +183,12 @@ Every command except `init` accepts `--config PATH` (path to `.game-lattice.yml`
 the file in the current directory). `check`, `lint`, `impact`, `reconcile`, and `linear` accept
 `--json` for machine-readable output. Run `uv run game-lattice <command> --help` for the full
 flag list.
+
+`check` and `lint` also accept `--format human|json|github`. `human` is the default, and `json`
+is equivalent to the existing `--json` alias. `github` emits one escaped GitHub Actions `::error`
+workflow command per drift finding or ladder violation, so findings appear as pull-request
+annotations. Output selection never changes gate exit codes. Do not combine `--json` with
+`--format github`.
 
 `impact` walks the full transitive closure by default. Pass `--depth N` (N >= 1) to bound the
 walk to N hops from TOKEN: `--depth 1` lists only the docs that derive directly from it. Human
