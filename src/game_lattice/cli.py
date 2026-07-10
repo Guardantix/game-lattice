@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -614,6 +615,11 @@ def main() -> None:
     code 2 instead of Python's default 1, which ``check`` reserves to mean "drift
     detected". Intended exits raised by typer (``SystemExit``) propagate unchanged.
     """
+    # Set NO_COLOR before typer/click parse argv: their own rich_utils consoles (used for
+    # --help and parameter-validation errors like a bad --indent) build fresh Console
+    # instances that read this env var, and are otherwise untouched by _disable_color().
+    if "--no-color" in sys.argv[1:]:
+        os.environ["NO_COLOR"] = "1"
     try:
         app()
     except ProjectError as exc:

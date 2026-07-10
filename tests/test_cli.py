@@ -2,11 +2,14 @@
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import get_args
 
 import pytest
 from rich.console import Console
+from rich.style import Style
 from rich.text import Text
 from typer.testing import CliRunner
 
@@ -57,6 +60,44 @@ def test_no_color_suppresses_forced_ansi(lattice_dir: Path, monkeypatch):
 
     assert cli_mod._out is original_out
     assert cli_mod._err is original_err
+
+
+def _run_cli_subprocess(argv: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    script = (
+        "import sys\n"
+        f"sys.argv = {argv!r}\n"
+        "from game_lattice.cli import main\n"
+        "try:\n    main()\nexcept SystemExit:\n    pass\n"
+    )
+    return subprocess.run(  # noqa: S603 - fixed argv and generated script, no untrusted input
+        [sys.executable, "-c", script], capture_output=True, text=True, env=env, check=False
+    )
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["game-lattice", "--no-color", "--help"],
+        ["game-lattice", "--no-color", "check", "--json", "--indent", "-1"],
+    ],
+)
+def test_no_color_suppresses_typer_rendered_colors(argv):
+    # These two invocations never reach _out/_err: --help and a --indent range failure
+    # are rendered by typer's own rich_utils consoles before or outside main_callback.
+    # Regression test for the review finding that --no-color left them colored.
+    env: dict[str, str] = dict(os.environ)
+    env["FORCE_COLOR"] = "1"
+    env["TERM"] = "xterm-256color"
+    env.pop("NO_COLOR", None)
+    result = _run_cli_subprocess(argv, env)
+    combined = result.stdout + result.stderr
+    parsed = Text.from_ansi(combined)
+    colored_spans = [
+        span
+        for span in parsed.spans
+        if isinstance(span.style, Style) and span.style.color is not None
+    ]
+    assert not colored_spans, combined
 
 
 def test_global_help_lists_no_color(monkeypatch):
@@ -700,6 +741,35 @@ def test_main_passes_systemexit_through_unchanged(monkeypatch):
     with pytest.raises(SystemExit) as info:
         cli_mod.main()
     assert info.value.code == 1
+
+
+def test_main_sets_no_color_env_before_app_runs(monkeypatch):
+    # typer/click build their own rich_utils consoles (help text, parameter-validation
+    # errors) from scratch on demand; those are untouched by _disable_color() and only
+    # honor NO_COLOR if it is already set in the environment before app() parses argv.
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(sys, "argv", ["game-lattice", "--no-color", "check"])
+    seen = {}
+
+    def fake_app():
+        seen["NO_COLOR"] = os.environ.get("NO_COLOR")
+
+    monkeypatch.setattr(cli_mod, "app", fake_app)
+    cli_mod.main()
+    assert seen["NO_COLOR"] == "1"
+
+
+def test_main_leaves_no_color_env_unset_without_flag(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(sys, "argv", ["game-lattice", "check"])
+    seen = {}
+
+    def fake_app():
+        seen["NO_COLOR"] = os.environ.get("NO_COLOR")
+
+    monkeypatch.setattr(cli_mod, "app", fake_app)
+    cli_mod.main()
+    assert seen["NO_COLOR"] is None
 
 
 def _fake_fetch(tickets):
