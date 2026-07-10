@@ -10,12 +10,27 @@ from typer.testing import CliRunner
 
 import game_lattice.cli as cli_mod
 from game_lattice import __version__
-from game_lattice.cli import _STATE_COLORS, app
+from game_lattice.cli import (
+    _STATE_COLORS,
+    _escape_github_message,
+    _escape_github_property,
+    app,
+)
 from game_lattice.constants import EdgeState
 from game_lattice.error_types import ConfigError
 from game_lattice.tickets import Ticket, TicketState
 
 runner = CliRunner()
+
+
+def test_escape_github_message_encodes_workflow_command_metacharacters():
+    assert _escape_github_message("100%\rfirst\nsecond: a,b") == ("100%25%0Dfirst%0Asecond: a,b")
+
+
+def test_escape_github_property_encodes_message_and_property_metacharacters():
+    assert _escape_github_property("100%\rfirst\nsecond: a,b") == (
+        "100%25%0Dfirst%0Asecond%3A a%2Cb"
+    )
 
 
 def test_version_flag():

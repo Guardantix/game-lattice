@@ -50,6 +50,16 @@ _STATE_COLORS: dict[EdgeState, str] = {
 }
 
 
+def _escape_github_message(value: str) -> str:
+    """Escape a GitHub workflow-command message value."""
+    return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def _escape_github_property(value: str) -> str:
+    """Escape a GitHub workflow-command property value."""
+    return _escape_github_message(value).replace(":", "%3A").replace(",", "%2C")
+
+
 def _print_project_error(exc: ProjectError) -> None:
     """Render a ProjectError to stderr in the standard one-line format."""
     _err.print(f"[red]error[/red]: {escape(str(exc))} ({exc.code})")
