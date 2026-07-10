@@ -271,6 +271,156 @@ def test_reconcile_write_error_exits_2(lattice_dir: Path, monkeypatch):
     assert result.exit_code == 2
 
 
+def test_reconcile_real_run_reports_reconciled_lines(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["reconcile", "--all"])
+    assert result.exit_code == 0
+    assert "reconciled pc-design.md: art-direction#accent" in result.stdout
+    assert "reconciled pc-design.md: art-direction#motion" in result.stdout
+
+
+def test_reconcile_real_run_reports_progress_before_midbatch_write_error(
+    tmp_path: Path, monkeypatch
+):
+    # Phase 2 is non-atomic across files: if an earlier file writes durably and a later
+    # write fails, the earlier file's confirmation must still print (per-file progress is
+    # emitted as each write lands, not deferred to after the whole batch).
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "up.md").write_text("---\nid: up\n---\n# Up {#s}\nupstream body\n", encoding="utf-8")
+    for name in ("down-a", "down-b"):
+        (docs / f"{name}.md").write_text(
+            f"---\nid: {name}\nderives_from:\n  - ref: up#s\n---\n# {name}\nbody\n",
+            encoding="utf-8",
+        )
+    monkeypatch.chdir(tmp_path)
+
+    real_write = cli_mod._atomic_write
+    calls: list[Path] = []
+
+    def flaky(path, text):
+        calls.append(path)
+        if len(calls) == 1:
+            real_write(path, text)  # first file writes durably
+            return
+        raise OSError("disk full")  # a later file's write fails mid-batch
+
+    monkeypatch.setattr(cli_mod, "_atomic_write", flaky)
+    result = runner.invoke(app, ["reconcile", "--all"])
+    assert result.exit_code == 2
+    first = calls[0]
+    # The durably rewritten file's confirmation survives the abort ...
+    assert f"reconciled {first.name}: up#s" in result.stdout
+    # ... and the write really landed on disk (a seen scalar now exists).
+    assert "seen:" in first.read_text(encoding="utf-8")
+
+
+def test_reconcile_dry_run_leaves_files_unchanged(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    docs = lattice_dir / "docs"
+    before = {p: p.read_text(encoding="utf-8") for p in docs.glob("*.md")}
+    result = runner.invoke(app, ["reconcile", "--all", "--dry-run"])
+    assert result.exit_code == 0
+    for path, text in before.items():
+        assert path.read_text(encoding="utf-8") == text
+
+
+def test_reconcile_dry_run_lists_stale_and_unreconciled_edges(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["reconcile", "--all", "--dry-run"])
+    assert result.exit_code == 0
+    assert "would reconcile pc-design.md: art-direction#accent" in result.stdout
+    assert "would reconcile pc-design.md: art-direction#motion" in result.stdout
+    # gdd's ghost ref is BROKEN, which --all skips, so gdd never appears.
+    assert "gdd" not in result.stdout
+    assert "reconciled pc-design" not in result.stdout
+
+
+def test_reconcile_dry_run_single_node_selection(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    pc_path = lattice_dir / "docs" / "pc-design.md"
+    before = pc_path.read_text(encoding="utf-8")
+    result = runner.invoke(app, ["reconcile", "pc-design", "--dry-run"])
+    assert result.exit_code == 0
+    assert "would reconcile pc-design.md: art-direction#accent" in result.stdout
+    assert "would reconcile pc-design.md: art-direction#motion" in result.stdout
+    assert pc_path.read_text(encoding="utf-8") == before
+
+
+def test_reconcile_dry_run_composes_with_ref(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    pc_path = lattice_dir / "docs" / "pc-design.md"
+    before = pc_path.read_text(encoding="utf-8")
+    result = runner.invoke(
+        app, ["reconcile", "pc-design", "--ref", "art-direction#accent", "--dry-run"]
+    )
+    assert result.exit_code == 0
+    assert "would reconcile pc-design.md: art-direction#accent" in result.stdout
+    assert "art-direction#motion" not in result.stdout
+    assert pc_path.read_text(encoding="utf-8") == before
+
+
+def test_reconcile_dry_run_json_payload(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["reconcile", "--all", "--dry-run", "--json"])
+    assert result.exit_code == 0
+    assert result.stdout.count("\n") == 1  # single-line JSON
+    payload = json.loads(result.stdout)
+    assert payload["dry_run"] is True
+    entries = payload["reconciled"]
+    assert entries == sorted(entries, key=lambda e: (e["path"], e["ref"]))
+    stripped = {(Path(e["path"]).name, e["ref"]) for e in entries}
+    assert stripped == {
+        ("pc-design.md", "art-direction#accent"),
+        ("pc-design.md", "art-direction#motion"),
+    }
+    for entry in entries:
+        assert len(entry["new_seen"]) == 32
+        int(entry["new_seen"], 16)  # must be hex
+
+
+def test_reconcile_dry_run_json_leaves_files_unchanged(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    pc_path = lattice_dir / "docs" / "pc-design.md"
+    before = pc_path.read_text(encoding="utf-8")
+    result = runner.invoke(app, ["reconcile", "--all", "--dry-run", "--json"])
+    assert result.exit_code == 0
+    assert pc_path.read_text(encoding="utf-8") == before
+
+
+def test_reconcile_real_run_json_payload(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    result = runner.invoke(app, ["reconcile", "--all", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["dry_run"] is False
+    stripped = {(Path(e["path"]).name, e["ref"]) for e in payload["reconciled"]}
+    assert stripped == {
+        ("pc-design.md", "art-direction#accent"),
+        ("pc-design.md", "art-direction#motion"),
+    }
+    # the real run actually wrote: check now reports both edges OK.
+    check_payload = json.loads(runner.invoke(app, ["check", "--json"]).stdout)
+    pc_states = [e["state"] for e in check_payload["edges"] if e["source_id"] == "pc-design"]
+    assert pc_states == ["OK", "OK"]
+
+
+def test_reconcile_dry_run_after_clean_reports_nothing_to_reconcile(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    assert runner.invoke(app, ["reconcile", "--all"]).exit_code == 0  # real run clears drift
+    result = runner.invoke(app, ["reconcile", "--all", "--dry-run"])
+    assert result.exit_code == 0
+    assert "nothing to reconcile" in result.stdout
+
+
+def test_reconcile_json_after_clean_reports_empty_list(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    assert runner.invoke(app, ["reconcile", "--all"]).exit_code == 0  # real run clears drift
+    result = runner.invoke(app, ["reconcile", "--all", "--json"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {"dry_run": False, "reconciled": []}
+
+
 def test_impact_unknown_token_exits_2(lattice_dir: Path, monkeypatch):
     monkeypatch.chdir(lattice_dir)
     result = runner.invoke(app, ["impact", "nonexistent"])
