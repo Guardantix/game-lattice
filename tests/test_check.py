@@ -6,7 +6,7 @@ from game_lattice.check import check_lattice, has_drift
 from game_lattice.config import load_config
 from game_lattice.hashing import content_hash
 from game_lattice.loader import build_lattice
-from game_lattice.model import NodeMeta, ParsedDoc, RawEdge
+from game_lattice.model import NodeMeta, ParsedDoc, RawEdge, TargetId
 from game_lattice.orchestrate import load_lattice
 from game_lattice.resolve import target_content
 from game_lattice.sections import build_toc, section_span, section_text
@@ -79,6 +79,43 @@ def test_broken_edge_preserves_seen_as_expected():
     assert status.actual is None
     # seen survives even though the ref no longer resolves
     assert status.expected == "deadbeefdeadbeefdeadbeefdeadbeef"
+
+
+def test_check_memoizes_shared_target_hash(monkeypatch):
+    docs = [
+        ParsedDoc(Path("up.md"), NodeMeta(id="up"), "# Up {#sec}\nup body\n"),
+        *[
+            ParsedDoc(
+                Path(f"down-{number}.md"),
+                NodeMeta(id=f"down-{number}", derives_from=[RawEdge(ref="up#sec")]),
+                "downstream body\n",
+            )
+            for number in range(3)
+        ],
+    ]
+    lattice = build_lattice(docs)
+    calls = 0
+
+    def counting_content_hash(content: str) -> str:
+        nonlocal calls
+        calls += 1
+        return content_hash(content)
+
+    monkeypatch.setattr("game_lattice.resolve.content_hash", counting_content_hash)
+
+    statuses = check_lattice(lattice)
+    target_id = TargetId("up", "sec")
+    actual = content_hash(target_content(lattice, target_id))
+
+    assert len(statuses) == 3
+    assert all(status.target_id == target_id for status in statuses)
+    assert all(status.actual == actual for status in statuses)
+    assert calls == 1
+
+    second_statuses = check_lattice(lattice)
+
+    assert second_statuses == statuses
+    assert calls == 2
 
 
 def test_has_drift_false_when_all_ok():

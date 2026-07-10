@@ -12,6 +12,9 @@ from game_lattice.error_types import (
     UnreadableDocError,
     ValidationError,
 )
+from game_lattice.hashing import content_hash
+from game_lattice.loader import build_lattice
+from game_lattice.model import NodeMeta, ParsedDoc, RawEdge
 from game_lattice.orchestrate import load_lattice
 from game_lattice.reconcile import apply_reconcile, plan_rewrites, reconcile
 
@@ -206,6 +209,43 @@ def test_reconcile_all_skips_broken_and_ok(lattice_dir: Path):
     assert "art-direction#motion" in all_refs
     # gdd's broken ghost ref must NOT be in the plan
     assert "ghost" not in all_refs
+
+
+def test_reconcile_all_memoizes_shared_target_hash(monkeypatch):
+    docs = [
+        ParsedDoc(Path("up.md"), NodeMeta(id="up"), "# Up {#sec}\nup body\n"),
+        *[
+            ParsedDoc(
+                Path(f"down-{number}.md"),
+                NodeMeta(
+                    id=f"down-{number}",
+                    derives_from=[RawEdge(ref="up#sec", seen="stale")],
+                ),
+                "downstream body\n",
+            )
+            for number in range(3)
+        ],
+    ]
+    lattice = build_lattice(docs)
+    calls = 0
+
+    def counting_content_hash(content: str) -> str:
+        nonlocal calls
+        calls += 1
+        return content_hash(content)
+
+    monkeypatch.setattr("game_lattice.resolve.content_hash", counting_content_hash)
+
+    plan = reconcile(lattice, "", ref=None, reconcile_all=True)
+
+    assert set(plan) == {Path(f"down-{number}.md") for number in range(3)}
+    assert all("up#sec" in updates for updates in plan.values())
+    assert calls == 1
+
+    second_plan = reconcile(lattice, "", ref=None, reconcile_all=True)
+
+    assert second_plan == plan
+    assert calls == 2
 
 
 def test_apply_reconcile_preserves_comments_key_order_and_untargeted_edges():
