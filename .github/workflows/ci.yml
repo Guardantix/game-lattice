@@ -10,12 +10,17 @@ jobs:
   code-quality:
     name: Code quality
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.13', '3.14']
+    env:
+      UV_PYTHON: ${{ matrix.python }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      - run: uv python install 3.14
+      - run: uv python install ${{ matrix.python }}
       - run: uv sync --locked --group dev
       - run: uv run --no-sync ruff check src/ tests/
       - run: uv run --no-sync ruff format --check src/ tests/
@@ -116,6 +121,16 @@ jobs:
         run: |
           git tag "${TAG}" "${GITHUB_SHA}"
           git push origin "${TAG}"
+
+      - name: Publish release notes
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
+          VERSION: ${{ steps.target.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          uv run --no-sync python scripts/extract_release_notes.py "${VERSION}" > release-notes.md
+          gh release create "${TAG}" --title "${TAG}" --notes-file release-notes.md --verify-tag
 
       - name: Confirm pinned ref resolves
         if: steps.gate.outputs.proceed == 'true'

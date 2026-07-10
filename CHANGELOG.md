@@ -20,6 +20,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `Retry-After` up to a 30 second cap (#24).
 - The version-sync guard now also checks README pinned install refs (`game-lattice@vX.Y.Z`)
   against `__version__` (#34).
+- The release job now publishes a GitHub Release for each tag it cuts, with the body taken from
+  the matching `## [X.Y.Z]` CHANGELOG section; `scripts/extract_release_notes.py` (pure core
+  `version_check.changelog_section`) extracts it and fails the release if that section is missing
+  or empty (#47).
 
 ### Changed
 

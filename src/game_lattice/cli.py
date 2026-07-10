@@ -11,8 +11,9 @@ from rich.console import Console
 from rich.markup import escape
 
 from . import __version__
-from .check import check_lattice, has_drift
+from .check import EdgeStatus, check_lattice, has_drift
 from .config import DEFAULT_CONFIG_NAME, load_config
+from .constants import VALID_EDGE_STATES, VALID_GRAPH_FORMATS
 from .error_types import ConfigError, ProjectError, UnreadableDocError
 from .impact import impact as impact_walk
 from .linear_fetch import fetch_tickets
@@ -23,7 +24,7 @@ from .model import Lattice
 from .orchestrate import load_lattice
 from .reconcile import apply_reconcile
 from .reconcile import reconcile as plan_reconcile
-from .render import to_dot, to_mermaid
+from .render import to_dot, to_json, to_mermaid
 from .scaffold import build_scaffold
 from .stale_shipped import build_audit_trigger, build_from_trigger, stale_shipped
 from .text_utils import strip_control_chars
@@ -41,6 +42,47 @@ _STATE_COL_WIDTH = 13  # widest EdgeState ("UNRECONCILED") is 12 chars, plus one
 def _print_project_error(exc: ProjectError) -> None:
     """Render a ProjectError to stderr in the standard one-line format."""
     _err.print(f"[red]error[/red]: {escape(str(exc))} ({exc.code})")
+
+
+def _parse_only_states(only: list[str] | None) -> frozenset[str] | None:
+    """Normalize and validate the ``--only`` flag's values.
+
+    Args:
+        only: Raw repeated ``--only`` values, or None when the flag is absent.
+
+    Returns:
+        None when the flag is absent (no filtering), otherwise the set of
+        upper-cased, validated edge states to keep.
+
+    Raises:
+        typer.Exit: Exit code 2 when a value is not a valid edge state.
+    """
+    if not only:
+        return None
+    states = frozenset(value.upper() for value in only)
+    unknown = states - VALID_EDGE_STATES
+    if unknown:
+        valid = ", ".join(sorted(VALID_EDGE_STATES))
+        bad = ", ".join(sorted(unknown))
+        _err.print(f"[red]error[/red]: unknown --only state(s): {escape(bad)} (valid: {valid})")
+        raise typer.Exit(2)
+    return states
+
+
+def _filter_statuses(statuses: list[EdgeStatus], only: frozenset[str] | None) -> list[EdgeStatus]:
+    """Filter statuses to the requested states for display, leaving the input untouched.
+
+    Args:
+        statuses: The full, unfiltered edge statuses.
+        only: States to keep, or None to keep everything.
+
+    Returns:
+        The subset of statuses whose state is in ``only``, or all statuses when
+        ``only`` is None.
+    """
+    if only is None:
+        return statuses
+    return [status for status in statuses if status.state in only]
 
 
 def _version_callback(value: bool) -> None:
@@ -83,14 +125,29 @@ def _skip_summary(result: LintResult) -> str:
 
 
 @app.command()
-def check(config: ConfigOpt = None, json_out: JsonOpt = False) -> None:
+def check(
+    config: ConfigOpt = None,
+    json_out: JsonOpt = False,
+    only: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--only",
+            help=(
+                "Show only these states (repeatable): OK, STALE, UNRECONCILED, BROKEN. "
+                "Filters display only; the exit code always reflects every edge."
+            ),
+        ),
+    ] = None,
+) -> None:
     """Classify every edge; exit 1 on drift, 2 on tool error."""
+    only_states = _parse_only_states(only)
     try:
         lattice = _load(config)
         statuses = check_lattice(lattice)
     except ProjectError as exc:
         _print_project_error(exc)
         raise typer.Exit(2) from exc
+    displayed = _filter_statuses(statuses, only_states)
     if json_out:
         payload = {
             "edges": [
@@ -102,13 +159,13 @@ def check(config: ConfigOpt = None, json_out: JsonOpt = False) -> None:
                     "expected": status.expected,
                     "actual": status.actual,
                 }
-                for status in statuses
+                for status in displayed
             ]
         }
         typer.echo(json.dumps(payload))
     else:
         state_colors = {"OK": "green", "STALE": "yellow", "UNRECONCILED": "yellow", "BROKEN": "red"}
-        for status in statuses:
+        for status in displayed:
             color = state_colors[status.state]
             _out.print(
                 f"[{color}]{status.state:<{_STATE_COL_WIDTH}}[/{color}] "
@@ -161,11 +218,19 @@ def lint(config: ConfigOpt = None, json_out: JsonOpt = False) -> None:
 
 
 @app.command()
-def impact(token: str, config: ConfigOpt = None, json_out: JsonOpt = False) -> None:
+def impact(
+    token: str,
+    config: ConfigOpt = None,
+    json_out: JsonOpt = False,
+    depth: Annotated[
+        int | None,
+        typer.Option("--depth", min=1, help="Limit the walk to this many hops from the target."),
+    ] = None,
+) -> None:
     """List every downstream doc affected by a change to TOKEN."""
     try:
         lattice = _load(config)
-        affected = impact_walk(lattice, token)
+        affected = impact_walk(lattice, token, max_depth=depth)
     except ProjectError as exc:
         _print_project_error(exc)
         raise typer.Exit(2) from exc
@@ -177,19 +242,104 @@ def impact(token: str, config: ConfigOpt = None, json_out: JsonOpt = False) -> N
                     "title": node.title,
                     "path": str(node.path),
                     "tickets": list(node.tickets),
+                    "depth": node_depth,
                 }
-                for node in affected
+                for node, node_depth in affected
             ]
         }
         typer.echo(json.dumps(payload))
     else:
-        for node in affected:
+        for node, _node_depth in affected:
             tickets = ", ".join(node.tickets) if node.tickets else "-"
             _out.print(f"{escape(node.id)}  ({escape(str(node.path))})  tickets: {escape(tickets)}")
 
 
+Rewrite = tuple[Path, str, set[str]]
+
+
+def _reconcile_json_payload(
+    plan: dict[Path, dict[str, str]], rewrites: list[Rewrite], *, dry_run: bool
+) -> str:
+    """Build the single-line JSON payload for a reconcile run (dry or real).
+
+    Args:
+        plan: The full planned mapping of path to ``{ref: new_seen}``, used to look up
+            ``new_seen`` for each applied ref.
+        rewrites: The rewrites actually applied (fresh-read, non-empty ``applied`` set).
+        dry_run: Whether this was a preview (no writes) or a completed real run.
+
+    Returns:
+        The JSON text, entries sorted by path then ref for deterministic output.
+    """
+    entries = sorted(
+        (
+            {"path": str(path), "ref": target_ref, "new_seen": plan[path][target_ref]}
+            for path, _new_text, applied in rewrites
+            for target_ref in applied
+        ),
+        key=lambda entry: (entry["path"], entry["ref"]),
+    )
+    return json.dumps({"dry_run": dry_run, "reconciled": entries})
+
+
+def _print_reconcile_lines(path: Path, applied: set[str], *, dry_run: bool) -> None:
+    """Print one file's human-readable reconcile confirmation lines.
+
+    Args:
+        path: The downstream file that was (or would be) rewritten.
+        applied: The refs whose seen scalar was updated in this file.
+        dry_run: Whether this was a preview (would reconcile) or a real write (reconciled).
+    """
+    verb = "would reconcile" if dry_run else "reconciled"
+    for target_ref in sorted(applied):
+        _out.print(f"{verb} {escape(path.name)}: {escape(target_ref)}")
+
+
+def _write_and_report_reconcile(
+    plan: dict[Path, dict[str, str]],
+    rewrites: list[Rewrite],
+    *,
+    dry_run: bool,
+    json_out: bool,
+) -> None:
+    """Write the planned rewrites (unless dry run) and emit the reconcile report.
+
+    For a real human run, each file's confirmation prints as its write lands rather than
+    deferred to after the whole batch, so a mid-batch OSError still records which files
+    were durably rewritten (phase 2 is intentionally non-atomic across files). JSON emits
+    one payload after every write completes; a dry run writes nothing.
+
+    Args:
+        plan: The full planned mapping of path to ``{ref: new_seen}``.
+        rewrites: The rewrites actually applied (fresh-read, non-empty ``applied`` set).
+        dry_run: Whether this is a preview (no writes of any kind).
+        json_out: Whether to emit the machine-readable payload instead of human lines.
+
+    Raises:
+        UnreadableDocError: If a downstream file cannot be written.
+    """
+    report_progress = not dry_run and not json_out
+    if not dry_run:
+        for path, new_text, applied in rewrites:
+            try:
+                _atomic_write(path, new_text)
+            except OSError as exc:
+                msg = f"cannot write {path}: {exc}"
+                raise UnreadableDocError(msg) from exc
+            if report_progress:
+                _print_reconcile_lines(path, applied, dry_run=False)
+    if json_out:
+        typer.echo(_reconcile_json_payload(plan, rewrites, dry_run=dry_run))
+        return
+    if dry_run:
+        for path, _new_text, applied in rewrites:
+            _print_reconcile_lines(path, applied, dry_run=True)
+    if not rewrites:
+        _out.print("nothing to reconcile")
+
+
 @app.command()
-def reconcile(
+def reconcile(  # noqa: PLR0913
     downstream_id: Annotated[
         str, typer.Argument(help="Node whose edges to reconcile (omit when using --all).")
     ] = "",
@@ -199,9 +349,16 @@ def reconcile(
     reconcile_all: Annotated[
         bool, typer.Option("--all", help="Reconcile every drifting edge.")
     ] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Show what would be reconciled without writing.")
+    ] = False,
     config: ConfigOpt = None,
+    json_out: JsonOpt = False,
 ) -> None:
-    """Set seen to current upstream hashes for the selected edges."""
+    """Set seen to current upstream hashes for the selected edges.
+
+    With --dry-run, computes and reports the same plan without writing anything.
+    """
     if not reconcile_all and not downstream_id:
         _err.print("[red]error[/red]: provide a downstream id or --all")
         raise typer.Exit(2)
@@ -210,8 +367,10 @@ def reconcile(
         plan = plan_reconcile(lattice, downstream_id, ref=ref, reconcile_all=reconcile_all)
         # Phase 1: compute every rewrite from a fresh read before touching disk, so a
         # malformed concurrent edit aborts the whole command instead of leaving an
-        # earlier file already rewritten (no cross-file half-reconcile).
-        rewrites: list[tuple[Path, str, set[str]]] = []
+        # earlier file already rewritten (no cross-file half-reconcile). Computed
+        # unconditionally (even for --dry-run) so the preview reflects the same
+        # fresh-read validation a real run would perform.
+        rewrites: list[Rewrite] = []
         for path, updates in plan.items():
             try:
                 fresh = path.read_text(encoding="utf-8")
@@ -221,17 +380,9 @@ def reconcile(
             new_text, applied = apply_reconcile(fresh, updates)
             if applied:
                 rewrites.append((path, new_text, applied))
-        # Phase 2: only after all rewrites computed cleanly, write them.
-        for path, new_text, applied in rewrites:
-            try:
-                _atomic_write(path, new_text)
-            except OSError as exc:
-                msg = f"cannot write {path}: {exc}"
-                raise UnreadableDocError(msg) from exc
-            for target_ref in sorted(applied):
-                _out.print(f"reconciled {escape(path.name)}: {escape(target_ref)}")
-        if not rewrites:
-            _out.print("nothing to reconcile")
+        # Phase 2: only after all rewrites computed cleanly, write them (skipped
+        # entirely for --dry-run) and report the outcome.
+        _write_and_report_reconcile(plan, rewrites, dry_run=dry_run, json_out=json_out)
     except ProjectError as exc:
         _print_project_error(exc)
         raise typer.Exit(2) from exc
@@ -239,10 +390,14 @@ def reconcile(
 
 @app.command()
 def graph(
-    fmt: Annotated[str, typer.Option("--format", help="mermaid or dot.")] = "mermaid",
+    fmt: Annotated[str, typer.Option("--format", help="mermaid, dot, or json.")] = "mermaid",
     config: ConfigOpt = None,
 ) -> None:
-    """Emit the edge graph as Mermaid or DOT."""
+    """Emit the edge graph as Mermaid, DOT, or JSON."""
+    if fmt not in VALID_GRAPH_FORMATS:
+        valid = ", ".join(sorted(VALID_GRAPH_FORMATS))
+        _err.print(f"[red]error[/red]: --format {escape(f'{fmt!r}')} must be one of: {valid}")
+        raise typer.Exit(2)
     try:
         lattice = _load(config)
         stale = {
@@ -253,8 +408,12 @@ def graph(
     except ProjectError as exc:
         _print_project_error(exc)
         raise typer.Exit(2) from exc
-    rendered = to_dot(lattice, stale) if fmt == "dot" else to_mermaid(lattice, stale)
-    typer.echo(rendered, nl=False)
+    if fmt == "json":
+        typer.echo(json.dumps(to_json(lattice, stale)))
+    elif fmt == "dot":
+        typer.echo(to_dot(lattice, stale), nl=False)
+    else:
+        typer.echo(to_mermaid(lattice, stale), nl=False)
 
 
 @app.command()
