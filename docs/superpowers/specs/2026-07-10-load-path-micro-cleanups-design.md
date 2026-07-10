@@ -22,10 +22,11 @@ instance. Their existing parsing functions will call that instance. These are th
 module-level mutable objects. They are intentionally local to their modules, safe to reuse in the
 single-threaded CLI, and do not create a shared cross-module abstraction.
 
-A config file may set a YAML version directive on its reusable parser. `config._read_yaml` will
-reset `_YAML.version` to `None` immediately before every load so one file cannot change the scalar
-semantics of a later file. This retains the singleton while matching a fresh safe loader's default
-version for each independent config.
+A YAML directive can set persistent version state on a reusable parser. A valid config can retain
+that state after loading, and malformed frontmatter can retain it before raising a parse error.
+Both parsing functions will reset their local `_YAML.version` to `None` immediately before every
+load so one file cannot change the scalar semantics of a later file. This retains both singletons
+while matching a fresh safe loader's default version for each independent document.
 
 `sections.split_body_lines` will import and call `hashing.normalize_newlines` before splitting.
 The helper performs the same CRLF replacement followed by lone-CR replacement as the existing
@@ -53,6 +54,7 @@ Add focused tests that fail against the current implementation and prove each in
 - `frontmatter_parser.parse_meta` uses its module-level `_YAML` instance across calls.
 - `config._read_yaml` uses its module-level `_YAML` instance across loads.
 - Config loads reset any YAML version directive before parsing the next independent file.
+- Frontmatter loads reset version state that a malformed earlier document may have retained.
 - `split_body_lines` delegates newline normalization to `hashing.normalize_newlines` through the
   symbol imported by `sections.py`.
 

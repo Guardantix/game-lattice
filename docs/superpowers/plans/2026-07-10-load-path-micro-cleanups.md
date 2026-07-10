@@ -182,6 +182,65 @@ git add tests/test_frontmatter_parser.py src/game_lattice/frontmatter_parser.py
 git commit -m "perf: reuse frontmatter YAML loader"
 ```
 
+- [ ] **Step 6: Write the failing malformed-frontmatter version regression**
+
+Add this test after the malformed-YAML tests in `tests/test_frontmatter_parser.py`:
+
+```python
+def test_safe_yaml_loader_resets_version_after_malformed_frontmatter():
+    with pytest.raises(UnreadableDocError):
+        parse_meta("%YAML 1.1\nid: [unclosed\n", Path("broken.md"))
+
+    meta = parse_meta("id: on\n", Path("next.md"))
+
+    assert meta is not None
+    assert meta.id == "on"
+```
+
+- [ ] **Step 7: Run the malformed-frontmatter test and verify RED**
+
+Run:
+
+```bash
+uv run --group dev pytest \
+  tests/test_frontmatter_parser.py::test_safe_yaml_loader_resets_version_after_malformed_frontmatter \
+  -v --no-cov
+```
+
+Expected: FAIL because the malformed document leaves YAML 1.1 active and the next document parses
+`on` as `True`, which strict `NodeMeta` validation rejects.
+
+- [ ] **Step 8: Reset the reusable parser's version before each frontmatter load**
+
+Immediately before `_YAML.load(raw_meta)` in `frontmatter_parser.parse_meta`, add:
+
+```python
+    # A YAML directive can update the reusable parser's version even when parsing fails. Reset it
+    # so each document starts with default YAML semantics, matching a fresh safe loader.
+    _YAML.version = None
+```
+
+- [ ] **Step 9: Run the malformed-frontmatter test and verify GREEN**
+
+Run:
+
+```bash
+uv run --group dev pytest \
+  tests/test_frontmatter_parser.py::test_safe_yaml_loader_resets_version_after_malformed_frontmatter \
+  -v --no-cov
+```
+
+Expected: PASS; the next document uses default YAML semantics and preserves `on` as a string.
+
+- [ ] **Step 10: Commit the frontmatter version-isolation fix**
+
+```bash
+git add src/game_lattice/frontmatter_parser.py tests/test_frontmatter_parser.py \
+  docs/superpowers/specs/2026-07-10-load-path-micro-cleanups-design.md \
+  docs/superpowers/plans/2026-07-10-load-path-micro-cleanups.md
+git commit -m "fix: reset frontmatter YAML version per load"
+```
+
 ### Task 3: Reuse the Config Safe YAML Loader
 
 **Files:**
@@ -249,9 +308,6 @@ def _read_yaml(path: Path) -> object:
     except (OSError, UnicodeDecodeError) as exc:
         msg = f"cannot read config {path}: {exc}"
         raise ConfigError(msg) from exc
-    # A YAML directive updates the reusable parser's version. Reset it so each config starts
-    # with default YAML semantics, matching a fresh safe loader.
-    _YAML.version = None
     try:
         data = _YAML.load(text)
 ```

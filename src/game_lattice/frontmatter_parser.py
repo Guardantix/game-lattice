@@ -56,6 +56,9 @@ def parse_meta(raw_meta: str | None, source: Path) -> NodeMeta | None:
     """
     if raw_meta is None:
         return None
+    # A YAML directive can update the reusable parser's version even when parsing fails. Reset it
+    # so each document starts with default YAML semantics, matching a fresh safe loader.
+    _YAML.version = None
     try:
         data: Any = _YAML.load(raw_meta)
     except YAMLError as exc:

@@ -157,3 +157,13 @@ def test_parse_meta_bad_yaml_carries_code_and_names_file():
         parse_meta("id: [unclosed\n", Path("a.md"))
     assert exc.value.code == "UNREADABLE_DOC"
     assert "a.md" in str(exc.value)
+
+
+def test_safe_yaml_loader_resets_version_after_malformed_frontmatter():
+    with pytest.raises(UnreadableDocError):
+        parse_meta("%YAML 1.1\nid: [unclosed\n", Path("broken.md"))
+
+    meta = parse_meta("id: on\n", Path("next.md"))
+
+    assert meta is not None
+    assert meta.id == "on"
