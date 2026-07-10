@@ -30,6 +30,9 @@ def test_no_color_suppresses_forced_ansi(lattice_dir: Path, monkeypatch):
     original_out = cli_mod._out
     original_err = cli_mod._err
     with monkeypatch.context() as patch:
+        patch.delenv("NO_COLOR", raising=False)
+        patch.setenv("FORCE_COLOR", "1")
+        patch.setenv("TERM", "xterm-256color")
         patch.setattr(cli_mod, "_err", original_err)
         patch.setattr(
             cli_mod,
@@ -47,6 +50,8 @@ def test_no_color_suppresses_forced_ansi(lattice_dir: Path, monkeypatch):
         )
         plain = runner.invoke(app, ["--no-color", "check"])
         assert plain.exit_code == 1
+        assert cli_mod._out.is_terminal
+        assert cli_mod._out.color_system is not None
         assert "\x1b[" not in plain.stdout
 
     assert cli_mod._out is original_out
