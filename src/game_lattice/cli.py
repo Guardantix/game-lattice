@@ -84,12 +84,8 @@ def _resolve_report_format(fmt: str, json_out: bool) -> ReportFormat:
         raise typer.Exit(2)
     if json_out:
         return "json"
-    if fmt == "human":
-        return "human"
-    if fmt == "json":
-        return "json"
-    if fmt == "github":
-        return "github"
+    if fmt in VALID_REPORT_FORMATS:
+        return fmt  # ty: ignore[invalid-return-type]
     valid = ", ".join(sorted(VALID_REPORT_FORMATS))
     _err.print(f"[red]error[/red]: --format {escape(f'{fmt!r}')} must be one of: {valid}")
     raise typer.Exit(2)

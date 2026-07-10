@@ -60,12 +60,14 @@ def test_check_github_emits_each_drift_annotation(lattice_dir: Path, monkeypatch
     result = runner.invoke(app, ["check", "--format", "github"])
 
     assert result.exit_code == 1
+    gdd_path = _escape_github_property(str(lattice_dir / "docs/gdd.md"))
+    pc_path = _escape_github_property(str(lattice_dir / "docs/pc-design.md"))
     assert result.stdout == (
-        f"::error file={lattice_dir / 'docs/gdd.md'},title=game-lattice BROKEN::"
+        f"::error file={gdd_path},title=game-lattice BROKEN::"
         "gdd -> ghost is BROKEN\n"
-        f"::error file={lattice_dir / 'docs/pc-design.md'},title=game-lattice STALE::"
+        f"::error file={pc_path},title=game-lattice STALE::"
         "pc-design -> art-direction#accent is STALE\n"
-        f"::error file={lattice_dir / 'docs/pc-design.md'},title=game-lattice UNRECONCILED::"
+        f"::error file={pc_path},title=game-lattice UNRECONCILED::"
         "pc-design -> art-direction#motion is UNRECONCILED\n"
     )
 
@@ -84,8 +86,9 @@ def test_check_github_escapes_complete_annotation(tmp_path: Path, monkeypatch):
     result = runner.invoke(app, ["check", "--format", "github"])
 
     assert result.exit_code == 1
+    expected_path = _escape_github_property(str(root / "docs/down.md"))
     assert result.stdout == (
-        f"::error file={tmp_path}/project%25%3A%2C%0Aline/docs/down.md,"
+        f"::error file={expected_path},"
         "title=game-lattice BROKEN::"
         "down%25:,%0D%0Aline -> ghost%25:,%0D%0Aline is BROKEN\n"
     )
@@ -923,8 +926,9 @@ def test_lint_github_emits_each_violation_annotation(tmp_path: Path, monkeypatch
     result = runner.invoke(app, ["lint", "--format", "github"])
 
     assert result.exit_code == 1
+    down_path = _escape_github_property(str(tmp_path / "docs/down.md"))
     assert result.stdout == (
-        f"::error file={tmp_path / 'docs/down.md'},title=game-lattice ladder violation::"
+        f"::error file={down_path},title=game-lattice ladder violation::"
         "down (binding) -> up (derived)\n"
     )
 
@@ -947,8 +951,9 @@ def test_lint_github_escapes_complete_annotation(tmp_path: Path, monkeypatch):
     result = runner.invoke(app, ["lint", "--format", "github"])
 
     assert result.exit_code == 1
+    expected_path = _escape_github_property(str(root / "docs/down.md"))
     assert result.stdout == (
-        f"::error file={tmp_path}/project%25%3A%2C%0Aline/docs/down.md,"
+        f"::error file={expected_path},"
         "title=game-lattice ladder violation::"
         "down%25:,%0D%0Aline (binding) -> up%25:,%0D%0Aline (derived)\n"
     )
