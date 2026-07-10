@@ -74,11 +74,28 @@ def test_check_json_indent_round_trips_to_compact_payload(lattice_dir: Path, mon
     assert '\n  "edges": [\n' in pretty.stdout
 
 
+def test_check_json_zero_indent_round_trips_to_compact_payload(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    compact = runner.invoke(app, ["check", "--json"])
+    zero_indent = runner.invoke(app, ["check", "--json", "--indent", "0"])
+    assert compact.exit_code == zero_indent.exit_code == 1
+    assert json.loads(zero_indent.stdout) == json.loads(compact.stdout)
+    assert '\n"edges": [\n' in zero_indent.stdout
+
+
 def test_check_indent_without_json_exits_2(lattice_dir: Path, monkeypatch):
     monkeypatch.chdir(lattice_dir)
     result = runner.invoke(app, ["check", "--indent", "2"])
     assert result.exit_code == 2
     assert "--indent requires --json" in result.stderr
+
+
+def test_check_indent_validation_precedes_project_loading(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["check", "--config", "missing.yml", "--indent", "0"])
+    assert result.exit_code == 2
+    assert "--indent requires --json" in result.stderr
+    assert "config file not found" not in result.stderr
 
 
 def test_check_negative_indent_is_rejected(lattice_dir: Path, monkeypatch):
