@@ -196,3 +196,26 @@ def test_changelog_section_last_section_runs_to_end_of_file():
 def test_changelog_section_does_not_match_a_version_that_is_a_substring():
     changelog = "# Changelog\n\n## [10.6.0]\n\n- ten\n"
     assert changelog_section(changelog, "0.6.0") is None
+
+
+def test_changelog_section_does_not_truncate_on_a_code_comment_line():
+    # A fenced code block whose content starts with '## ' must not be treated as a
+    # section boundary; only real '## [heading]' lines delimit sections.
+    changelog = (
+        "# Changelog\n\n"
+        "## [0.6.0]\n\n"
+        "### Added\n\n"
+        "- a shell example:\n\n"
+        "```bash\n"
+        "## step one\n"
+        "run --thing\n"
+        "```\n\n"
+        "- trailing bullet after the block\n\n"
+        "## [0.5.0]\n\n"
+        "- old\n"
+    )
+    section = changelog_section(changelog, "0.6.0")
+    assert section is not None
+    assert "## step one" in section  # the code comment survives, not truncated
+    assert "- trailing bullet after the block" in section
+    assert "old" not in section  # the next real section still bounds it
