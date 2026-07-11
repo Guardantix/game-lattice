@@ -1,28 +1,28 @@
-# game-lattice Roadmap
+# doc-lattice Roadmap
 
 Forward-looking slices, derived from the local-core design spec's deferral map
-(`docs/superpowers/specs/2026-06-27-game-lattice-local-core-design.md`, section 12).
+(`docs/superpowers/specs/2026-06-27-doc-lattice-local-core-design.md`, section 12).
 The spec is the source of truth; this file is the at-a-glance index.
 
 ## Shipped
 
 - **local-core (v1)** (PR #1). The deterministic local engine: lattice parse, the id-indexed edge
   graph derived on demand, and the `impact`, `check`, `reconcile`, and `graph` commands. No network,
-  no secrets, no LLM. Spec: `docs/superpowers/specs/2026-06-27-game-lattice-local-core-design.md`.
+  no secrets, no LLM. Spec: `docs/superpowers/specs/2026-06-27-doc-lattice-local-core-design.md`.
 - **linear slice** (PR #3). The `linear` command resolves referenced tickets to live status and
   reports shipped-against-stale-spec drift. The first network-touching slice. Spec:
-  `docs/superpowers/specs/2026-06-27-game-lattice-linear-design.md`.
-- **init slice** (PR #4). The `init` command scaffolds `.game-lattice.yml` and prints pre-commit
+  `docs/superpowers/specs/2026-06-27-doc-lattice-linear-design.md`.
+- **init slice** (PR #4). The `init` command scaffolds `.doc-lattice.yml` and prints pre-commit
   and CI codegen for an adopting repo. Shipped as the 0.2.0 release (tag `v0.2.0`). Spec:
-  `docs/superpowers/specs/2026-06-28-game-lattice-init-design.md`.
+  `docs/superpowers/specs/2026-06-28-doc-lattice-init-design.md`.
 - **lint slice** (v0.3.0). The `lint` command validates the authority ladder over `derives_from`
   edges, reports edges it cannot rank, and is wired into the generated pre-commit and CI gates
-  alongside `check`. Spec: `docs/superpowers/specs/2026-06-28-game-lattice-lint-design.md`.
+  alongside `check`. Spec: `docs/superpowers/specs/2026-06-28-doc-lattice-lint-design.md`.
 - **release automation** (PR #8). The version-sync guard (`scripts/check_version_sync.py`) fails any PR whose
   `__version__`, `pyproject.toml`, and top `CHANGELOG.md` entry disagree, and a merge-triggered CI
   `release` job creates and smoke-tests the `vX.Y.Z` tag (running `check`, `lint`, and `init` against
   the pinned ref), so the tag is a product of a green pipeline. Spec:
-  `docs/superpowers/specs/2026-06-29-game-lattice-release-automation-design.md`.
+  `docs/superpowers/specs/2026-06-29-doc-lattice-release-automation-design.md`.
 
 Acceptance (local-core spec section 13), still met:
 

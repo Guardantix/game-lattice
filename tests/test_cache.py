@@ -10,8 +10,8 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from game_lattice import __version__
-from game_lattice.cache import (
+from doc_lattice import __version__
+from doc_lattice.cache import (
     CacheFile,
     CacheHit,
     CacheMiss,
@@ -23,12 +23,12 @@ from game_lattice.cache import (
     cache_home,
     cache_path,
 )
-from game_lattice.check import check_lattice, statuses_json
-from game_lattice.config import load_config
-from game_lattice.constants import CACHE_FILE_NAME, CACHE_VERSION, MAX_STAT_ROOTS
-from game_lattice.error_types import UnreadableDocError
-from game_lattice.model import FileSections, NodeMeta, ParsedDoc, SectionRecord
-from game_lattice.orchestrate import load_lattice
+from doc_lattice.check import check_lattice, statuses_json
+from doc_lattice.config import load_config
+from doc_lattice.constants import CACHE_FILE_NAME, CACHE_VERSION, MAX_STAT_ROOTS
+from doc_lattice.error_types import UnreadableDocError
+from doc_lattice.model import FileSections, NodeMeta, ParsedDoc, SectionRecord
+from doc_lattice.orchestrate import load_lattice
 
 
 def _sample_cache_file() -> CacheFile:
@@ -89,7 +89,7 @@ def test_cache_home_falls_back_to_home_cache_dir_when_home_and_xdg_unset():
 
 def test_cache_path_composes_slot_and_file_name():
     path = cache_path("my-docs", {"XDG_CACHE_HOME": "/c", "HOME": "/home/u"})
-    assert path == Path("/c") / "game-lattice" / "my-docs" / CACHE_FILE_NAME
+    assert path == Path("/c") / "doc-lattice" / "my-docs" / CACHE_FILE_NAME
 
 
 def _write_cache(path: Path, cache_file: CacheFile) -> None:
@@ -361,7 +361,7 @@ def test_verify_hit_stat_refresh_uses_the_stat_captured_with_the_read(tmp_path: 
         st_size=real_st.st_size + 1000, st_mtime_ns=real_st.st_mtime_ns + 999_999_999
     )
 
-    import game_lattice.cache as cache_module  # noqa: PLC0415
+    import doc_lattice.cache as cache_module  # noqa: PLC0415
 
     monkeypatch.setattr(cache_module, "read_doc_bytes_and_stat", lambda _p: (real_bytes, sentinel))
 
@@ -389,7 +389,7 @@ def test_miss_carries_and_records_the_stat_captured_with_the_read(tmp_path: Path
         st_size=real_st.st_size + 2000, st_mtime_ns=real_st.st_mtime_ns + 888_888_888
     )
 
-    import game_lattice.cache as cache_module  # noqa: PLC0415
+    import doc_lattice.cache as cache_module  # noqa: PLC0415
 
     monkeypatch.setattr(cache_module, "read_doc_bytes_and_stat", lambda _p: (real_bytes, sentinel))
 
@@ -560,7 +560,7 @@ def test_finalize_write_failure_emits_one_stderr_line_and_does_not_raise(
         FileSections(total_lines=1, sections=(SectionRecord("a", 1, 1),)),
         doc.stat(),
     )
-    import game_lattice.cache as cache_module  # noqa: PLC0415
+    import doc_lattice.cache as cache_module  # noqa: PLC0415
 
     def _boom(*args, **kwargs):  # noqa: ARG001
         raise OSError("disk full")
@@ -593,7 +593,7 @@ def test_finalize_write_failure_does_not_raise_when_temp_cleanup_also_fails(
         FileSections(total_lines=1, sections=(SectionRecord("a", 1, 1),)),
         doc.stat(),
     )
-    import game_lattice.cache as cache_module  # noqa: PLC0415
+    import doc_lattice.cache as cache_module  # noqa: PLC0415
 
     def _boom_replace(*args, **kwargs):  # noqa: ARG001
         raise OSError("disk full")
@@ -632,7 +632,7 @@ def test_default_tier_matches_uncached_under_random_edits(tmp_path_factory, edit
     (docs / "b.md").write_text(
         "---\nid: b\nderives_from:\n  - ref: a#a\n---\n# B\nbody b\n", encoding="utf-8"
     )
-    cached_cfg = base / ".game-lattice.yml"
+    cached_cfg = base / ".doc-lattice.yml"
     for counter, edit in enumerate(edits):
         target = docs / "a.md"
         if edit == "body" and target.exists():
@@ -676,7 +676,7 @@ def test_require_verified_load_sees_fresh_content_after_same_stat_rewrite(tmp_pa
     docs.mkdir()
     doc = docs / "a.md"
     doc.write_text("---\nid: a\n---\n# A\naaaa\n", encoding="utf-8")
-    (tmp_path / ".game-lattice.yml").write_text(
+    (tmp_path / ".doc-lattice.yml").write_text(
         "cache_key: rv\ncache_trust_stat: true\n", encoding="utf-8"
     )
     load_lattice(load_config(None, tmp_path))  # warm the cache, populating the stat hint
@@ -705,7 +705,7 @@ def test_trust_stat_serves_unreadable_file_from_cache_a_documented_caveat(tmp_pa
     docs.mkdir()
     doc = docs / "a.md"
     doc.write_text("---\nid: a\n---\n# A\naaaa\n", encoding="utf-8")
-    (tmp_path / ".game-lattice.yml").write_text(
+    (tmp_path / ".doc-lattice.yml").write_text(
         "cache_key: unread\ncache_trust_stat: true\n", encoding="utf-8"
     )
     load_lattice(load_config(None, tmp_path))  # warm the cache, populating the stat hint
@@ -733,7 +733,7 @@ def test_verify_tier_serves_schema_valid_node_corruption_a_documented_limit(tmp_
     docs.mkdir()
     doc = docs / "a.md"
     doc.write_text("---\nid: a\n---\n# A\nreal body\n", encoding="utf-8")
-    (tmp_path / ".game-lattice.yml").write_text("cache_key: corrupt\n", encoding="utf-8")
+    (tmp_path / ".doc-lattice.yml").write_text("cache_key: corrupt\n", encoding="utf-8")
     load_lattice(load_config(None, tmp_path))  # warm the cache
     # Tamper with the stored body while leaving file_sha256 (and the on-disk file) intact.
     path = cache_path("corrupt", {"XDG_CACHE_HOME": str(tmp_path / "xdg")})

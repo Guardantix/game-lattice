@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.0] - 2026-07-11
+
+### Changed
+
+- **BREAKING:** the project is renamed from game-lattice to doc-lattice. The engine was never
+  game-specific; the name now matches its general purpose. In one release this renames the
+  repository (https://github.com/Guardantix/doc-lattice, with GitHub redirects from the old
+  URL), the distribution and package (`doc-lattice` / `doc_lattice`), the CLI executable
+  (`doc-lattice`), the config file (only `.doc-lattice.yml` is recognized; no fallback), and
+  the opt-in load-cache location (`<cache_home>/doc-lattice/`; old cache directories are
+  orphaned and safe to delete). Doc sets themselves need no edits; lattice frontmatter
+  (`id`, `derives_from`, `authority`, `seen`) is unchanged.
+
+### Migration (v0.8.x to v0.9.0)
+
+Nothing breaks until you bump your pin: checked-in gates pin a tag
+(`uvx --from git+.../game-lattice@v0.8.0 game-lattice ...`) and GitHub's rename redirect keeps
+that resolving indefinitely. Upgrading the pin to v0.9.0 requires, in one commit:
+
+1. Rename `.game-lattice.yml` to `.doc-lattice.yml` (contents unchanged).
+2. Regenerate the checked-in pre-commit hook and CI workflow (re-run `doc-lattice init`
+   codegen, or by hand update the repo URL, the `@v0.9.0` pin, and the executable name
+   `game-lattice` to `doc-lattice` in each invocation).
+3. Any Python code importing `game_lattice` switches to `doc_lattice` (the package is not on
+   PyPI and no import consumers are known; listed for completeness).
+
 ## [0.8.0] - 2026-07-10
 
 ### Added

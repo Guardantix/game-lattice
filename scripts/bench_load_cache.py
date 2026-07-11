@@ -13,8 +13,8 @@ import tempfile
 import time
 from pathlib import Path
 
-from game_lattice.config import load_config
-from game_lattice.orchestrate import load_lattice
+from doc_lattice.config import load_config
+from doc_lattice.orchestrate import load_lattice
 
 _HEADINGS_PER_DOC = 6
 _EDGES_PER_DOC = 3
@@ -45,7 +45,7 @@ def _config(root: Path, *, cache_key: str | None, trust_stat: bool) -> Path:
         lines.append(f"cache_key: {cache_key}")
     if trust_stat:
         lines.append("cache_trust_stat: true")
-    (root / ".game-lattice.yml").write_text(
+    (root / ".doc-lattice.yml").write_text(
         "\n".join(lines) + "\n" if lines else "", encoding="utf-8"
     )
     return root
@@ -73,7 +73,7 @@ def _bench_size(count: int) -> None:
 
         _config(root, cache_key="bench", trust_stat=False)
         # Cold: remove any cache, single timed run including the write.
-        cache_dir = base / "xdg" / "game-lattice" / "bench"
+        cache_dir = base / "xdg" / "doc-lattice" / "bench"
         if cache_dir.exists():
             for entry in cache_dir.iterdir():
                 entry.unlink()

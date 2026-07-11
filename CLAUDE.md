@@ -2,10 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-game-lattice is a deterministic, offline traceability engine for game design and production docs.
+doc-lattice is a deterministic, offline traceability engine for design and production docs.
 It parses lattice frontmatter and anchored sections from a markdown doc set, derives an id-indexed
 edge graph, and reports staleness between upstream and downstream documents.
-The binding design is `docs/superpowers/specs/2026-06-27-game-lattice-local-core-design.md`; treat
+The binding design is `docs/superpowers/specs/2026-06-27-doc-lattice-local-core-design.md`; treat
 it as the source of truth when code and intent disagree.
 
 ## Commands
@@ -14,7 +14,7 @@ Dependency management and execution go through `uv` (Python 3.13+).
 
 ```bash
 uv sync --group dev                       # install (incl. dev deps)
-uv run game-lattice --help                # run the CLI (commands: check, impact, reconcile, graph, linear, init, lint)
+uv run doc-lattice --help                 # run the CLI (commands: check, impact, reconcile, graph, linear, init, lint)
 
 uv run --group dev pytest                 # full suite (enforces coverage >= 80%)
 uv run --group dev pytest tests/test_loader.py::test_duplicate_id_raises   # a single test
@@ -35,7 +35,7 @@ lands; if a hook auto-fixes a file, re-stage and re-commit.
 
 The engine is a pure pipeline feeding six lattice-reading commands; `linear` adds a network
 fetch of ticket status on top of the loaded lattice, and `init` is a separate scaffolding command
-that writes `.game-lattice.yml` without loading the lattice at all:
+that writes `.doc-lattice.yml` without loading the lattice at all:
 
 ```
 config -> discovery -> frontmatter parse -> loader.build_lattice -> { check, impact, reconcile, graph, lint, linear }
@@ -73,7 +73,7 @@ and enclosing-file expansion) to list everything a change touches.
 `lint` is a pure structural check separate from drift: it flags a `derives_from` edge whose source
 is more authoritative than its target (binding > derived > exploratory), reports edges it cannot rank
 because an endpoint lacks `authority`, and never mutates. It exits 1 on a violation, mirroring `check`.
-Spec: `docs/superpowers/specs/2026-06-28-game-lattice-lint-design.md`.
+Spec: `docs/superpowers/specs/2026-06-28-doc-lattice-lint-design.md`.
 
 **Reconcile is the only mutating command.** It plans new `seen` values from the loaded snapshot,
 then at write time **re-reads each downstream file fresh**, rewrites only the targeted `seen`
@@ -89,13 +89,13 @@ POST (the only module that reads `LINEAR_API_KEY`, lazily; https-only, redirect-
 size-capped, SSRF-hardened), `linear_parser` validates the JSON envelope into typed `Ticket`s (a
 boundary module), and `stale_shipped` joins lattice plus tickets into graded `Finding`s (pure),
 rendered by `linear_render`. A ticket the filter does not return is absence, not an error, and
-grades as a BLOCKED `not-found`. Spec: `docs/superpowers/specs/2026-06-27-game-lattice-linear-design.md`.
+grades as a BLOCKED `not-found`. Spec: `docs/superpowers/specs/2026-06-27-doc-lattice-linear-design.md`.
 
 **The `init` slice scaffolds an adopting repo and never loads the lattice.** `scaffold.py` is pure
 (`render_config`/`render_precommit`/`render_ci`/`build_scaffold` return text); `cli._atomic_create`
 publishes each file via temp -> fsync -> `os.link`, so a partial write never lands. `init` writes
-`.game-lattice.yml` only if absent and always prints pre-commit and CI codegen pinned to the current
-release tag. Spec: `docs/superpowers/specs/2026-06-28-game-lattice-init-design.md`.
+`.doc-lattice.yml` only if absent and always prints pre-commit and CI codegen pinned to the current
+release tag. Spec: `docs/superpowers/specs/2026-06-28-doc-lattice-init-design.md`.
 
 **Pure vs impure split.** All graph and report logic is pure and filesystem-free: `model`,
 `hashing`, `sections`, `resolve`, `loader`, `check`, `lint`, `impact`, `render`, `reconcile.reconcile`/
@@ -133,7 +133,7 @@ violation fails CI rather than just being a style preference:
 - **Node ids.** A frontmatter `id` may not contain `#`; `#` separates a file id from a section
   anchor in a ref. Enforced by a `NodeMeta` field validator (exit 2, names the id).
 - **No `datetime.now()`/`utcnow()` outside `datetime_utils.py`.**
-- **Version sync.** `__version__` (`src/game_lattice/__init__.py`), the `pyproject.toml` `version`,
+- **Version sync.** `__version__` (`src/doc_lattice/__init__.py`), the `pyproject.toml` `version`,
   and the first versioned `## [X.Y.Z]` `CHANGELOG.md` heading must agree (a `## [Unreleased]` block above it is tolerated and skipped, so notes can accumulate there between releases). The pure core is `version_check.py`;
   `scripts/check_version_sync.py` wraps it and runs in pre-commit and CI. On merge to `main` the
   `release` job in `.github/workflows/ci.yml` verifies sync, smoke-tests the commit, and cuts the
@@ -143,7 +143,7 @@ violation fails CI rather than just being a style preference:
 
 ## Testing notes
 
-Test files mirror sources (`src/game_lattice/foo.py` -> `tests/test_foo.py`) and use `tmp_path` for
+Test files mirror sources (`src/doc_lattice/foo.py` -> `tests/test_foo.py`) and use `tmp_path` for
 filesystem work.
 `tests/conftest.py` provides the shared `lattice_dir` fixture: a small synthetic doc set
 (art-direction with STALE/UNRECONCILED downstream edges, plus a BROKEN ref) that the check,

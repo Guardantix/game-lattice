@@ -4,7 +4,7 @@ import re
 import tomllib
 
 _VERSION_HEADING = re.compile(r"^##\s*\[(?P<version>\d+\.\d+\.\d+)\]", re.MULTILINE)
-_PINNED_REF = re.compile(r"game-lattice@v(?P<version>\d+\.\d+\.\d+)")
+_PINNED_REF = re.compile(r"doc-lattice@v(?P<version>\d+\.\d+\.\d+)")
 _ANY_HEADING = re.compile(r"^##\s*\[", re.MULTILINE)
 
 
@@ -78,7 +78,7 @@ def check_version_consistency(
     """Return a message for each version source that disagrees with init_version.
 
     Args:
-        init_version: The canonical package version, ``game_lattice.__version__``.
+        init_version: The canonical package version, ``doc_lattice.__version__``.
         pyproject_text: The full text of ``pyproject.toml``.
         changelog_text: The full text of ``CHANGELOG.md``.
         readme_text: The full text of ``README.md``.
@@ -87,7 +87,7 @@ def check_version_consistency(
         One message per disagreeing source, naming the file and the expected value.
         An empty list means every source matches ``init_version``. A source that
         cannot be parsed is reported as a mismatch rather than raising. Each distinct
-        stale ``game-lattice@vX.Y.Z`` pin found in the README produces one message,
+        stale ``doc-lattice@vX.Y.Z`` pin found in the README produces one message,
         no matter how many times that stale version occurs; a README with no pinned
         refs is consistent.
     """
@@ -96,7 +96,7 @@ def check_version_consistency(
     if pyproject_version != init_version:
         messages.append(
             f"pyproject.toml version is {pyproject_version!r}, expected {init_version!r}; "
-            f"set [project] version to match game_lattice.__version__."
+            f"set [project] version to match doc_lattice.__version__."
         )
     changelog_version = _changelog_version(changelog_text)
     if changelog_version != init_version:
@@ -106,7 +106,7 @@ def check_version_consistency(
         )
     for stale_version in _stale_pinned_refs(readme_text, init_version):
         messages.append(
-            f"README.md pins game-lattice@v{stale_version}, expected v{init_version}; "
+            f"README.md pins doc-lattice@v{stale_version}, expected v{init_version}; "
             f"update the pinned install refs."
         )
     return messages

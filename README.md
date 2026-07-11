@@ -1,11 +1,11 @@
-# game-lattice
+# doc-lattice
 
-A deterministic, offline traceability engine for game design and production documentation.
+A deterministic, offline traceability engine for design and production documentation.
 
-game-lattice tracks the dependencies *between* your markdown docs. When a downstream
+doc-lattice tracks the dependencies *between* your markdown docs. When a downstream
 document derives from an upstream one (a player-character spec built on the art direction,
-a level design built on the core loop), it records that link in frontmatter. When the
-upstream changes, game-lattice tells you exactly which downstream docs went stale, and a
+an implementation plan built on a product brief), it records that link in frontmatter. When
+the upstream changes, doc-lattice tells you exactly which downstream docs went stale, and a
 CI gate keeps stale work from shipping silently.
 
 It is pure tooling: no network (except the optional `linear` command), no secrets, no LLM,
@@ -18,7 +18,7 @@ the core loop, and the dozen documents downstream of that decision keep citing t
 version. Nothing breaks loudly; the docs just quietly disagree, and the drift surfaces as a
 bug, a re-do, or an argument weeks later.
 
-game-lattice makes those dependencies explicit and *checkable*. Each downstream doc declares
+doc-lattice makes those dependencies explicit and *checkable*. Each downstream doc declares
 what it derives from and records a hash of what it last saw. A change upstream that the
 downstream hasn't acknowledged is **drift**, and `check` fails CI on it until a human
 consciously reconciles the link.
@@ -35,7 +35,7 @@ You annotate docs with two things:
   carries a `seen` hash: a fingerprint of the upstream content at the moment the dependency
   was last reconciled.
 
-From those annotations game-lattice builds a **lattice**: an id-indexed graph of nodes
+From those annotations doc-lattice builds a **lattice**: an id-indexed graph of nodes
 (your docs) and edges (the `derives_from` links). Every command reads from that one
 structure. The `seen` hash is the load-bearing trick: comparing it against the upstream's
 *current* content hash is what turns "these docs depend on each other" into "this dependency
@@ -119,10 +119,10 @@ Now someone changes the accent to "cool teal." The `{#accent}` section's content
 longer matches `seen`, so:
 
 ```console
-$ game-lattice check
+$ doc-lattice check
 STALE         pc-design -> art-direction#accent
 
-$ game-lattice impact art-direction#accent
+$ doc-lattice impact art-direction#accent
 pc-design  (docs/pc-design.md)  tickets: PC-228
 ```
 
@@ -130,10 +130,10 @@ pc-design  (docs/pc-design.md)  tickets: PC-228
 the body if needed, and then locks in the new hash:
 
 ```console
-$ game-lattice reconcile pc-design
+$ doc-lattice reconcile pc-design
 reconciled pc-design.md: art-direction#accent
 
-$ game-lattice check
+$ doc-lattice check
 OK            pc-design -> art-direction#accent
 ```
 
@@ -156,7 +156,7 @@ uv sync --group dev
 ### Run
 
 ```bash
-uv run game-lattice --help
+uv run doc-lattice --help
 ```
 
 ### Test
@@ -177,7 +177,7 @@ uv run --group dev ty check src
 | `reconcile [ID] [--ref REF] [--all] [--dry-run]` | Set `seen` to current upstream hashes for the selected edges (the only command that mutates your tracked docs); `--dry-run` previews the plan without writing. | 2 on tool error |
 | `graph [--format mermaid\|dot\|json]` | Emit the edge graph as Mermaid, DOT, or JSON. | 2 on tool error (including an unrecognized `--format`) |
 | `linear [TARGET] [--from ID] [--exit-code] [--warn-exit]` | Report tickets shipped against a spec that has since drifted (needs `LINEAR_API_KEY`). | 1 with `--exit-code` on DANGER/BLOCKED (or WARNING too under `--warn-exit`), 2 on tool error |
-| `init [--docs-root ...] [--linear-team KEY]` | Scaffold `.game-lattice.yml` and print pre-commit and CI codegen. | 2 on tool error |
+| `init [--docs-root ...] [--linear-team KEY]` | Scaffold `.doc-lattice.yml` and print pre-commit and CI codegen. | 2 on tool error |
 
 Only `check` and `lint` gate by default, exiting 1 when they find drift or an authority inversion.
 `impact`, `reconcile`, `graph`, and `init` are informational and always exit 0 on success (2 only on
@@ -185,9 +185,9 @@ a tool error), so wiring `impact` into a CI gate never turns the build red. `lin
 default; pass `--exit-code` to gate on any DANGER or BLOCKED finding, and add `--warn-exit` to gate on
 WARNING as well.
 
-Every command except `init` accepts `--config PATH` (path to `.game-lattice.yml`; defaults to
+Every command except `init` accepts `--config PATH` (path to `.doc-lattice.yml`; defaults to
 the file in the current directory). `check`, `lint`, `impact`, `reconcile`, and `linear` accept
-`--json` for machine-readable output. Run `uv run game-lattice <command> --help` for the full
+`--json` for machine-readable output. Run `uv run doc-lattice <command> --help` for the full
 flag list.
 
 Pass `--indent N` with JSON output on `check`, `lint`, `impact`, or `linear` to pretty-print the
@@ -195,7 +195,7 @@ JSON with `N` spaces per level. JSON output is selected by `--json`, or the equi
 `--format json` on `check` and `lint`; `--indent` without JSON output is a usage error.
 
 Use the global `--no-color` option before the command to disable colored output explicitly, for
-example `game-lattice --no-color check`. Rich also honors the [`NO_COLOR`](https://no-color.org/)
+example `doc-lattice --no-color check`. Rich also honors the [`NO_COLOR`](https://no-color.org/)
 environment variable; `--no-color` is the command-line equivalent. Either one also strips the
 styling from help and usage-error text even when a terminal-forcing variable is set.
 
@@ -257,11 +257,11 @@ file-scoped (`file#anchor`), so the same anchor in two files does not collide.
 
 ## Configuration
 
-game-lattice runs zero-config (defaulting to a `docs/` root), or reads `.game-lattice.yml`
+doc-lattice runs zero-config (defaulting to a `docs/` root), or reads `.doc-lattice.yml`
 from the current directory:
 
 ```yaml
-# game-lattice configuration
+# doc-lattice configuration
 docs_roots:
   - docs                  # roots to scan for tracked .md files (default: ["docs"])
 # ignore_globs:           # paths to skip within those roots
@@ -278,16 +278,16 @@ absolute path, or a symlink is rejected before any read.
 `binding_layers` is accepted in the config for forward compatibility but is inert today: setting it
 changes nothing, because no command consults it. Authority ranking currently lives entirely in
 `lint` (binding > derived > exploratory); see the
-[lint design spec](docs/superpowers/specs/2026-06-28-game-lattice-lint-design.md) for where that
+[lint design spec](docs/superpowers/specs/2026-06-28-doc-lattice-lint-design.md) for where that
 ranking is defined.
 
 ### Load cache (opt-in)
 
 Large doc sets (thousands of files) can skip re-parsing unchanged docs with an opt-in cache.
 Set `cache_key` to a single safe segment (`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`); it names a slot
-under your user cache home at `<cache_home>/game-lattice/<cache_key>/load-cache.json`, where
+under your user cache home at `<cache_home>/doc-lattice/<cache_key>/load-cache.json`, where
 `<cache_home>` is `$XDG_CACHE_HOME` (when absolute) or `~/.cache`. The cache lives outside every
-checkout on purpose: because `.game-lattice.yml` is committed, every clone and git worktree of the
+checkout on purpose: because `.doc-lattice.yml` is committed, every clone and git worktree of the
 project shares one warm cache with no per-checkout setup, which an in-repo cache could not do.
 
 By default the cache re-reads and re-hashes each file's bytes every run, so its output is always
@@ -305,30 +305,30 @@ write frontmatter from stale data. Two projects sharing a `cache_key` stay corre
 hit implies identical bytes); the only cost is overwrite churn, so prefer distinct keys. Delete the
 cache directory to reset it; a tool-version bump discards it automatically.
 
-## Adopting game-lattice in your docs repo
+## Adopting doc-lattice in your docs repo
 
 Bootstrap config and the drift and authority-ladder gates for a repo whose docs you want to
 track:
 
 ```bash
-uvx --python 3.13 --from git+https://github.com/Guardantix/game-lattice@v0.8.0 game-lattice init
+uvx --python 3.13 --from git+https://github.com/Guardantix/doc-lattice@v0.9.0 doc-lattice init
 ```
 
-This writes `.game-lattice.yml` (only if absent) and prints pre-commit hooks and a GitHub
-Actions workflow that run `game-lattice check` (drift) and `game-lattice lint` (authority
+This writes `.doc-lattice.yml` (only if absent) and prints pre-commit hooks and a GitHub
+Actions workflow that run `doc-lattice check` (drift) and `doc-lattice lint` (authority
 ladder) as your gates. Paste each where the output says. Pass `--docs-root` (repeatable) or
 `--linear-team` to bake those values into the generated config.
 
 ## Linear integration
 
-`game-lattice linear` is the only network-touching command. It builds a trigger map from the
+`doc-lattice linear` is the only network-touching command. It builds a trigger map from the
 loaded lattice, then fetches live ticket status over the Linear GraphQL API to report tickets
 that shipped against a spec that has since drifted. It reads `LINEAR_API_KEY` from the
 environment (export it before running; the error points you to `impact` for the offline view),
 and the client is https-only, redirect-refusing, size-capped, and SSRF-hardened. A transient
 HTTP 429 or 5xx is retried up to three times with a short backoff (honoring `Retry-After` when
 present, capped) before failing, so a passing rate limit does not fail a CI run. Set the team
-the query targets with `linear_team` in `.game-lattice.yml`, or pass `--linear-team` to `init`.
+the query targets with `linear_team` in `.doc-lattice.yml`, or pass `--linear-team` to `init`.
 Every other command runs fully offline.
 
 ## Exit codes
@@ -374,12 +374,12 @@ or a heading's `{#marker}` collides with another heading's computed slug in the 
 ## Project structure
 
 ```
-game-lattice/
-├── src/game_lattice/    # the engine: a pure graph/report core behind a thin impure shell
-├── tests/               # test suite (mirrors sources; property-based hashing invariants)
-├── scripts/             # CI guards (typing boundary, version sync)
-├── docs/superpowers/    # design specs and plans
-└── pyproject.toml       # project configuration
+doc-lattice/
+├── src/doc_lattice/      # the engine: a pure graph/report core behind a thin impure shell
+├── tests/                # test suite (mirrors sources; property-based hashing invariants)
+├── scripts/              # CI guards (typing boundary, version sync)
+├── docs/superpowers/     # design specs and plans
+└── pyproject.toml        # project configuration
 ```
 
 The engine is a pure pipeline (`config -> discovery -> frontmatter parse -> build_lattice`

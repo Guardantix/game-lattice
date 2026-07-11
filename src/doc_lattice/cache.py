@@ -101,9 +101,9 @@ def cache_path(cache_key: str, env: Mapping[str, str]) -> Path:
         env: The environment mapping used to resolve the cache home.
 
     Returns:
-        ``<cache_home>/game-lattice/<cache_key>/load-cache.json``.
+        ``<cache_home>/doc-lattice/<cache_key>/load-cache.json``.
     """
-    return cache_home(env) / "game-lattice" / cache_key / CACHE_FILE_NAME
+    return cache_home(env) / "doc-lattice" / cache_key / CACHE_FILE_NAME
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,7 +376,7 @@ class LoadCache:
             os.replace(tmp, self._path)  # noqa: PTH105 (tests monkeypatch os.replace directly)
             tmp = None
         except OSError as exc:
-            sys.stderr.write(f"game-lattice: could not write load cache at {self._path}: {exc}\n")
+            sys.stderr.write(f"doc-lattice: could not write load cache at {self._path}: {exc}\n")
         finally:
             if tmp is not None:
                 # The cleanup unlink must never escape: a write failure already emitted its one

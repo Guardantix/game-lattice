@@ -129,7 +129,7 @@ class LinearClient:
             headers={
                 "Authorization": api_key,
                 "Content-Type": "application/json",
-                "User-Agent": f"game-lattice/{__version__}",
+                "User-Agent": f"doc-lattice/{__version__}",
             },
             method="POST",
         )
