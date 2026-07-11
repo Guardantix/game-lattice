@@ -311,7 +311,7 @@ Bootstrap config and the drift and authority-ladder gates for a repo whose docs 
 track:
 
 ```bash
-uvx --python 3.13 --from git+https://github.com/Guardantix/doc-lattice@v0.8.0 doc-lattice init
+uvx --python 3.13 --from git+https://github.com/Guardantix/doc-lattice@v0.9.0 doc-lattice init
 ```
 
 This writes `.doc-lattice.yml` (only if absent) and prints pre-commit hooks and a GitHub

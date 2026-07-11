@@ -7,7 +7,7 @@ packages = ["src/doc_lattice"]
 
 [project]
 name = "doc-lattice"
-version = "0.8.0"
+version = "0.9.0"
 description = "Traceability engine for design and production documentation"
 readme = "README.md"
 requires-python = ">=3.13"
