@@ -13,13 +13,23 @@ The binding local-core design deferred a "gitignored performance cache" as not n
 original corpus size. This spec adds that cache for adopters whose doc sets have grown to the
 thousands, as a pure accelerator with an absolute correctness guarantee:
 
-> For every command, under any cache state (no cache configured, cold, warm, stale, corrupt,
-> wrong version, `cache_trust_stat` on or off), stdout, stderr, exit code, and any file
-> mutations are byte-identical to an uncached run. Only timing and the contents of the cache
-> file may differ.
+> Under the default tier configuration (`cache_trust_stat` absent or false): for every
+> command, under any cache state (`cache_key` unset, cold, warm, stale, corrupt, wrong
+> version), stdout, stderr, exit code, and any file mutations are byte-identical to an
+> uncached run. Only timing and the contents of the cache file may differ.
+>
+> Under `cache_trust_stat: true`, file mutations keep the full guarantee unconditionally
+> (`reconcile` always verifies content, section 5), and read-only command output keeps it
+> except in exactly one documented case: a file rewritten so that both its size and its
+> `mtime_ns` are unchanged is served stale until it is touched or misses.
 
-The single stated exception is a warning emitted when the cache file itself cannot be written
-(section 7), which exists only when the cache is broken and never changes command results.
+`cache_trust_stat` is therefore not a hidden weakening of the contract; it is the contract's
+one explicit, opt-in narrowing, it can never alter what the tool writes to disk, and the issue
+sketch anticipated it as "accepting the standard mtime caveat and documenting it".
+
+The single stated output exception is one diagnostic line on stderr when the cache file itself
+cannot be written (section 7), which exists only when the cache is broken and never changes
+command results or exit codes.
 
 Out of scope: watch mode, a daemon, cross-machine cache sharing, and everything in section 11.
 
@@ -33,7 +43,8 @@ Two new optional keys in `Config` (`.game-lattice.yml`):
   `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`. The leading character class rejects `.` and `..` and
   hidden-directory names; there is no way to express a separator or a traversal. A violation
   is a `ConfigError` (exit 2) naming the key and the allowed pattern.
-- `cache_trust_stat: bool = false`. Enables the stat fast tier (section 5). Setting it without
+- `cache_trust_stat: bool = false`. Enables the stat fast tier (section 5) for read-only
+  commands; `reconcile` ignores it and always verifies content. Setting it without
   `cache_key` is a `ConfigError` naming the fix, keeping the config strict and explicit.
 
 No CLI flag controls the cache in v1. Opt-in and opt-out are config-only.
@@ -114,7 +125,8 @@ One JSON document, version 1:
   confused. It is the sole authority for entry validity.
 - **`stats` maps a project-root realpath to that checkout's `(size, mtime_ns)`** for the file.
   Per-root keying is what lets several worktrees share one cache without ping-ponging each
-  other's stat data.
+  other's stat data, and each root key is simultaneously that root's presence claim on the
+  path: reclamation (section 5) drops an entry that no live root claims.
 - **`roots` is a least-recently-used ledger of project roots, bounded by
   `MAX_STAT_ROOTS = 8`** (a fixed constant in `constants.py`, not configurable). Every run
   moves its own root to the tail at write time; when the ledger exceeds the cap, head roots are
@@ -146,16 +158,21 @@ With `cache_key` unset, `orchestrate.load_lattice` is unchanged. With it set, th
 read and validate the cache file (any failure yields an empty cache, section 7), then for each
 discovered path:
 
-1. **Stat tier**, only when `cache_trust_stat: true`: if `stats[current_root]` exists and
-   matches the file's `(st_size, st_mtime_ns)`, use the entry without opening the file. The
-   body comes from the entry. This tier carries the standard mtime caveat: a rewrite that
-   preserves size and `mtime_ns` serves stale data until the file is touched. That caveat is
-   why the tier is opt-in and why the default tier exists.
+1. **Stat tier**, only when `cache_trust_stat: true` and only for read-only commands: if
+   `stats[current_root]` exists and matches the file's `(st_size, st_mtime_ns)`, use the entry
+   without opening the file. The body comes from the entry. This tier carries the standard
+   mtime caveat: a rewrite that preserves size and `mtime_ns` serves stale data until the file
+   is touched. That caveat is why the tier is opt-in, why the default tier exists, and why the
+   section 1 guarantee names it as the contract's one narrowing. `reconcile` never takes this
+   tier: it plans the `seen` values it writes from the loaded snapshot, so a stale load would
+   mutate frontmatter from stale content. The load entry point takes a flag (set only by the
+   `reconcile` CLI path) that forces tier 2 regardless of config.
 2. **Verify tier**, the default: read the raw bytes and hash them. On a `file_sha256` match,
    reuse the entry's parsed results, skipping UTF-8 decode, frontmatter split, YAML parse,
    pydantic validation, and TOC, slug, and span derivation, which is the dominant CPU cost.
-   `stats[current_root]` is refreshed if it drifted (for example after `touch`), so a later
-   switch to `cache_trust_stat` starts warm.
+   `stats[current_root]` is inserted or refreshed if absent or drifted (for example after
+   `touch`), both to keep a later `cache_trust_stat` warm and because presence of the root key
+   is what marks the entry as still claimed by this root (see reclamation below).
 3. **Miss**: run today's full parse path (identical errors, identical warnings), then replace
    the entry: new `file_sha256`, `stats` reset to only the current root, new `node` payload.
    The miss path calls `derive_file_sections` exactly once, in `orchestrate`, and the one
@@ -170,27 +187,37 @@ doc (a file deleted between discovery and stat, permissions, invalid UTF-8) must
 
 At the end of a successful load: the current root moves to the ledger tail, over-cap head roots
 are evicted and scrubbed, and the file is atomically replaced (temp file in the same directory,
-fsync, `os.replace`) if and only if something changed: an entry added or replaced, a stat
-refreshed, or the ledger reordered or scrubbed. A fully warm repeat run from the same root
+fsync, `os.replace`) if and only if something changed: an entry added, replaced, or dropped, a
+stat inserted or refreshed, a presence claim withdrawn, or the ledger reordered or scrubbed. A fully warm repeat run from the same root
 performs one cache read and zero cache writes. Two roots alternating runs will each rewrite the
 file to reclaim the ledger tail; that bounded churn (at most one atomic rewrite per run) is
 accepted deliberately, because weakening recency updates would make the LRU evict active
 worktrees. If the load aborts on any error, no cache write happens at all.
 
-Entries whose paths were not discovered this run are kept, not pruned. Pruning by one
-checkout's view would evict entries a sibling worktree on another branch still needs. Growth is
-bounded by the union of doc paths across branches; a format version bump resets wholesale, and
-deleting the cache directory is the manual reset.
+Reclamation rides on the `stats` maps, whose root keys double as per-root presence claims. At
+write time, the current root's key is removed from every entry whose path was not discovered
+this run (this root no longer has that file), and any entry whose `stats` map becomes empty,
+whether through presence removal or ledger-eviction scrubbing, is dropped from the cache. Every
+retained entry is therefore claimed by at least one of the at most `MAX_STAT_ROOTS` ledger
+roots, and the cache is bounded by the union of doc paths currently present across those live
+roots, not by the union of every path ever observed. Deleted and renamed files are reclaimed as
+each root next runs; an entry a sibling worktree still contains stays alive through that
+sibling's claim, which is exactly the sharing property that makes pruning on one checkout's
+whole view wrong. A format version bump still resets wholesale, and deleting the cache
+directory is the manual reset.
 
-`reconcile` is unaffected in its write phase: it already re-reads each downstream file fresh at
-write time, bypassing the lattice snapshot entirely. Its rewrites simply make those files miss
-on the next load.
+`reconcile` is doubly protected: its load phase always uses the verify tier (section 5, tier
+1), and its write phase already re-reads each downstream file fresh, bypassing the lattice
+snapshot entirely. Its rewrites simply make those files miss on the next load.
 
 ## 6. Invalidation summary
 
 - The content hash is the only validity authority. The verify tier proves it per run; the stat
-  tier presumes it from an exact `(size, mtime_ns)` match under the documented caveat.
+  tier (read-only commands, opt-in) presumes it from an exact `(size, mtime_ns)` match under
+  the documented caveat.
 - Any miss replaces the entry and resets its `stats` to the current root.
+- Reclamation is presence-based: a root's claim on an undiscovered path is withdrawn at write
+  time, and an unclaimed entry is dropped (section 5).
 - A `version` or `tool_version` mismatch, or any structural invalidity, discards the whole
   file (section 7).
 - Config changes never require invalidation (relative-path keying, section 4).
@@ -201,10 +228,13 @@ on the next load.
   validation (including `NodeMeta.model_validate` on an entry's `meta`) causes the whole cache
   to be treated as empty. Everything recomputes and the file is rewritten. Silent by design;
   per-entry salvage is not worth the code for a rare event.
-- **Cache write**: an unwritable directory or a failed write emits one `warnings.warn` (the
-  channel discovery already uses for skipped symlinks) and the command result is unchanged.
-  Reads stay silent; writes warn because a permanently unwritable cache means the accelerator
-  is off and the user should know.
+- **Cache write**: an unwritable directory or a failed write emits one diagnostic line
+  written directly to `sys.stderr` (not through the `warnings` machinery: a warning filter
+  such as `PYTHONWARNINGS=error` can promote `warnings.warn` into an exception, which would
+  make a cached invocation fail where an uncached one succeeds and break the section 1
+  guarantee). The command result and exit code are unchanged. Reads stay silent; writes
+  produce the diagnostic because a permanently unwritable cache means the accelerator is off
+  and the user should know.
 - **Concurrent runs** (several worktrees at once): atomic replace means a reader sees the old
   or the new file, never a torn one. Last writer wins; a lost update is only a future miss.
 
@@ -241,7 +271,10 @@ against the real file bytes each run, so even a stale or foreign cache can only 
   miss). Stat failures in the tier checks route through the same error construction. This is
   what makes the section 5 error-parity requirement hold by construction instead of by
   duplicated message strings.
-- **`orchestrate.py`**: the branch described in section 5; the no-cache path is unchanged code.
+- **`orchestrate.py`**: the branch described in section 5; the no-cache path is unchanged
+  code. `load_lattice` gains a keyword flag (`require_verified: bool = False`, named at
+  implementation time) that disables the stat tier for the call; only the `reconcile` CLI
+  path sets it.
 - **`constants.py`**: `CACHE_VERSION`, `MAX_STAT_ROOTS`, and the cache file name.
 
 `cache.py` resolves the cache home from an environment mapping passed by its caller
@@ -257,18 +290,24 @@ The guarantee in section 1 is enforced by:
 
 - **A hypothesis property test**: random edit sequences over a synthetic doc set (body edits,
   frontmatter edits, file add, delete, and rename, `touch` without content change, and a
-  same-size same-`mtime_ns` rewrite to pin the documented stat-tier caveat). After each step,
-  a cached and an uncached load must produce structurally equal `Lattice` values and
-  byte-identical `check` output. The trust-stat caveat case asserts the documented stale
-  outcome, so the caveat is tested behavior rather than folklore.
+  same-size same-`mtime_ns` rewrite). After each step, for every configuration the section 1
+  guarantee covers (default tier always; trust_stat everywhere outside the one documented
+  caveat), a cached and an uncached load must produce structurally equal `Lattice` values and
+  byte-identical `check` output. The same-stat rewrite case asserts both halves of the
+  narrowed contract: the read-only stale outcome under trust_stat is the documented behavior,
+  and a `reconcile` load in the identical state still sees the fresh content (the forced
+  verify tier), so no configuration can mutate files from stale data.
 - **Round-trip property test**: for generated bodies, `derive_file_sections` equals the value
   reconstructed from its serialized cache form.
 - **Unit tests**: each corruption mode (truncated file, invalid JSON, wrong `version`, wrong
   `tool_version`, schema violation, invalid `meta`) recomputes silently; a non-node hit performs no YAML parse
   (counting monkeypatch on the parser); per-root stats isolation across two roots; stats reset
   on content change; ledger LRU order, eviction at the cap, and scrubbing of evicted roots;
-  fully warm run writes nothing; an injected write failure warns once and leaves no partial
-  file; `cache_key` validation accepts and rejects the right shapes; `cache_trust_stat`
+  presence reclamation (a path deleted in one root is dropped once no root claims it, and
+  kept while a second root still claims it); fully warm run writes nothing; an injected write
+  failure emits one stderr diagnostic, leaves no partial file, and preserves the command's
+  result and exit code even with warnings configured as errors;
+  `cache_key` validation accepts and rejects the right shapes; `cache_trust_stat`
   without `cache_key` is a `ConfigError`; `XDG_CACHE_HOME` absolute, relative, and unset
   handling; error parity (an invalid-UTF-8 doc and a doc deleted after discovery raise the
   same `UnreadableDocError` message with a warm cache as without one); and
@@ -308,16 +347,27 @@ implementation PR description.
    presumptive tier is the opt-in.
 6. **Caching target hashes**: deferred with rationale in section 4.
 7. **Pruning entries not discovered in the current run**: rejected; it evicts entries other
-   worktrees still need (section 5).
-8. **Age-based garbage collection of stat roots**: rejected; it needs a wall clock, against
+   worktrees still need. Superseded by per-root presence reclamation (section 5), which
+   withdraws only the running root's own claim and drops an entry once no live root claims it.
+8. **Keeping undiscovered entries forever**: rejected; the "bounded by the union across
+   branches" claim was really the union of every path ever observed, so renames and deleted
+   docs would retain full bodies indefinitely and grow the cache without bound.
+9. **Age-based garbage collection of stat roots**: rejected; it needs a wall clock, against
    the repo's determinism posture, while the LRU ledger is deterministic given the run
    sequence (section 4).
+10. **Removing the stat tier instead of scoping it**: considered when reconciling the tier
+    with the correctness guarantee. Rejected in favor of scoping: read-only commands keep the
+    opt-in speed tier under the documented caveat, and the one mutating command is barred from
+    it, so file mutations stay under the absolute guarantee in every configuration.
+11. **`warnings.warn` for the cache-write diagnostic**: rejected; warning filters can promote
+    it to an exception, letting a broken cache fail a command that succeeds uncached
+    (section 7).
 
 ## 12. Non-goals
 
-Target-hash caching (v2 candidate), a `--no-cache` CLI flag, entry pruning or garbage
-collection beyond the roots ledger, compression, per-entry corruption salvage, watch mode, a
-daemon, and cross-machine cache sharing.
+Target-hash caching (v2 candidate), a `--no-cache` CLI flag, garbage collection beyond the
+roots ledger and per-root presence reclamation, compression, per-entry corruption salvage,
+watch mode, a daemon, and cross-machine cache sharing.
 
 ## 13. Documentation
 
