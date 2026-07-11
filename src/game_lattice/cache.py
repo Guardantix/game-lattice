@@ -181,7 +181,7 @@ class LoadCache:
         """Return the validated cache file, or None if it is missing, invalid, or stale."""
         try:
             text = path.read_text(encoding="utf-8")
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             return None
         try:
             data = json.loads(text)

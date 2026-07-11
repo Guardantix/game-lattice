@@ -118,6 +118,15 @@ def test_open_corrupt_file_is_empty(tmp_path: Path, text: str):
     assert _open(tmp_path).is_empty
 
 
+def test_open_invalid_utf8_is_empty(tmp_path: Path):
+    # A cache file with invalid UTF-8 bytes raises UnicodeDecodeError (not an OSError); it must
+    # still yield an empty cache rather than propagate.
+    path = cache_path("slot", {"XDG_CACHE_HOME": str(tmp_path / "xdg")})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xff\xfe not valid utf-8\n")
+    assert _open(tmp_path).is_empty
+
+
 def test_open_wrong_version_is_empty(tmp_path: Path):
     bad = _sample_cache_file().model_copy(update={"version": 999})
     path = cache_path("slot", {"XDG_CACHE_HOME": str(tmp_path / "xdg")})
