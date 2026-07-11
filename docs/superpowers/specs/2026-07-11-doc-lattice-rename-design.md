@@ -59,8 +59,9 @@ inconsistent), and a fresh repo (loses history, issues, and redirects).
 2. **Verification before the PR:** full pytest (with `env -u FORCE_COLOR`), ruff check and
    format, ty, the typing-boundary and version-sync scripts, an end-to-end
    `uv run doc-lattice check` against a fixture, and a repo-wide
-   `grep -rI 'game.lattice'` sweep that must be empty outside CHANGELOG history and this
-   spec (which necessarily names the old identity).
+   `grep -rI 'game.lattice'` sweep that must be empty outside CHANGELOG history and the two
+   rename docs (this spec and the implementation plan), which necessarily name the old
+   identity.
 3. **Cutover, once the PR is green and merge-ready:** `gh repo rename doc-lattice`, then
    `git remote set-url origin git@github.com:Guardantix/doc-lattice.git`. Verify both URLs
    before merging: `git ls-remote https://github.com/Guardantix/doc-lattice.git HEAD` (new
