@@ -562,3 +562,23 @@ def test_default_tier_matches_uncached_under_random_edits(tmp_path_factory, edit
         finally:
             os.environ.pop("XDG_CACHE_HOME", None)
         assert cached_result == reference
+
+
+def test_require_verified_load_sees_fresh_content_after_same_stat_rewrite(tmp_path, monkeypatch):
+    # Even under trust_stat, a require_verified load must read fresh bytes, so reconcile never
+    # plans from stale content. Simulated by a rewrite that keeps size and mtime_ns identical.
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    doc = docs / "a.md"
+    doc.write_text("---\nid: a\n---\n# A\naaaa\n", encoding="utf-8")
+    (tmp_path / ".game-lattice.yml").write_text(
+        "cache_key: rv\ncache_trust_stat: true\n", encoding="utf-8"
+    )
+    load_lattice(load_config(None, tmp_path))  # warm the cache
+    st = doc.stat()
+    # Rewrite with identical byte length, then restore the exact mtime_ns.
+    doc.write_text("---\nid: a\n---\n# A\nbbbb\n", encoding="utf-8")
+    os.utime(doc, ns=(st.st_atime_ns, st.st_mtime_ns))
+    verified = load_lattice(load_config(None, tmp_path), require_verified=True)
+    assert "bbbb" in verified.nodes_by_id["a"].body
