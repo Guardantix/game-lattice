@@ -6,12 +6,14 @@ and verify-tier hits, and writes atomically after a successful load. It never ra
 behalf: a read failure yields an empty cache and a write failure emits one stderr diagnostic.
 """
 
+import json
 from collections.abc import Mapping
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
-from .constants import CACHE_FILE_NAME
+from . import __version__
+from .constants import CACHE_FILE_NAME, CACHE_VERSION
 from .model import NodeMeta
 
 
@@ -95,3 +97,100 @@ def cache_path(cache_key: str, env: Mapping[str, str]) -> Path:
         ``<cache_home>/game-lattice/<cache_key>/load-cache.json``.
     """
     return cache_home(env) / "game-lattice" / cache_key / CACHE_FILE_NAME
+
+
+class LoadCache:
+    """Mutable in-memory cache state for one load run, backed by a single JSON file.
+
+    Constructed by ``open``, mutated per discovered file by ``lookup`` and ``record_miss``,
+    and persisted by ``finalize``. Never raises on its own behalf.
+    """
+
+    def __init__(  # noqa: PLR0913
+        self,
+        *,
+        path: Path,
+        current_root: str,
+        trust_stat: bool,
+        require_verified: bool,
+        entries: dict[str, Entry],
+        roots: list[str],
+        original: dict[str, object] | None,
+    ) -> None:
+        self._path = path
+        self._current_root = current_root
+        self._trust_stat = trust_stat and not require_verified
+        self._entries = entries
+        self._roots = roots
+        self._original = original
+
+    @property
+    def is_empty(self) -> bool:
+        """True when no valid cache file was loaded and no entries are held."""
+        return not self._entries and self._original is None
+
+    @classmethod
+    def open(
+        cls,
+        *,
+        cache_key: str,
+        project_root: Path,
+        env: Mapping[str, str],
+        trust_stat: bool,
+        require_verified: bool,
+    ) -> "LoadCache":
+        """Read and validate the cache file, returning an empty cache on any failure.
+
+        The current project root is recorded as this run's stat key (its realpath). A missing,
+        unreadable, invalid, wrong-version, or wrong-tool-version file is treated as empty:
+        everything recomputes and the file is rewritten by ``finalize``.
+
+        Args:
+            cache_key: The validated cache slot name.
+            project_root: The project root, used as this run's per-root stat key.
+            env: The environment mapping for cache-path resolution.
+            trust_stat: Whether the stat fast tier is enabled by config.
+            require_verified: Whether this call forces the verify tier (the reconcile path).
+
+        Returns:
+            A LoadCache holding the loaded (or empty) state.
+        """
+        path = cache_path(cache_key, env)
+        current_root = str(project_root.resolve())
+        loaded = cls._read(path)
+        if loaded is None:
+            entries: dict[str, Entry] = {}
+            roots: list[str] = []
+            original: dict[str, object] | None = None
+        else:
+            entries = dict(loaded.entries)
+            roots = list(loaded.roots)
+            original = loaded.model_dump(mode="json")
+        return cls(
+            path=path,
+            current_root=current_root,
+            trust_stat=trust_stat,
+            require_verified=require_verified,
+            entries=entries,
+            roots=roots,
+            original=original,
+        )
+
+    @staticmethod
+    def _read(path: Path) -> CacheFile | None:
+        """Return the validated cache file, or None if it is missing, invalid, or stale."""
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        try:
+            parsed = CacheFile.model_validate(data)
+        except ValidationError:
+            return None
+        if parsed.version != CACHE_VERSION or parsed.tool_version != __version__:
+            return None
+        return parsed

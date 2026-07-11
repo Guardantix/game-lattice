@@ -1,11 +1,15 @@
 """Tests for the opt-in incremental load cache."""
 
+import json
 from pathlib import Path
+
+import pytest
 
 from game_lattice import __version__
 from game_lattice.cache import (
     CacheFile,
     Entry,
+    LoadCache,
     NodePayload,
     SectionRecordModel,
     StatRecord,
@@ -70,3 +74,69 @@ def test_cache_home_falls_back_to_home_dot_cache_when_xdg_unset():
 def test_cache_path_composes_slot_and_file_name():
     path = cache_path("my-docs", {"XDG_CACHE_HOME": "/c", "HOME": "/home/u"})
     assert path == Path("/c") / "game-lattice" / "my-docs" / CACHE_FILE_NAME
+
+
+def _write_cache(path: Path, cache_file: CacheFile) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(cache_file.model_dump_json(), encoding="utf-8")
+
+
+def _open(tmp_path: Path, *, trust_stat=False, require_verified=False) -> LoadCache:
+    return LoadCache.open(
+        cache_key="slot",
+        project_root=tmp_path,
+        env={"XDG_CACHE_HOME": str(tmp_path / "xdg")},
+        trust_stat=trust_stat,
+        require_verified=require_verified,
+    )
+
+
+def test_open_missing_file_is_empty(tmp_path: Path):
+    cache = _open(tmp_path)
+    assert cache.is_empty
+
+
+def test_open_valid_file_loads_entries(tmp_path: Path):
+    path = cache_path("slot", {"XDG_CACHE_HOME": str(tmp_path / "xdg")})
+    _write_cache(path, _sample_cache_file())
+    cache = _open(tmp_path)
+    assert not cache.is_empty
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",  # truncated / empty
+        "{ not json",  # invalid JSON
+        '{"version": 1}',  # schema violation (missing fields)
+    ],
+)
+def test_open_corrupt_file_is_empty(tmp_path: Path, text: str):
+    path = cache_path("slot", {"XDG_CACHE_HOME": str(tmp_path / "xdg")})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    assert _open(tmp_path).is_empty
+
+
+def test_open_wrong_version_is_empty(tmp_path: Path):
+    bad = _sample_cache_file().model_copy(update={"version": 999})
+    path = cache_path("slot", {"XDG_CACHE_HOME": str(tmp_path / "xdg")})
+    _write_cache(path, bad)
+    assert _open(tmp_path).is_empty
+
+
+def test_open_wrong_tool_version_is_empty(tmp_path: Path):
+    bad = _sample_cache_file().model_copy(update={"tool_version": "0.0.0-other"})
+    path = cache_path("slot", {"XDG_CACHE_HOME": str(tmp_path / "xdg")})
+    _write_cache(path, bad)
+    assert _open(tmp_path).is_empty
+
+
+def test_open_invalid_meta_is_empty(tmp_path: Path):
+    # A structurally valid file whose node.meta violates NodeMeta must discard wholesale.
+    path = cache_path("slot", {"XDG_CACHE_HOME": str(tmp_path / "xdg")})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = _sample_cache_file().model_dump(mode="json")
+    payload["entries"]["docs/a.md"]["node"]["meta"]["id"] = "bad#id"  # '#' is rejected by NodeMeta
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert _open(tmp_path).is_empty
