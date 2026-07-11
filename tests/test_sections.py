@@ -246,7 +246,7 @@ def test_anchor_ids_dedupes_repeated_slugs_in_document_order():
 def test_anchor_ids_marker_heading_reserves_its_github_slug():
     # GitHub slugs '## Notes {#n}' from its literal, marker-included text to 'notes-n' and
     # reserves it; a later '## Notes n' then collides and becomes 'notes-n-1'. Reserving the
-    # marker heading's slug keeps game-lattice byte-parity with GitHub in this mixed case.
+    # marker heading's slug keeps doc-lattice byte-parity with GitHub in this mixed case.
     toc = build_toc("## Notes {#n}\n\n## Notes n\nx\n")
     assert anchor_ids(toc) == ["n", "notes-n-1"]
 

@@ -9,7 +9,7 @@ from ruamel.yaml import YAML
 
 from doc_lattice.config import Config
 from doc_lattice.scaffold import (
-    GAME_LATTICE_REPO_URL,
+    DOC_LATTICE_REPO_URL,
     build_scaffold,
     render_config,
 )
@@ -91,7 +91,7 @@ def test_snippets_pin_rev_url_and_python():
     scaffold = build_scaffold(("docs",), None, "v0.2.0")
     for text in (scaffold.precommit_text, scaffold.ci_text):
         assert "@v0.2.0" in text
-        assert GAME_LATTICE_REPO_URL in text
+        assert DOC_LATTICE_REPO_URL in text
         assert "--python 3.13" in text
     assert "repo: local" in scaffold.precommit_text
     assert "pass_filenames: false" in scaffold.precommit_text
@@ -105,18 +105,18 @@ def test_invocation_installs_from_pinned_git_ref():
     # intact; asserting url/rev/python as separate fragments misses a dropped `git+`.
     scaffold = build_scaffold(("docs",), None, "v0.2.0")
     for text in (scaffold.precommit_text, scaffold.ci_text):
-        assert f"--from git+{GAME_LATTICE_REPO_URL}@v0.2.0 game-lattice check" in text
-        assert f"--from git+{GAME_LATTICE_REPO_URL}@v0.2.0 game-lattice lint" in text
+        assert f"--from git+{DOC_LATTICE_REPO_URL}@v0.2.0 doc-lattice check" in text
+        assert f"--from git+{DOC_LATTICE_REPO_URL}@v0.2.0 doc-lattice lint" in text
 
 
 def test_generated_gates_run_check_and_lint():
     scaffold = build_scaffold(("docs",), None, "v0.3.0")
-    assert "id: game-lattice-check" in scaffold.precommit_text
-    assert "id: game-lattice-lint" in scaffold.precommit_text
-    assert "game-lattice check" in scaffold.precommit_text
-    assert "game-lattice lint" in scaffold.precommit_text
-    assert "game-lattice check" in scaffold.ci_text
-    assert "game-lattice lint" in scaffold.ci_text
+    assert "id: doc-lattice-check" in scaffold.precommit_text
+    assert "id: doc-lattice-lint" in scaffold.precommit_text
+    assert "doc-lattice check" in scaffold.precommit_text
+    assert "doc-lattice lint" in scaffold.precommit_text
+    assert "doc-lattice check" in scaffold.ci_text
+    assert "doc-lattice lint" in scaffold.ci_text
 
 
 def test_ci_runs_both_commands_in_one_step():

@@ -10,10 +10,10 @@ from dataclasses import dataclass
 
 from ruamel.yaml import YAML
 
-GAME_LATTICE_REPO_URL = "https://github.com/Guardantix/game-lattice"
+DOC_LATTICE_REPO_URL = "https://github.com/Guardantix/doc-lattice"
 PYTHON_PIN = "3.13"
 
-_CONFIG_HEADER = f"# game-lattice configuration. See {GAME_LATTICE_REPO_URL}\n"
+_CONFIG_HEADER = f"# doc-lattice configuration. See {DOC_LATTICE_REPO_URL}\n"
 _COMMENTED_IGNORE = '# ignore_globs:\n#   - "**/superpowers/plans/**"\n'
 _COMMENTED_CACHE = "# cache_key: my-project-docs   # opt-in load cache slot under your cache home\n"
 _COMMENTED_LINEAR = "# linear_team: ENG\n"
@@ -32,7 +32,7 @@ class Scaffold:
 def _invocation(rev: str, command: str) -> str:
     """Return the uvx command a gate runs, pinned to rev and the PYTHON_PIN interpreter."""
     return (
-        f"uvx --python {PYTHON_PIN} --from git+{GAME_LATTICE_REPO_URL}@{rev} game-lattice {command}"
+        f"uvx --python {PYTHON_PIN} --from git+{DOC_LATTICE_REPO_URL}@{rev} doc-lattice {command}"
     )
 
 
@@ -65,18 +65,18 @@ def render_config(docs_roots: tuple[str, ...], linear_team: str | None) -> str:
 
 
 def render_precommit(rev: str) -> str:
-    """Render the repo: local pre-commit hooks that run game-lattice check and lint."""
+    """Render the repo: local pre-commit hooks that run doc-lattice check and lint."""
     return (
         "  - repo: local\n"
         "    hooks:\n"
-        "      - id: game-lattice-check\n"
-        "        name: game-lattice check\n"
+        "      - id: doc-lattice-check\n"
+        "        name: doc-lattice check\n"
         f"        entry: {_invocation(rev, 'check')}\n"
         "        language: system\n"
         "        files: \\.md$\n"
         "        pass_filenames: false\n"
-        "      - id: game-lattice-lint\n"
-        "        name: game-lattice lint\n"
+        "      - id: doc-lattice-lint\n"
+        "        name: doc-lattice lint\n"
         f"        entry: {_invocation(rev, 'lint')}\n"
         "        language: system\n"
         "        files: \\.md$\n"
@@ -85,7 +85,7 @@ def render_precommit(rev: str) -> str:
 
 
 def render_ci(rev: str) -> str:
-    """Render the GitHub Actions workflow that runs game-lattice check and lint.
+    """Render the GitHub Actions workflow that runs doc-lattice check and lint.
 
     Both commands run in one shell step so a check failure does not skip lint. set +e
     disables errexit so both exit codes are captured; the final test fails the step if
@@ -94,7 +94,7 @@ def render_ci(rev: str) -> str:
     check_cmd = _invocation(rev, "check")
     lint_cmd = _invocation(rev, "lint")
     return (
-        "name: game-lattice\n"
+        "name: doc-lattice\n"
         "on:\n"
         "  push:\n"
         "    branches: [main]\n"

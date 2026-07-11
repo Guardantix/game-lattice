@@ -73,7 +73,7 @@ def _bench_size(count: int) -> None:
 
         _config(root, cache_key="bench", trust_stat=False)
         # Cold: remove any cache, single timed run including the write.
-        cache_dir = base / "xdg" / "game-lattice" / "bench"
+        cache_dir = base / "xdg" / "doc-lattice" / "bench"
         if cache_dir.exists():
             for entry in cache_dir.iterdir():
                 entry.unlink()

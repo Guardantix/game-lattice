@@ -99,8 +99,8 @@ def _run_cli_subprocess(argv: list[str], env: dict[str, str]) -> subprocess.Comp
 @pytest.mark.parametrize(
     "argv",
     [
-        ["game-lattice", "--no-color", "--help"],
-        ["game-lattice", "--no-color", "check", "--json", "--indent", "-1"],
+        ["doc-lattice", "--no-color", "--help"],
+        ["doc-lattice", "--no-color", "check", "--json", "--indent", "-1"],
     ],
 )
 def test_no_color_suppresses_typer_rendered_colors(argv):
@@ -121,8 +121,8 @@ def test_no_color_suppresses_typer_rendered_colors(argv):
 @pytest.mark.parametrize(
     "argv",
     [
-        ["game-lattice", "--help"],
-        ["game-lattice", "check", "--json", "--indent", "-1"],
+        ["doc-lattice", "--help"],
+        ["doc-lattice", "check", "--json", "--indent", "-1"],
     ],
 )
 def test_no_color_env_var_suppresses_typer_rendered_colors(argv):
@@ -184,11 +184,11 @@ def test_check_github_emits_each_drift_annotation(lattice_dir: Path, monkeypatch
     gdd_path = "docs/gdd.md"
     pc_path = "docs/pc-design.md"
     assert result.stdout == (
-        f"::error file={gdd_path},title=game-lattice BROKEN::"
+        f"::error file={gdd_path},title=doc-lattice BROKEN::"
         "gdd -> ghost is BROKEN\n"
-        f"::error file={pc_path},title=game-lattice STALE::"
+        f"::error file={pc_path},title=doc-lattice STALE::"
         "pc-design -> art-direction#accent is STALE\n"
-        f"::error file={pc_path},title=game-lattice UNRECONCILED::"
+        f"::error file={pc_path},title=doc-lattice UNRECONCILED::"
         "pc-design -> art-direction#motion is UNRECONCILED\n"
     )
 
@@ -211,7 +211,7 @@ def test_check_github_escapes_complete_annotation(tmp_path: Path, monkeypatch):
     expected_path = _escape_github_property("docs/sub%:,\nline/down.md")
     assert result.stdout == (
         f"::error file={expected_path},"
-        "title=game-lattice BROKEN::"
+        "title=doc-lattice BROKEN::"
         "down%25:,%0D%0Aline -> ghost%25:,%0D%0Aline is BROKEN\n"
     )
 
@@ -237,7 +237,7 @@ def test_check_github_annotation_keeps_config_subdir_prefix(tmp_path: Path, monk
 
     assert result.exit_code == 1
     assert result.stdout == (
-        "::error file=packages/game/docs/down.md,title=game-lattice BROKEN::"
+        "::error file=packages/game/docs/down.md,title=doc-lattice BROKEN::"
         "down -> ghost is BROKEN\n"
     )
 
@@ -921,7 +921,7 @@ def test_main_sets_no_color_env_before_app_runs(monkeypatch):
     # errors) from scratch on demand; those are untouched by _disable_color() and only
     # honor NO_COLOR if it is already set in the environment before app() parses argv.
     monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.setattr(sys, "argv", ["game-lattice", "--no-color", "check"])
+    monkeypatch.setattr(sys, "argv", ["doc-lattice", "--no-color", "check"])
     seen = {}
 
     def fake_app():
@@ -934,7 +934,7 @@ def test_main_sets_no_color_env_before_app_runs(monkeypatch):
 
 def test_main_leaves_no_color_env_unset_without_flag(monkeypatch):
     monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.setattr(sys, "argv", ["game-lattice", "check"])
+    monkeypatch.setattr(sys, "argv", ["doc-lattice", "check"])
     seen = {}
 
     def fake_app():
@@ -1109,7 +1109,7 @@ def test_init_writes_config_and_prints_codegen(tmp_path: Path, monkeypatch):
     assert "docs_roots:" in config
     assert "- docs" in config
     assert ".pre-commit-config.yaml" in result.stdout
-    assert ".github/workflows/game-lattice.yml" in result.stdout
+    assert ".github/workflows/doc-lattice.yml" in result.stdout
     assert f"@v{__version__}" in result.stdout
 
 
@@ -1119,7 +1119,7 @@ def test_init_skips_existing_config_but_still_prints(tmp_path: Path, monkeypatch
     result = runner.invoke(app, ["init"])
     assert result.exit_code == 0
     assert (tmp_path / ".doc-lattice.yml").read_text(encoding="utf-8") == "SENTINEL\n"
-    assert ".github/workflows/game-lattice.yml" in result.stdout
+    assert ".github/workflows/doc-lattice.yml" in result.stdout
 
 
 def test_init_bakes_flag_values(tmp_path: Path, monkeypatch):
@@ -1213,7 +1213,7 @@ def test_lint_github_emits_each_violation_annotation(tmp_path: Path, monkeypatch
     assert result.exit_code == 1
     down_path = "docs/down.md"
     assert result.stdout == (
-        f"::error file={down_path},title=game-lattice ladder violation::"
+        f"::error file={down_path},title=doc-lattice ladder violation::"
         "down (binding) -> up (derived)\n"
     )
 
@@ -1240,7 +1240,7 @@ def test_lint_github_escapes_complete_annotation(tmp_path: Path, monkeypatch):
     expected_path = _escape_github_property("docs/sub%:,\nline/down.md")
     assert result.stdout == (
         f"::error file={expected_path},"
-        "title=game-lattice ladder violation::"
+        "title=doc-lattice ladder violation::"
         "down%25:,%0D%0Aline (binding) -> up%25:,%0D%0Aline (derived)\n"
     )
 

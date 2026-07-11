@@ -232,7 +232,7 @@ def main_callback(
     ] = False,
     no_color: Annotated[bool, typer.Option("--no-color", help="Disable colored output.")] = False,
 ) -> None:
-    """game-lattice: documentation traceability engine."""
+    """doc-lattice: documentation traceability engine."""
     if no_color:
         _disable_color()
 
@@ -289,7 +289,7 @@ def check(
                 _github_annotation(
                     path,
                     Path.cwd(),
-                    f"game-lattice {status.state}",
+                    f"doc-lattice {status.state}",
                     f"{status.source_id} -> {status.target_ref} is {status.state}",
                 )
             )
@@ -320,7 +320,7 @@ def lint(
                 _github_annotation(
                     path,
                     Path.cwd(),
-                    "game-lattice ladder violation",
+                    "doc-lattice ladder violation",
                     f"{violation.source_id} ({violation.source_authority}) -> "
                     f"{violation.target_ref} ({violation.target_authority})",
                 )
@@ -614,11 +614,11 @@ def init(
             _err.print(f"wrote {escape(target.name)}")
         typer.echo("# ===== .pre-commit-config.yaml (add under `repos:`) =====")
         typer.echo(scaffold.precommit_text)
-        typer.echo("# ===== .github/workflows/game-lattice.yml (new file) =====")
+        typer.echo("# ===== .github/workflows/doc-lattice.yml (new file) =====")
         typer.echo(scaffold.ci_text)
         _err.print(
             "Add the pre-commit block under `repos:`, save the workflow as "
-            ".github/workflows/game-lattice.yml, and make sure the "
+            ".github/workflows/doc-lattice.yml, and make sure the "
             f"v{__version__} tag is pushed so the pinned snippets resolve."
         )
     raise typer.Exit(0)

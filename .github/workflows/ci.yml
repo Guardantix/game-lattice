@@ -107,12 +107,12 @@ jobs:
       - name: Smoke-test the commit
         if: steps.gate.outputs.proceed == 'true'
         run: |
-          ref="git+https://github.com/Guardantix/game-lattice@${GITHUB_SHA}"
+          ref="git+https://github.com/Guardantix/doc-lattice@${GITHUB_SHA}"
           fixture="tests/fixtures/release-smoke/.doc-lattice.yml"
-          uvx --python 3.13 --from "${ref}" game-lattice check --config "${fixture}"
-          uvx --python 3.13 --from "${ref}" game-lattice lint --config "${fixture}"
+          uvx --python 3.13 --from "${ref}" doc-lattice check --config "${fixture}"
+          uvx --python 3.13 --from "${ref}" doc-lattice lint --config "${fixture}"
           workdir="$(mktemp -d)"
-          ( cd "${workdir}" && uvx --python 3.13 --from "${ref}" game-lattice init )
+          ( cd "${workdir}" && uvx --python 3.13 --from "${ref}" doc-lattice init )
 
       - name: Create and push the tag
         if: steps.gate.outputs.proceed == 'true'
@@ -137,4 +137,4 @@ jobs:
         env:
           TAG: ${{ steps.target.outputs.tag }}
         run: |
-          uvx --python 3.13 --from "git+https://github.com/Guardantix/game-lattice@${TAG}" game-lattice --version
+          uvx --python 3.13 --from "git+https://github.com/Guardantix/doc-lattice@${TAG}" doc-lattice --version

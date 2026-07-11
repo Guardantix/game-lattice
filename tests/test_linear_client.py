@@ -73,7 +73,7 @@ def test_execute_sends_authorized_post(monkeypatch):
     assert opener.captured.get_method() == "POST"  # type: ignore
     assert opener.captured.headers["Authorization"] == "secret-key"  # type: ignore
     assert opener.captured.headers["Content-type"] == "application/json"  # type: ignore
-    assert opener.captured.headers["User-agent"].startswith("game-lattice/")  # type: ignore
+    assert opener.captured.headers["User-agent"].startswith("doc-lattice/")  # type: ignore
     assert opener.timeout == client._timeout
 
 
