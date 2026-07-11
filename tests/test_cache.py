@@ -255,6 +255,56 @@ def test_stat_tier_disabled_without_trust_stat_falls_to_verify(tmp_path: Path):
     assert isinstance(result, CacheMiss)
 
 
+def test_stat_tier_size_mismatch_falls_through_to_verify_hit(tmp_path: Path):
+    text = "# A\n"
+    doc = tmp_path / "docs" / "a.md"
+    doc.parent.mkdir(parents=True)
+    doc.write_text(text, encoding="utf-8")
+    st = doc.stat()
+    cache = _open(tmp_path, trust_stat=True)
+    cache._entries["docs/a.md"] = Entry(
+        file_sha256=hashlib.sha256(_doc_bytes(text)).hexdigest(),  # correct; verify tier hits
+        stats={cache._current_root: StatRecord(size=st.st_size + 1, mtime_ns=st.st_mtime_ns)},
+        node=None,
+    )
+    result = cache.lookup("docs/a.md", doc)
+    assert isinstance(result, CacheHit)
+    assert result.doc is None
+
+
+def test_stat_tier_mtime_mismatch_falls_through_to_verify_hit(tmp_path: Path):
+    text = "# A\n"
+    doc = tmp_path / "docs" / "a.md"
+    doc.parent.mkdir(parents=True)
+    doc.write_text(text, encoding="utf-8")
+    st = doc.stat()
+    cache = _open(tmp_path, trust_stat=True)
+    cache._entries["docs/a.md"] = Entry(
+        file_sha256=hashlib.sha256(_doc_bytes(text)).hexdigest(),  # correct; verify tier hits
+        stats={cache._current_root: StatRecord(size=st.st_size, mtime_ns=st.st_mtime_ns + 1)},
+        node=None,
+    )
+    result = cache.lookup("docs/a.md", doc)
+    assert isinstance(result, CacheHit)
+    assert result.doc is None
+
+
+def test_stat_tier_no_record_for_current_root_falls_through_to_verify_hit(tmp_path: Path):
+    text = "# A\n"
+    doc = tmp_path / "docs" / "a.md"
+    doc.parent.mkdir(parents=True)
+    doc.write_text(text, encoding="utf-8")
+    cache = _open(tmp_path, trust_stat=True)
+    cache._entries["docs/a.md"] = Entry(
+        file_sha256=hashlib.sha256(_doc_bytes(text)).hexdigest(),  # correct; verify tier hits
+        stats={"/some/other/root": StatRecord(size=1, mtime_ns=1)},  # nothing for current_root
+        node=None,
+    )
+    result = cache.lookup("docs/a.md", doc)
+    assert isinstance(result, CacheHit)
+    assert result.doc is None
+
+
 def test_require_verified_disables_stat_tier(tmp_path: Path):
     text = "# A\n"
     doc = tmp_path / "docs" / "a.md"
