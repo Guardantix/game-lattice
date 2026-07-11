@@ -1351,3 +1351,29 @@ def test_reconcile_all_cached_matches_uncached_bytes(lattice_dir: Path, tmp_path
     assert cached.exit_code == uncached.exit_code
     for name in ["pc-design.md", "art-direction.md", "gdd.md"]:
         assert (twin / "docs" / name).read_bytes() == (lattice_dir / "docs" / name).read_bytes()
+
+
+@pytest.mark.parametrize(
+    ("args", "expected_require_verified"),
+    [
+        (["reconcile", "--all"], True),
+        (["check"], False),
+    ],
+)
+def test_cli_forces_require_verified_only_for_reconcile(
+    lattice_dir: Path, tmp_path: Path, monkeypatch, args, expected_require_verified
+):
+    # Mutant-killer: spy on the load_lattice that cli.py imported into its own namespace,
+    # wrapping the real function so the real command still runs, and record the
+    # require_verified kwarg. reconcile must force the verify tier; check must not.
+    seen: dict[str, bool] = {}
+    real = cli_mod.load_lattice
+
+    def spy(project, *, require_verified=False):
+        seen["require_verified"] = require_verified
+        return real(project, require_verified=require_verified)
+
+    monkeypatch.setattr(cli_mod, "load_lattice", spy)
+    env = {"XDG_CACHE_HOME": str(tmp_path / "xdg"), "NO_COLOR": "1"}
+    _run(args, lattice_dir, env)
+    assert seen["require_verified"] is expected_require_verified

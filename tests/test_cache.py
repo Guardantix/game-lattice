@@ -575,10 +575,17 @@ def test_require_verified_load_sees_fresh_content_after_same_stat_rewrite(tmp_pa
     (tmp_path / ".game-lattice.yml").write_text(
         "cache_key: rv\ncache_trust_stat: true\n", encoding="utf-8"
     )
-    load_lattice(load_config(None, tmp_path))  # warm the cache
+    load_lattice(load_config(None, tmp_path))  # warm the cache, populating the stat hint
     st = doc.stat()
     # Rewrite with identical byte length, then restore the exact mtime_ns.
     doc.write_text("---\nid: a\n---\n# A\nbbbb\n", encoding="utf-8")
     os.utime(doc, ns=(st.st_atime_ns, st.st_mtime_ns))
+    # Negative control: a plain warm load trusts the stat tier (same size, same mtime_ns) and
+    # so serves the STALE cached body, hiding the rewrite. This is the caveat require_verified
+    # exists to defeat; without it, reconcile could plan a seen-hash from stale content.
+    stale = load_lattice(load_config(None, tmp_path))
+    assert "aaaa" in stale.nodes_by_id["a"].body
+    assert "bbbb" not in stale.nodes_by_id["a"].body
+    # require_verified disables the stat tier, forcing a content re-read: fresh bytes.
     verified = load_lattice(load_config(None, tmp_path), require_verified=True)
     assert "bbbb" in verified.nodes_by_id["a"].body
