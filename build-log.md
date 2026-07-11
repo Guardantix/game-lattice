@@ -2,7 +2,7 @@
 
 ## 2026-06-27 -- Project initialized
 
-Project initialized. Goals: Traceability engine for game design and production documentation. Scaffolded with gx-new v0.1.0.
+Project initialized. Goals: Traceability engine for design and production documentation. Scaffolded with gx-new v0.1.0.
 
 ## 2026-06-27 -- local-core engine (PR #1)
 
@@ -14,7 +14,7 @@ First network-touching command: `linear` resolves referenced tickets to live sta
 
 ## 2026-06-28 -- init slice, release 0.2.0 (PR #4)
 
-`init` scaffolds `.game-lattice.yml` and prints pinned pre-commit and CI codegen for an adopting repo. Cut tag v0.2.0.
+`init` scaffolds `.doc-lattice.yml` and prints pinned pre-commit and CI codegen for an adopting repo. Cut tag v0.2.0.
 
 ## 2026-06-28 -- lint slice, release 0.3.0 (PR #6)
 

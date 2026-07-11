@@ -1,8 +1,8 @@
-# game-lattice Architecture
+# doc-lattice Architecture
 
 ## System Overview
 
-game-lattice is a deterministic, offline traceability engine for game design and
+doc-lattice is a deterministic, offline traceability engine for design and
 production documentation. It reads markdown docs that carry lattice frontmatter and
 anchored sections, derives an id-indexed edge graph on demand, and reports staleness
 between an upstream source and the downstream docs that derive from it.
