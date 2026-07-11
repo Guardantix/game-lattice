@@ -1,9 +1,12 @@
 """Tests for load_lattice wiring."""
 
+import os
 from pathlib import Path
 
 import pytest
 
+from game_lattice import orchestrate
+from game_lattice.cache import cache_path
 from game_lattice.config import load_config
 from game_lattice.error_types import ConfigError, DuplicateIdError, UnreadableDocError
 from game_lattice.model import TargetId
@@ -128,3 +131,37 @@ def test_cache_disabled_leaves_env_untouched(lattice_dir: Path):
     assert project.config.cache_key is None
     lat = load_lattice(project)
     assert set(lat.nodes_by_id) == {"art-direction", "pc-design", "gdd"}
+
+
+def test_cached_cold_run_writes_the_cache_file(lattice_dir: Path, monkeypatch, tmp_path):
+    # Proof the cached branch is genuinely taken: a cold run with cache_key set must write the
+    # slot's cache file to disk. A no-op alias of the uncached path would leave it absent.
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    _with_cache(lattice_dir)  # writes cache_key: testslot
+    assert not cache_path("testslot", os.environ).exists()
+    load_lattice(load_config(None, lattice_dir))
+    assert cache_path("testslot", os.environ).exists()
+
+
+def test_warm_cached_run_reparses_nothing(lattice_dir: Path, monkeypatch, tmp_path):
+    # Proof the warm path serves from the cache instead of re-parsing: after a cold run populates
+    # the cache, a warm run must call parse_meta zero times (every file is a verify-tier hit
+    # reconstructed from the cache). A no-op alias would re-parse every discovered node.
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    _with_cache(lattice_dir)
+
+    calls = {"n": 0}
+    real = orchestrate.parse_meta
+
+    def counting(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(orchestrate, "parse_meta", counting)
+
+    load_lattice(load_config(None, lattice_dir))  # cold: cache empty, every node parsed
+    assert calls["n"] > 0
+
+    calls["n"] = 0
+    load_lattice(load_config(None, lattice_dir))  # warm: every node served from the cache
+    assert calls["n"] == 0
