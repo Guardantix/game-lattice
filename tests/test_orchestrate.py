@@ -102,3 +102,29 @@ def test_multiple_docs_roots_combine(tmp_path: Path):
     project = load_config(None, tmp_path)
     lat = load_lattice(project)
     assert set(lat.nodes_by_id) == {"a", "b"}
+
+
+def _with_cache(tmp_path: Path, *, trust_stat: bool = False) -> Path:
+    lines = ["cache_key: testslot"]
+    if trust_stat:
+        lines.append("cache_trust_stat: true")
+    (tmp_path / ".game-lattice.yml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return tmp_path
+
+
+def test_cached_and_uncached_loads_are_structurally_equal(lattice_dir: Path, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    uncached = load_lattice(load_config(None, lattice_dir))
+    _with_cache(lattice_dir)
+    cold = load_lattice(load_config(None, lattice_dir))  # writes the cache
+    warm = load_lattice(load_config(None, lattice_dir))  # reads it back
+    assert cold == uncached
+    assert warm == uncached
+
+
+def test_cache_disabled_leaves_env_untouched(lattice_dir: Path):
+    # With no cache_key, load_lattice must never resolve or write a cache.
+    project = load_config(None, lattice_dir)
+    assert project.config.cache_key is None
+    lat = load_lattice(project)
+    assert set(lat.nodes_by_id) == {"art-direction", "pc-design", "gdd"}

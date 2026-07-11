@@ -2,9 +2,12 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 from game_lattice import __version__
 from game_lattice.cache import (
@@ -19,9 +22,12 @@ from game_lattice.cache import (
     cache_home,
     cache_path,
 )
+from game_lattice.check import check_lattice, statuses_json
+from game_lattice.config import load_config
 from game_lattice.constants import CACHE_FILE_NAME, CACHE_VERSION, MAX_STAT_ROOTS
 from game_lattice.error_types import UnreadableDocError
 from game_lattice.model import FileSections, NodeMeta, ParsedDoc, SectionRecord
+from game_lattice.orchestrate import load_lattice
 
 
 def _sample_cache_file() -> CacheFile:
@@ -497,3 +503,62 @@ def test_finalize_write_failure_emits_one_stderr_line_and_does_not_raise(
     path = cache_path("slot", {"XDG_CACHE_HOME": str(tmp_path / "xdg")})
     leftovers = list(path.parent.glob("*.tmp"))
     assert leftovers == []
+
+
+def _run_check(project) -> str:
+    return json.dumps(statuses_json(check_lattice(load_lattice(project))))
+
+
+@settings(
+    max_examples=60, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
+@given(
+    edits=st.lists(
+        st.sampled_from(["body", "frontmatter", "add", "delete", "rename", "touch"]),
+        min_size=1,
+        max_size=8,
+    )
+)
+def test_default_tier_matches_uncached_under_random_edits(tmp_path_factory, edits):
+    base = tmp_path_factory.mktemp("proj")
+    xdg = tmp_path_factory.mktemp("xdg")
+    docs = base / "docs"
+    docs.mkdir()
+    (docs / "a.md").write_text("---\nid: a\n---\n# A {#a}\nbody a\n", encoding="utf-8")
+    (docs / "b.md").write_text(
+        "---\nid: b\nderives_from:\n  - ref: a#a\n---\n# B\nbody b\n", encoding="utf-8"
+    )
+    cached_cfg = base / ".game-lattice.yml"
+    for counter, edit in enumerate(edits):
+        target = docs / "a.md"
+        if edit == "body" and target.exists():
+            target.write_text(target.read_text() + f"\nmore {counter}\n", encoding="utf-8")
+        elif edit == "frontmatter" and target.exists():
+            body = target.read_text().split("---\n", 2)[-1]
+            target.write_text(f"---\nid: a\ntitle: t{counter}\n---\n{body}", encoding="utf-8")
+        elif edit == "add":
+            (docs / f"extra{counter}.md").write_text(
+                f"---\nid: extra{counter}\n---\n# E\n", encoding="utf-8"
+            )
+        elif edit == "delete":
+            extras = sorted(docs.glob("extra*.md"))
+            if extras:
+                extras[0].unlink()
+        elif edit == "rename":
+            extras = sorted(docs.glob("extra*.md"))
+            if extras:
+                extras[0].rename(docs / f"renamed{counter}.md")
+        elif edit == "touch" and target.exists():
+            target.touch()
+
+        # Uncached reference (no cache_key).
+        cached_cfg.unlink(missing_ok=True)
+        reference = _run_check(load_config(None, base))
+        # Default-tier cached run (verify tier), sharing one XDG home across iterations.
+        cached_cfg.write_text("cache_key: prop\n", encoding="utf-8")
+        os.environ["XDG_CACHE_HOME"] = str(xdg)
+        try:
+            cached_result = _run_check(load_config(None, base))
+        finally:
+            os.environ.pop("XDG_CACHE_HOME", None)
+        assert cached_result == reference
