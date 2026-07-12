@@ -413,9 +413,10 @@ git commit -m "fix: isolate PyPI publishing credentials"
 
 **Files:**
 - Create: `tests/test_package_metadata.py`
-- Modify: `pyproject.toml:5-6,39-42`
+- Modify: `pyproject.toml:2,5-6,31-42`
+- Modify: `uv.lock`
 
-- [ ] **Step 1: Add a packaging-configuration contract test**
+- [ ] **Step 1: Add packaging-configuration and built-artifact contract tests**
 
 Create `tests/test_package_metadata.py` with:
 
@@ -450,10 +451,17 @@ def test_pypi_metadata_links_to_maintainer_resources():
     }
 ```
 
+Also test the real Hatchling sdist. Build it into pytest's `tmp_path` with
+`uv build --sdist --no-build-isolation`, derive the expected distribution prefix from the project
+name and version, and inspect every tar member with POSIX path semantics. Require unique regular
+files, the exact prefix and root-file allowlist, and only `src/` or `tests/` descendants. Add
+crafted-member regressions for traversal, absolute/empty/dot components, wrong prefixes,
+duplicates, symlinks, hardlinks, and other non-regular members.
+
 - [ ] **Step 2: Run the packaging tests and verify RED**
 
 ```bash
-uv run --locked --group dev pytest tests/test_package_metadata.py -q
+uv run --locked --group dev pytest tests/test_package_metadata.py --no-cov -q
 ```
 
 Expected: failures because there is no sdist target and only `Homepage` is declared.
@@ -473,6 +481,10 @@ include = [
 ]
 ```
 
+Pin `hatchling==1.31.0` in both `[build-system].requires` and the `dev` dependency group, then run
+`uv lock`. The no-isolation artifact test uses that locked installed backend without network
+resolution; release verification continues to use a normal isolated `uv build`.
+
 Replace `[project.urls]` with:
 
 ```toml
@@ -487,10 +499,10 @@ Releases = "https://github.com/Guardantix/doc-lattice/releases"
 - [ ] **Step 4: Run packaging tests and verify GREEN**
 
 ```bash
-uv run --locked --group dev pytest tests/test_package_metadata.py -q
+uv run --locked --group dev pytest tests/test_package_metadata.py --no-cov -q
 ```
 
-Expected: both tests pass.
+Expected: all 13 tests pass.
 
 - [ ] **Step 5: Build and inspect the package before the version bump**
 

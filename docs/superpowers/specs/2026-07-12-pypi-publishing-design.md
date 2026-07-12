@@ -81,8 +81,11 @@ test, and rebuild the package: `src`, `tests`, `LICENSE`, `README.md`, and `pypr
 Hatchling also always includes the repository `.gitignore`, which is an accepted backend-required
 root file alongside generated `PKG-INFO`. An artifact-level test enforces that no other repository
 files are present; caches, internal agent instructions, CI files, development logs, and design
-history remain excluded. Both the wheel and source distribution must pass `twine check`, and the
-wheel must install and report `1.0.0` on Python 3.13.
+history remain excluded. Hatchling 1.31.0 is pinned in both the build system and the locked
+development environment; the artifact-level test builds without isolation so it is deterministic
+and needs no dependency resolution. Release verification retains a normal isolated build. Both the
+wheel and source distribution must pass `twine check`, and the wheel must install and report
+`1.0.0` on Python 3.13.
 
 Project URLs may be expanded with source, issue tracker, changelog, and release links, but no new
 runtime metadata system or dynamic versioning is introduced for this release.
