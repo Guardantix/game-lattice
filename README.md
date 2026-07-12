@@ -147,15 +147,29 @@ only command that writes to your docs, and it only ever rewrites the `seen` scal
 - Python 3.13+
 - [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
 
-### Install
+### Install and run
+
+Run the released CLI without installing it globally:
+
+```bash
+uvx doc-lattice --help
+```
+
+Or install it into an isolated tool environment:
+
+```bash
+uv tool install doc-lattice
+doc-lattice --help
+```
+
+`pipx install doc-lattice` provides the same isolated installation. A conventional
+`python -m pip install doc-lattice` is also supported when installing into an activated virtual
+environment.
+
+### Development
 
 ```bash
 uv sync --group dev
-```
-
-### Run
-
-```bash
 uv run doc-lattice --help
 ```
 
@@ -311,13 +325,17 @@ Bootstrap config and the drift and authority-ladder gates for a repo whose docs 
 track:
 
 ```bash
-uvx --python 3.13 --from git+https://github.com/Guardantix/doc-lattice@v0.9.0 doc-lattice init
+uvx --python 3.13 --from doc-lattice==1.0.0 doc-lattice init
 ```
 
 This writes `.doc-lattice.yml` (only if absent) and prints pre-commit hooks and a GitHub
 Actions workflow that run `doc-lattice check` (drift) and `doc-lattice lint` (authority
 ladder) as your gates. Paste each where the output says. Pass `--docs-root` (repeatable) or
 `--linear-team` to bake those values into the generated config.
+
+To test an unreleased commit, replace the PyPI requirement with a Git source such as
+`--from git+https://github.com/Guardantix/doc-lattice@<commit>`; released configurations should
+keep the exact PyPI version pin.
 
 ## Linear integration
 
