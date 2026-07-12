@@ -49,7 +49,7 @@ the next version.
 
 ## Local verification
 
-Run the same source checks used by CI:
+Run the full local verification suite, including release-script checks:
 
 ```bash
 env -u FORCE_COLOR uv run --locked --group dev pytest
@@ -58,15 +58,25 @@ uv run --locked --group dev ruff format --check src tests scripts/release_gate.p
 uv run --locked --group dev ty check src scripts/release_gate.py
 uv run --locked --group dev python scripts/check_typing_boundaries.py src
 uv run --locked --group dev python scripts/check_version_sync.py
-uv build
-uvx --from twine twine check dist/*
 ```
 
-Smoke-test the built wheel in a fresh Python 3.13 environment:
+Build and validate exactly the expected artifacts, then smoke-test the wheel in a fresh Python
+3.13 environment:
 
 ```bash
-tmpdir="$(mktemp -d)"
-uv venv --python 3.13 "$tmpdir/.venv"
-uv pip install --python "$tmpdir/.venv/bin/python" dist/*.whl
-"$tmpdir/.venv/bin/doc-lattice" --version
+dist_dir="$(mktemp -d)"
+version="$(uv run --locked python -c 'from doc_lattice import __version__; print(__version__)')"
+sdist="${dist_dir}/doc_lattice-${version}.tar.gz"
+wheel="${dist_dir}/doc_lattice-${version}-py3-none-any.whl"
+uv build --out-dir "${dist_dir}"
+test -f "${sdist}"
+test -f "${wheel}"
+artifact_count="$(find "${dist_dir}" -maxdepth 1 -type f ! -name .gitignore | wc -l)"
+test "${artifact_count}" -eq 2
+uvx --from twine twine check "${sdist}" "${wheel}"
+
+venv_dir="$(mktemp -d)/.venv"
+uv venv --python 3.13 "${venv_dir}"
+uv pip install --python "${venv_dir}/bin/python" "${wheel}"
+"${venv_dir}/bin/doc-lattice" --version
 ```
