@@ -601,7 +601,7 @@ def init(
     with _exit_on_project_error():
         roots = tuple(docs_root) if docs_root else ("docs",)
         _validate_init_flags(roots, linear_team)
-        scaffold = build_scaffold(roots, linear_team, f"v{__version__}")
+        scaffold = build_scaffold(roots, linear_team, __version__)
         target = Path.cwd() / DEFAULT_CONFIG_NAME
         try:
             _atomic_create(target, scaffold.config_text)

@@ -29,11 +29,9 @@ class Scaffold:
     ci_text: str
 
 
-def _invocation(rev: str, command: str) -> str:
-    """Return the uvx command a gate runs, pinned to rev and the PYTHON_PIN interpreter."""
-    return (
-        f"uvx --python {PYTHON_PIN} --from git+{DOC_LATTICE_REPO_URL}@{rev} doc-lattice {command}"
-    )
+def _invocation(version: str, command: str) -> str:
+    """Return a uvx command pinned to an exact PyPI version and Python interpreter."""
+    return f"uvx --python {PYTHON_PIN} --from doc-lattice=={version} doc-lattice {command}"
 
 
 def render_config(docs_roots: tuple[str, ...], linear_team: str | None) -> str:
@@ -64,35 +62,35 @@ def render_config(docs_roots: tuple[str, ...], linear_team: str | None) -> str:
     return "".join(parts)
 
 
-def render_precommit(rev: str) -> str:
+def render_precommit(version: str) -> str:
     """Render the repo: local pre-commit hooks that run doc-lattice check and lint."""
     return (
         "  - repo: local\n"
         "    hooks:\n"
         "      - id: doc-lattice-check\n"
         "        name: doc-lattice check\n"
-        f"        entry: {_invocation(rev, 'check')}\n"
+        f"        entry: {_invocation(version, 'check')}\n"
         "        language: system\n"
         "        files: \\.md$\n"
         "        pass_filenames: false\n"
         "      - id: doc-lattice-lint\n"
         "        name: doc-lattice lint\n"
-        f"        entry: {_invocation(rev, 'lint')}\n"
+        f"        entry: {_invocation(version, 'lint')}\n"
         "        language: system\n"
         "        files: \\.md$\n"
         "        pass_filenames: false\n"
     )
 
 
-def render_ci(rev: str) -> str:
+def render_ci(version: str) -> str:
     """Render the GitHub Actions workflow that runs doc-lattice check and lint.
 
     Both commands run in one shell step so a check failure does not skip lint. set +e
     disables errexit so both exit codes are captured; the final test fails the step if
     either command failed.
     """
-    check_cmd = _invocation(rev, "check")
-    lint_cmd = _invocation(rev, "lint")
+    check_cmd = _invocation(version, "check")
+    lint_cmd = _invocation(version, "lint")
     return (
         "name: doc-lattice\n"
         "on:\n"
@@ -117,19 +115,19 @@ def render_ci(rev: str) -> str:
     )
 
 
-def build_scaffold(docs_roots: tuple[str, ...], linear_team: str | None, rev: str) -> Scaffold:
+def build_scaffold(docs_roots: tuple[str, ...], linear_team: str | None, version: str) -> Scaffold:
     """Build all three init artifacts from typed inputs.
 
     Args:
         docs_roots: The docs roots for the config's docs_roots list.
         linear_team: The team key to bake in, or None.
-        rev: The git ref the snippets pin, for example "v0.2.0".
+        version: The exact PyPI package version the snippets install, for example "1.0.0".
 
     Returns:
         A Scaffold holding the config text and the two codegen snippets.
     """
     return Scaffold(
         config_text=render_config(docs_roots, linear_team),
-        precommit_text=render_precommit(rev),
-        ci_text=render_ci(rev),
+        precommit_text=render_precommit(version),
+        ci_text=render_ci(version),
     )

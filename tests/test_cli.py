@@ -1110,7 +1110,8 @@ def test_init_writes_config_and_prints_codegen(tmp_path: Path, monkeypatch):
     assert "- docs" in config
     assert ".pre-commit-config.yaml" in result.stdout
     assert ".github/workflows/doc-lattice.yml" in result.stdout
-    assert f"@v{__version__}" in result.stdout
+    assert f"--from doc-lattice=={__version__}" in result.stdout
+    assert "git+" not in result.stdout
 
 
 def test_init_skips_existing_config_but_still_prints(tmp_path: Path, monkeypatch):
