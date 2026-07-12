@@ -1112,6 +1112,9 @@ def test_init_writes_config_and_prints_codegen(tmp_path: Path, monkeypatch):
     assert ".github/workflows/doc-lattice.yml" in result.stdout
     assert f"--from doc-lattice=={__version__}" in result.stdout
     assert "git+" not in result.stdout
+    narration = " ".join(result.stderr.split())
+    assert f"exact pinned version {__version__} is published on PyPI" in narration
+    assert "tag is pushed" not in narration
 
 
 def test_init_skips_existing_config_but_still_prints(tmp_path: Path, monkeypatch):

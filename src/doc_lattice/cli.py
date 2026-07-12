@@ -619,7 +619,8 @@ def init(
         _err.print(
             "Add the pre-commit block under `repos:`, save the workflow as "
             ".github/workflows/doc-lattice.yml, and make sure the "
-            f"v{__version__} tag is pushed so the pinned snippets resolve."
+            f"exact pinned version {__version__} is published on PyPI so the "
+            "snippets resolve."
         )
     raise typer.Exit(0)
 
