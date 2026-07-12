@@ -4,7 +4,10 @@ import re
 import tomllib
 
 _VERSION_HEADING = re.compile(r"^##\s*\[(?P<version>\d+\.\d+\.\d+)\]", re.MULTILINE)
-_PINNED_REF = re.compile(r"doc-lattice(?:==|@v)(?P<version>\d+\.\d+\.\d+)")
+_PINNED_REF = re.compile(
+    r"(?<![A-Za-z0-9._-])doc-lattice(?:==|@v)"
+    r"(?P<version>\d+\.\d+\.\d+)(?![A-Za-z0-9._+-])"
+)
 _ANY_HEADING = re.compile(r"^##\s*\[", re.MULTILINE)
 
 

@@ -136,6 +136,26 @@ def test_readme_duplicate_stale_version_across_pin_syntaxes_yields_one_message()
     assert "0.3.0" in messages[0]
 
 
+def test_readme_ignores_pin_substrings_in_other_distribution_names():
+    readme = (
+        "uvx --from other-doc-lattice==0.3.0 other-doc-lattice\n"
+        "uvx --from xdoc-lattice==0.3.0 xdoc-lattice\n"
+        "uvx --from other-doc-lattice@v0.3.0 other-doc-lattice\n"
+        "uvx --from xdoc-lattice@v0.3.0 xdoc-lattice\n"
+    )
+    assert check_version_consistency("0.4.0", _PYPROJECT, _CHANGELOG, readme) == []
+
+
+def test_readme_ignores_extended_version_tokens():
+    readme = (
+        "uvx --from doc-lattice==0.3.0.1 doc-lattice\n"
+        "uvx --from doc-lattice==0.3.0rc1 doc-lattice\n"
+        "uvx --from doc-lattice@v0.3.0.1 doc-lattice\n"
+        "uvx --from doc-lattice@v0.3.0rc1 doc-lattice\n"
+    )
+    assert check_version_consistency("0.4.0", _PYPROJECT, _CHANGELOG, readme) == []
+
+
 def test_readme_without_pin_is_consistent():
     readme = "# doc-lattice\n\nNo install instructions here.\n"
     assert check_version_consistency("0.4.0", _PYPROJECT, _CHANGELOG, readme) == []
