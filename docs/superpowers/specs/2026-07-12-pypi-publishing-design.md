@@ -76,11 +76,13 @@ The existing Hatchling configuration already creates a platform-independent whee
 distribution name, import name, minimum Python version, license, author, and runtime dependencies
 declared in `pyproject.toml`.
 
-The source distribution will use an explicit Hatch include set so it contains only the material
-needed to inspect, test, and rebuild the package: `src`, `tests`, `LICENSE`, `README.md`, and
-`pyproject.toml`. Repository caches, internal agent instructions, CI files, development logs, and
-design history are excluded. Both the wheel and source distribution must pass `twine check`, and
-the wheel must install and report `1.0.0` on Python 3.13.
+The source distribution will use an explicit Hatch include set for the material needed to inspect,
+test, and rebuild the package: `src`, `tests`, `LICENSE`, `README.md`, and `pyproject.toml`.
+Hatchling also always includes the repository `.gitignore`, which is an accepted backend-required
+root file alongside generated `PKG-INFO`. An artifact-level test enforces that no other repository
+files are present; caches, internal agent instructions, CI files, development logs, and design
+history remain excluded. Both the wheel and source distribution must pass `twine check`, and the
+wheel must install and report `1.0.0` on Python 3.13.
 
 Project URLs may be expanded with source, issue tracker, changelog, and release links, but no new
 runtime metadata system or dynamic versioning is introduced for this release.

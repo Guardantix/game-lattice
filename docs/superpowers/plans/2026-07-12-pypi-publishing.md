@@ -502,9 +502,10 @@ tar -tzf "${dist_dir}/doc_lattice-0.9.0.tar.gz"
 unzip -l "${dist_dir}/doc_lattice-0.9.0-py3-none-any.whl"
 ```
 
-Expected: `twine check` passes; the sdist contains only the selected repository paths plus
-generated package metadata; the wheel contains `doc_lattice`, its metadata, license, and console
-entry point.
+Expected: `twine check` passes; the sdist contains the selected repository paths, generated
+`PKG-INFO`, and Hatchling's required `.gitignore`, with an artifact-level test enforcing that no
+other repository files are present; the wheel contains `doc_lattice`, its metadata, license, and
+console entry point.
 
 - [ ] **Step 6: Commit packaging metadata**
 
@@ -718,7 +719,9 @@ unzip -l dist/doc_lattice-1.0.0-py3-none-any.whl
 ```
 
 Expected: exactly one sdist and one `py3-none-any` wheel; metadata checks pass; the sdist has only
-the selected source paths; the wheel has no tests, repository cache, workflow, or internal docs.
+the selected source paths, generated `PKG-INFO`, and Hatchling's required `.gitignore`, with the
+artifact-level test rejecting every other repository file; the wheel has no tests, repository
+cache, workflow, or internal docs.
 
 - [ ] **Step 3: Install the wheel on the minimum Python and smoke-test the entry point**
 
