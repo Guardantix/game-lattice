@@ -92,25 +92,7 @@ jobs:
           VERSION: ${{ steps.target.outputs.version }}
         run: |
           git fetch --tags --force
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            tagged="$(git show "${TAG}:src/doc_lattice/__init__.py" | sed -n 's/^__version__ = "\(.*\)"/\1/p')"
-            tagged_sha="$(git rev-list -n 1 "${TAG}")"
-            if [ "${tagged}" != "${VERSION}" ]; then
-              echo "::error::Tag ${TAG} points at version '${tagged}', not ${VERSION}."
-              exit 1
-            elif [ "${tagged_sha}" = "${GITHUB_SHA}" ]; then
-              echo "Tag ${TAG} already identifies this commit; retrying release work."
-              echo "proceed=true" >> "$GITHUB_OUTPUT"
-              echo "create_tag=false" >> "$GITHUB_OUTPUT"
-            else
-              echo "Tag ${TAG} already exists at version ${VERSION}; ordinary no-op."
-              echo "proceed=false" >> "$GITHUB_OUTPUT"
-              echo "create_tag=false" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            echo "proceed=true" >> "$GITHUB_OUTPUT"
-            echo "create_tag=true" >> "$GITHUB_OUTPUT"
-          fi
+          uv run --no-sync python scripts/release_gate.py
 
       - name: Re-assert version sync
         if: steps.gate.outputs.proceed == 'true'
@@ -155,14 +137,13 @@ jobs:
         run: |
           uvx --python 3.13 --from "git+https://github.com/Guardantix/doc-lattice@${TAG}" doc-lattice --version
 
-  publish:
-    name: Publish to PyPI
+  build-release:
+    name: Build release distributions
     needs: release
     if: needs.release.outputs.proceed == 'true'
     runs-on: ubuntu-latest
-    environment: pypi
     permissions:
-      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -172,7 +153,28 @@ jobs:
         run: uv build
       - name: Validate distributions
         run: uvx --from twine twine check dist/*
+      - name: Upload distributions
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: [release, build-release]
+    if: needs.release.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-distributions
+          path: dist/
       - name: Publish distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
         with:
           skip-existing: true

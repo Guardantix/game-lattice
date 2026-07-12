@@ -4,7 +4,7 @@
 
 **Goal:** Ship `doc-lattice` 1.0.0 to PyPI through GitHub Trusted Publishing and make exact PyPI pins the default generated installation path.
 
-**Architecture:** Keep the existing `release` job responsible for version health, smoke tests, the Git tag, and the GitHub Release. Add a dependent, least-privilege `publish` job that checks out the exact tag, validates distributions, and uploads through OIDC; pure Python tests cover scaffold and version-pin behavior, while static workflow-contract tests cover the release wiring and retry invariants.
+**Architecture:** Keep `release` responsible for version health, smoke tests, the Git tag, and the GitHub Release. A dependent unprivileged job checks out the exact tag, builds and validates distributions, and uploads one artifact. The final OIDC job only downloads that artifact and publishes it; executable Git-repository tests cover gate behavior and static contracts cover every workflow boundary.
 
 **Tech Stack:** Python 3.13+, Hatchling, uv, pytest, ruamel.yaml, GitHub Actions, PyPA `gh-action-pypi-publish`, PyPI Trusted Publishing.
 
@@ -18,8 +18,10 @@
 - `src/doc_lattice/cli.py`: pass the plain package version into scaffold generation.
 - `src/doc_lattice/version_check.py`: recognize both PyPI and tagged-Git README pins.
 - `tests/test_scaffold.py`, `tests/test_cli.py`, `tests/test_version_check.py`: behavior tests for consumer-facing pins.
-- `.github/workflows/ci.yml`: retry-safe tag gate, job outputs, idempotent GitHub Release, and Trusted Publishing job.
-- `tests/test_release_workflow.py`: static contract tests for release and publish workflow structure.
+- `scripts/release_gate.py`: stdlib-only release decision logic, including the first-parent version check.
+- `.github/workflows/ci.yml`: retry-safe release, unprivileged artifact build, and OIDC publish-only jobs.
+- `tests/test_release_gate.py`: executable release-state tests using temporary Git repositories.
+- `tests/test_release_workflow.py`: static contracts for permissions, dependencies, immutable action pins, and artifact wiring.
 - `pyproject.toml`: explicit sdist contents, expanded PyPI project URLs, and version 1.0.0.
 - `tests/test_package_metadata.py`: packaging configuration contract.
 - `src/doc_lattice/__init__.py`, `uv.lock`, `CHANGELOG.md`, `README.md`, `RELEASING.md`: synchronized release state and operator/user documentation.
@@ -30,7 +32,9 @@
 - Follow red-green-refactor for Python behavior and static configuration contracts: add one focused failing test, run it, implement the minimum change, and rerun it.
 - Do not publish from the development machine and do not add a PyPI token. The first real upload happens only after merge through the configured `pypi` environment.
 - Do not move or reuse `v0.9.0`. The new release is `v1.0.0`.
-- Keep release and publish permissions separate: `contents: write` belongs only to `release`; `id-token: write` belongs only to `publish`.
+- Keep permissions separate: `release` has only `contents: write`, `build-release` only
+  `contents: read`, and `publish` only `id-token: write`.
+- Pin artifact upload, artifact download, and PyPI publication actions to reviewed full commit SHAs.
 - Run pytest as `env -u FORCE_COLOR uv run --locked --group dev pytest`; the developer shell may export color-forcing variables that make Rich output assertions unreliable.
 
 ---
@@ -254,87 +258,41 @@ git commit -m "feat: validate PyPI version pins"
 ### Task 3: Add a retry-safe Trusted Publishing workflow
 
 **Files:**
+- Create: `scripts/release_gate.py`
+- Create: `tests/test_release_gate.py`
 - Create: `tests/test_release_workflow.py`
-- Modify: `.github/workflows/ci.yml:59-140`
+- Modify: `.github/workflows/ci.yml:59-180`
 
-- [ ] **Step 1: Add static workflow-contract tests**
+- [ ] **Step 1: Add executable gate and static workflow-contract tests**
 
-Create `tests/test_release_workflow.py` with:
+In `tests/test_release_gate.py`, invoke `scripts/release_gate.py` in temporary real Git
+repositories. Cover the complete output pair for an existing current tag retry, an existing older
+tag no-op, an absent tag whose first parent already declares the version, an absent tag whose
+parent declares another version, and an absent tag whose parent lacks the version file. Also assert
+that a mismatched tagged version and malformed current or tagged source produce a GitHub error and
+exit nonzero.
 
-```python
-"""Contract tests for release and PyPI publishing automation."""
+In `tests/test_release_workflow.py`, load `ci.yml` with `ruamel.yaml` and assert:
 
-from pathlib import Path
+- release outputs and idempotent tag/GitHub Release behavior remain intact;
+- the gate fetches tags and invokes `scripts/release_gate.py` with the runner environment;
+- `build-release` needs `release`, checks out the exact release tag, has only `contents: read`,
+  builds, validates, and uploads one named `dist/` artifact with `if-no-files-found: error`;
+- artifact upload/download and PyPI publish actions use the reviewed 40-character SHAs;
+- `publish` needs both earlier jobs, has only `id-token: write`, and has exactly two non-shell
+  steps: download the named artifact to `dist/`, then publish it with `skip-existing: true`.
 
-from ruamel.yaml import YAML
-
-_ROOT = Path(__file__).resolve().parents[1]
-_WORKFLOW_TEXT = (_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-_WORKFLOW = YAML(typ="safe").load(_WORKFLOW_TEXT)
-
-
-def _named_step(job: dict, name: str) -> dict:
-    return next(step for step in job["steps"] if step.get("name") == name)
-
-
-def test_release_exposes_publish_coordination_outputs():
-    release = _WORKFLOW["jobs"]["release"]
-    assert release["outputs"] == {
-        "proceed": "${{ steps.gate.outputs.proceed }}",
-        "create_tag": "${{ steps.gate.outputs.create_tag }}",
-        "version": "${{ steps.target.outputs.version }}",
-        "tag": "${{ steps.target.outputs.tag }}",
-    }
-
-
-def test_release_gate_distinguishes_retry_from_ordinary_merge():
-    gate = _named_step(_WORKFLOW["jobs"]["release"], "Tag-health gate")["run"]
-    assert 'tagged_sha="$(git rev-list -n 1 "${TAG}")"' in gate
-    assert '[ "${tagged_sha}" = "${GITHUB_SHA}" ]' in gate
-    assert 'echo "proceed=true" >> "$GITHUB_OUTPUT"' in gate
-    assert 'echo "create_tag=false" >> "$GITHUB_OUTPUT"' in gate
-
-
-def test_tag_creation_and_github_release_are_idempotent():
-    release = _WORKFLOW["jobs"]["release"]
-    create_tag = _named_step(release, "Create and push the tag")
-    assert create_tag["if"] == "steps.gate.outputs.create_tag == 'true'"
-    notes = _named_step(release, "Publish release notes")["run"]
-    assert 'gh release view "${TAG}"' in notes
-    assert 'gh release create "${TAG}"' in notes
-
-
-def test_publish_job_uses_exact_tag_and_least_privilege_oidc():
-    publish = _WORKFLOW["jobs"]["publish"]
-    assert publish["needs"] == "release"
-    assert publish["if"] == "needs.release.outputs.proceed == 'true'"
-    assert publish["environment"] == "pypi"
-    assert publish["permissions"] == {"id-token": "write"}
-    checkout = publish["steps"][0]
-    assert checkout["uses"] == "actions/checkout@v4"
-    assert checkout["with"]["ref"] == "${{ needs.release.outputs.tag }}"
-
-
-def test_publish_job_builds_checks_and_uploads_idempotently():
-    publish = _WORKFLOW["jobs"]["publish"]
-    build = _named_step(publish, "Build distributions")["run"]
-    check = _named_step(publish, "Validate distributions")["run"]
-    upload = _named_step(publish, "Publish distributions to PyPI")
-    assert build == "uv build"
-    assert check == "uvx --from twine twine check dist/*"
-    assert upload["uses"] == "pypa/gh-action-pypi-publish@release/v1"
-    assert upload["with"]["skip-existing"] is True
-```
-
-- [ ] **Step 2: Run the workflow tests and verify RED**
+- [ ] **Step 2: Run the focused tests and verify RED**
 
 ```bash
-uv run --locked --group dev pytest tests/test_release_workflow.py -q
+env -u FORCE_COLOR uv run --locked --group dev pytest \
+  tests/test_release_gate.py tests/test_release_workflow.py -q --no-cov
 ```
 
-Expected: failures because `release.outputs` and the `publish` job do not exist.
+Expected: failures because the script and build job do not exist, the workflow still has inline
+gate logic, and the OIDC job still builds package code with a mutable publish-action ref.
 
-- [ ] **Step 3: Expose release outputs and make the gate retry-aware**
+- [ ] **Step 3: Implement and wire the release gate**
 
 Add this mapping to the `release` job after `runs-on`:
 
@@ -346,30 +304,19 @@ Add this mapping to the `release` job after `runs-on`:
       tag: ${{ steps.target.outputs.tag }}
 ```
 
+Create a stdlib-only `scripts/release_gate.py` that reads `TAG`, `VERSION`, `GITHUB_SHA`, and
+`GITHUB_OUTPUT`, inspects the checked-out Git repository, and writes both `proceed` and
+`create_tag` for every healthy state. Validate the current version source before deciding. For an
+existing tag, compare its declared version and commit. For an absent tag, compare the first
+parent's declared version; a missing parent version file means the current commit introduced the
+version, while malformed source or unexpected Git/read errors fail clearly.
+
 Replace the `Tag-health gate` shell body with:
 
 ```yaml
         run: |
           git fetch --tags --force
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            tagged="$(git show "${TAG}:src/doc_lattice/__init__.py" | sed -n 's/^__version__ = "\(.*\)"/\1/p')"
-            tagged_sha="$(git rev-list -n 1 "${TAG}")"
-            if [ "${tagged}" != "${VERSION}" ]; then
-              echo "::error::Tag ${TAG} points at version '${tagged}', not ${VERSION}."
-              exit 1
-            elif [ "${tagged_sha}" = "${GITHUB_SHA}" ]; then
-              echo "Tag ${TAG} already identifies this commit; retrying release work."
-              echo "proceed=true" >> "$GITHUB_OUTPUT"
-              echo "create_tag=false" >> "$GITHUB_OUTPUT"
-            else
-              echo "Tag ${TAG} already exists at version ${VERSION}; ordinary no-op."
-              echo "proceed=false" >> "$GITHUB_OUTPUT"
-              echo "create_tag=false" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            echo "proceed=true" >> "$GITHUB_OUTPUT"
-            echo "create_tag=true" >> "$GITHUB_OUTPUT"
-          fi
+          uv run --no-sync python scripts/release_gate.py
 ```
 
 Change the tag-creation step condition to:
@@ -392,19 +339,18 @@ Replace the `Publish release notes` shell body with:
           fi
 ```
 
-- [ ] **Step 5: Add the dependent Trusted Publishing job**
+- [ ] **Step 5: Split unprivileged build from OIDC publication**
 
 Append this job to `.github/workflows/ci.yml`:
 
 ```yaml
-  publish:
-    name: Publish to PyPI
+  build-release:
+    name: Build release distributions
     needs: release
     if: needs.release.outputs.proceed == 'true'
     runs-on: ubuntu-latest
-    environment: pypi
     permissions:
-      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -414,8 +360,29 @@ Append this job to `.github/workflows/ci.yml`:
         run: uv build
       - name: Validate distributions
         run: uvx --from twine twine check dist/*
+      - name: Upload distributions
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: [release, build-release]
+    if: needs.release.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-distributions
+          path: dist/
       - name: Publish distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
         with:
           skip-existing: true
 ```
@@ -423,17 +390,21 @@ Append this job to `.github/workflows/ci.yml`:
 - [ ] **Step 6: Run workflow tests and validate YAML**
 
 ```bash
-uv run --locked --group dev pytest tests/test_release_workflow.py -q
+env -u FORCE_COLOR uv run --locked --group dev pytest \
+  tests/test_release_gate.py tests/test_release_workflow.py -q --no-cov
 uv run pre-commit run check-yaml --files .github/workflows/ci.yml
 ```
 
-Expected: all five tests pass and `check-yaml` passes.
+Expected: all gate and workflow tests pass and `check-yaml` passes.
 
 - [ ] **Step 7: Commit release automation**
 
 ```bash
-git add .github/workflows/ci.yml tests/test_release_workflow.py
-git commit -m "ci: publish releases to PyPI with OIDC"
+git add .github/workflows/ci.yml scripts/release_gate.py \
+  tests/test_release_gate.py tests/test_release_workflow.py \
+  docs/superpowers/specs/2026-07-12-pypi-publishing-design.md \
+  docs/superpowers/plans/2026-07-12-pypi-publishing.md
+git commit -m "fix: isolate PyPI publishing credentials"
 ```
 
 ---
@@ -641,14 +612,16 @@ stored in GitHub.
 3. Ensure the matching changelog section is non-empty; its body becomes the GitHub Release notes.
 4. Run the full local verification commands documented below, open a PR, and get CI green.
 5. Merge to `main`. After quality jobs pass, the release job smoke-tests the commit, creates
-   `vX.Y.Z`, and creates the GitHub Release. The dependent publish job checks out that tag,
-   builds and validates both distributions, and uploads them to PyPI through OIDC.
+   `vX.Y.Z`, and creates the GitHub Release. The unprivileged build job checks out that tag,
+   builds and validates both distributions, and uploads one workflow artifact. The OIDC publish
+   job only downloads that artifact and uploads it to PyPI.
 6. Confirm `uvx doc-lattice --version` prints the released version from PyPI.
 
 An ordinary merge without a version bump is a no-op. A rerun for a tag that identifies the same
-commit resumes release and publish work; an existing PyPI file is skipped. A tag for the same
-version at an older commit remains a no-op. A tag whose source declares another version fails the
-release gate.
+commit resumes release, build, and publish work; an existing PyPI file is skipped. A tag for the
+same version at an older commit remains a no-op. When the tag is absent, a first parent that
+already declares the version also makes a later commit a no-op. A tag whose source declares
+another version and malformed version source fail the release gate.
 
 If a release fails after its tag is pushed, rerun the same workflow. Do not move the tag and do
 not delete or replace uploaded PyPI files. If published contents are wrong, fix them and release
@@ -658,9 +631,9 @@ the next version.
 
 ```bash
 env -u FORCE_COLOR uv run --locked --group dev pytest
-uv run --locked --group dev ruff check src tests
-uv run --locked --group dev ruff format --check src tests
-uv run --locked --group dev ty check src
+uv run --locked --group dev ruff check src tests scripts/release_gate.py
+uv run --locked --group dev ruff format --check src tests scripts/release_gate.py
+uv run --locked --group dev ty check src scripts/release_gate.py
 uv run --locked --group dev python scripts/check_typing_boundaries.py src
 uv run --locked --group dev python scripts/check_version_sync.py
 uv build
@@ -726,9 +699,9 @@ git commit -m "chore: prepare 1.0.0 PyPI release"
 
 ```bash
 env -u FORCE_COLOR uv run --locked --group dev pytest
-uv run --locked --group dev ruff check src tests
-uv run --locked --group dev ruff format --check src tests
-uv run --locked --group dev ty check src
+uv run --locked --group dev ruff check src tests scripts/release_gate.py
+uv run --locked --group dev ruff format --check src tests scripts/release_gate.py
+uv run --locked --group dev ty check src scripts/release_gate.py
 uv run --locked --group dev python scripts/check_typing_boundaries.py src
 uv run --locked --group dev python scripts/check_version_sync.py
 ```
@@ -772,7 +745,7 @@ to the approved PyPI publishing scope.
 
 - [ ] **Step 5: Post-merge verification**
 
-After GitHub reports that `release` and `publish` succeeded:
+After GitHub reports that `release`, `build-release`, and `publish` succeeded:
 
 ```bash
 uvx --refresh doc-lattice --version

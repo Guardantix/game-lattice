@@ -9,7 +9,7 @@
 Publish `doc-lattice` as a PyPI project so adopters can install a released wheel with
 `uvx`, `pipx`, or `pip` instead of cloning and building a pinned Git revision. Preserve the
 existing version guard, tag creation, GitHub Release, and release smoke tests while adding a
-credential-free PyPI publication stage.
+PyPI publication stage with no stored credential and a minimal OIDC trust boundary.
 
 The maintainer has completed the one-time external setup:
 
@@ -20,39 +20,54 @@ The maintainer has completed the one-time external setup:
 ## Release Architecture
 
 The existing `release` job remains responsible for deciding whether the current `main` commit
-is a new release, smoke-testing it, creating `v1.0.0`, and creating the GitHub Release. A new
-`publish` job depends on `release`, receives the release decision and tag through job outputs,
-and publishes distributions built from that exact tag.
+is a new release, smoke-testing it, creating `v1.0.0`, and creating the GitHub Release. It exposes
+the release decision and exact tag through job outputs. A dependent `build-release` job checks
+out that tag, builds and validates the wheel and source distribution, and uploads `dist/` as one
+workflow artifact. The final `publish` job downloads that artifact and uploads it to PyPI.
 
 The jobs intentionally use separate permissions:
 
-- `release` retains `contents: write` for tags and GitHub Releases;
-- `publish` receives only `id-token: write` and uses the protected `pypi` environment.
+- `release` retains only `contents: write` for tags and GitHub Releases;
+- `build-release` has only `contents: read` and runs package build and validation code;
+- `publish` receives only `id-token: write`, uses the protected `pypi` environment, and runs no
+  repository or package code.
 
-The publish job checks out the tag reported by the release job, builds with `uv build`, validates
-the artifacts with `twine check`, and uploads them with
-`pypa/gh-action-pypi-publish@release/v1`. Trusted Publishing supplies a short-lived credential;
-the repository stores no PyPI token. The publish action uses `skip-existing: true` so retrying an
+Artifact transfer and publication actions are pinned to immutable commits:
+
+- `actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02`;
+- `actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093`;
+- `pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b`.
+
+The OIDC-capable job has exactly two steps: download the named distribution artifact to `dist/`,
+then invoke the pinned PyPA publisher. Trusted Publishing supplies a short-lived credential; the
+repository stores no PyPI token. The publish action uses `skip-existing: true` so retrying an
 already-completed upload succeeds without attempting to replace immutable PyPI files.
 
 ## Release Gate and Retry Semantics
 
-The tag-health gate distinguishes three healthy states and one error state:
+The tag-health gate is a small standard-library Python script exercised against real temporary
+Git repositories. It validates the current source and distinguishes four healthy states and one
+error state:
 
-1. If the target tag does not exist, the job marks the release as new, runs all release steps,
-   creates the tag, creates the GitHub Release, and allows PyPI publication.
-2. If the target tag exists at the workflow's `GITHUB_SHA` and declares the target version, the
+1. If the target tag exists at the workflow's `GITHUB_SHA` and declares the target version, the
    run is a retry. Tag creation is skipped, GitHub Release creation is made idempotent, and PyPI
    publication is allowed. This recovers from a failure after the tag was pushed.
-3. If the target tag declares the target version but points at an older commit, the current push
+2. If the target tag declares the target version but points at an older commit, the current push
    is an ordinary merge without a version bump. Release and publish work are skipped.
-4. If the tag's source declares a different version, the job fails because the tag is corrupt or
+3. If the target tag is absent and the first parent already declares the target version, the
+   current push is a later unchanged-version commit. Release and publish work are skipped so it
+   cannot claim a tag that is unexpectedly missing.
+4. If the target tag is absent and the first parent declares a different version, or has no
+   version file, the current commit introduced the version. The job creates the tag and continues
+   through GitHub Release, build, and publication.
+5. If the tag's source declares a different version, the job fails because the tag is corrupt or
    was reused.
 
-The release job exposes at least `proceed`, `create_tag`, `version`, and `tag`. The publish job
-runs only when `proceed` is true. These rules ensure a distribution is always built from the same
-commit named by its Git tag and prevent a later `main` commit from being published under an old
-version.
+Malformed current, tagged, or parent version source and unexpected Git/read errors fail clearly;
+they are never interpreted as healthy states. The release job exposes at least `proceed`,
+`create_tag`, `version`, and `tag`. The build and publish jobs run only when `proceed` is true.
+These rules ensure a distribution is always built from the same commit named by its Git tag and
+prevent a later `main` commit from being published under an old version.
 
 ## Package Contents and Metadata
 
@@ -94,22 +109,25 @@ and post-release smoke command.
 
 ## Failure Handling
 
-- Build or metadata validation failure prevents upload and leaves existing PyPI files unchanged.
+- Build or metadata validation failure prevents the artifact from reaching the OIDC-capable job
+  and leaves existing PyPI files unchanged.
 - Trusted Publisher mismatch or missing OIDC permission fails only the publish job with no fallback
   to a stored token.
 - A successful tag followed by a failed GitHub Release or PyPI upload is recoverable by rerunning
   the same workflow at the same commit.
 - PyPI's immutable files are never overwritten; a genuinely bad published release requires a new
   version.
-- An ordinary merge with no version bump remains a release no-op.
+- An ordinary merge with no version bump remains a release no-op, even when its expected tag is
+  unexpectedly absent.
 
 ## Testing and Acceptance
 
 Automated tests will verify the generated pre-commit and CI snippets use the exact
 `doc-lattice==1.0.0` PyPI requirement and no longer emit a Git source. Version-sync tests continue
-to cover all declared sources. Static workflow tests will assert the publish job dependency,
-environment, least-privilege OIDC permission, tagged checkout, artifact validation, official
-publish action, and retry setting.
+to cover all declared sources. Executable release-gate tests use real Git repositories to cover
+the tag retry, older-tag no-op, missing-tag parent checks, and corrupt-source failure. Static
+workflow tests assert exact-tag checkout in the unprivileged build job, artifact validation and
+transfer, immutable action pins, and the two-step OIDC publish-only boundary.
 
 The implementation is complete when:
 
