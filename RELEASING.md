@@ -64,6 +64,8 @@ Build and validate exactly the expected artifacts, then smoke-test the wheel in 
 3.13 environment:
 
 ```bash
+set -euo pipefail
+
 dist_dir="$(mktemp -d)"
 version="$(uv run --locked python -c 'from doc_lattice import __version__; print(__version__)')"
 sdist="${dist_dir}/doc_lattice-${version}.tar.gz"
