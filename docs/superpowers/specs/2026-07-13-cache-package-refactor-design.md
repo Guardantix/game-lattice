@@ -9,7 +9,7 @@ unchanged; only the internal module layout described here replaces it.
 
 ## 1. Goal and scope
 
-`src/doc_lattice/cache.py` (406 lines) holds one class, `LoadCache`, that mixes four kinds of
+`src/doc_lattice/cache.py` (407 lines) holds one class, `LoadCache`, that mixes four kinds of
 responsibility: disk I/O (cache path resolution, read and validation, atomic write, the stderr
 diagnostic), pure persistence logic (the pydantic schema, DTO reconstruction, entry construction),
 pure run-local bookkeeping (entries, root claims, LRU ledger maintenance, eviction), and impure
