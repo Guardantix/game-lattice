@@ -89,10 +89,11 @@ serves the engine and never imports the loader or parser layers.
   today's `tests/test_cache.py`) keeps working unchanged. `orchestrate` imports the `store` and
   `lookup` submodules directly for their functions.
 
-  To be explicit about the contract: `doc_lattice.cache` is an internal module of a CLI tool
-  (no `__all__`, no documented Python API), so its import surface is not a compatibility
-  promise. The removals of `LoadCache` and `is_empty` are deliberate and get no deprecation
-  shim; every name that survives the refactor stays importable from `doc_lattice.cache`.
+  To be explicit about the contract: `doc_lattice.cache` defines `__all__` as the exact 13-name
+  internal facade marker and pinned refactor contract. It still has no documented external Python
+  API, and neither the module nor its import surface is a public compatibility promise. The
+  removals of `LoadCache` and `is_empty` are deliberate and get no deprecation shim; every name
+  that survives the refactor stays importable from `doc_lattice.cache`.
 
 Deletions: the `LoadCache` class, and its `is_empty` property (test-only today, no production
 caller; the new tests assert on `RunState` and `StoreSnapshot` directly). The in-method lazy
@@ -222,19 +223,16 @@ Tests mirror the new modules as flat files, matching the repo's flat `tests/` di
   write-failure diagnostic (including under `PYTHONWARNINGS=error`); temp-file cleanup; and
   no-write-when-unchanged via an identical baseline.
 - **`tests/test_cache_state.py`**: pure, no `tmp_path`: `begin` from `None` and from a snapshot;
-  claim, replace, and discovered tracking; LRU touch and eviction at `MAX_STAT_ROOTS`; scrubbing
-  of evicted roots; claim withdrawal for undiscovered paths; dropping unclaimed entries.
+  claim, replace, and discovered tracking; cross-root claim withdrawal and reclamation; LRU touch
+  and eviction at `MAX_STAT_ROOTS`; scrubbing of evicted roots; dropping unclaimed entries.
 - **`tests/test_cache_lookup.py`**: stat-tier hit, mismatch, and absent record; the raced-stat
   `UnreadableDocError`; verify-tier hit carrying `refreshed_stat`; miss carrying the same-handle
   stat; `trust_stat=False` never calling `path.stat()`.
-- **`tests/test_cache.py` (retained, slimmed)**: mirrors `cache/__init__.py` and keeps the
-  cross-module lifecycle tests that only make sense end to end: warm run writes nothing,
-  per-root stats isolation across two roots, presence reclamation across roots, error parity,
-  the hypothesis edit-sequence property test, and cached-versus-uncached CLI byte-equality.
-  These migrate mostly unchanged since they already exercise the flow through `orchestrate` and
-  the CLI. It also gains a facade compatibility test asserting that every surviving legacy name
-  (the five schema models, `cache_home`, `cache_path`) still imports from `doc_lattice.cache`,
-  so the per-module test migration cannot silently shrink the facade.
+- **`tests/test_cache.py` (retained, slimmed)**: mirrors `cache/__init__.py` and keeps end-to-end
+  coverage for a cold current-root ledger tail, a fully warm no-write run, hypothesis
+  cached-versus-uncached edit parity, a `require_verified` same-stat rewrite, the documented
+  trust-stat unreadable caveat, the documented schema-valid corruption limit, and the exact
+  13-name facade import contract.
 
 Existing tests are migrated to the module that now owns the behavior, not duplicated. Coverage
 stays at or above the current level (99.40 percent); the pure modules should reach 100 percent

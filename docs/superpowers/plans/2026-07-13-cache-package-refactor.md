@@ -97,7 +97,10 @@ git commit -m "refactor: convert cache module to a package, imports depth-adjust
 - Create: `tests/test_cache_schema.py`
 - Modify: `src/doc_lattice/cache/__init__.py` (remove the models, import from `.schema`, delegate `_reconstruct`/`_refresh_stat`/`record_miss` bodies to the codec)
 - Modify: `tests/test_cache.py` (move `_sample_cache_file` + `test_cache_file_round_trips_through_json` out)
-- Modify: `tests/test_loader.py` (move `test_file_sections_survive_serialization_round_trip` out; keep `_markdown_body` because `test_derive_file_sections_matches_inline_derivation` and others still use it — check with grep first, and if nothing else uses it, move it too)
+- Modify: `tests/test_loader.py` (move
+  `test_file_sections_survive_serialization_round_trip` out; keep `_markdown_body` because
+  `test_derive_file_sections_matches_inline_derivation` and others still use it; check with grep
+  first, and if nothing else uses it, move it too)
 
 **Interfaces:**
 - Consumes: `doc_lattice.model.FileSections`, `SectionRecord`, `NodeMeta`, `ParsedDoc`.
