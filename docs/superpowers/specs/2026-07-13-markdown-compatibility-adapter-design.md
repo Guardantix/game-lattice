@@ -39,11 +39,11 @@ fenced code are not addressable. Inline Markdown remains raw heading content for
 the current public semantics. Explicit marker syntax and validation remain doc-lattice extensions,
 not parser plugins.
 
-The exact parser compatibility version is `markdown-it-py==4.2.0`. The adapter configuration uses
-the upstream normalization, block, fence, and ATX-heading rules. It disables unrelated block and
-inline parsing and replaces paragraph token creation with a fallback that advances one source line.
-That fallback does not recognize Markdown. It only lets the upstream fence and heading rules scan
-the document without building unused paragraph or inline tokens.
+The exact parser compatibility version is `markdown-it-py==4.2.0`. The adapter normalizes newlines
+through the shared doc-lattice helper, builds the line offsets and indentation fields required by
+the pinned parser, and invokes the upstream fence and ATX-heading block rules without modification.
+It does not run unrelated container, paragraph, or inline rules. The local source-map state locates
+candidate lines and tracks fence jumps; all Markdown recognition remains in the upstream rules.
 
 ## 3. Adapter interface and responsibilities
 
@@ -66,12 +66,13 @@ def anchor_ids(headings: list[Heading]) -> list[str]: ...
 def strip_heading_anchor(text: str) -> str: ...
 ```
 
-`extract_headings` normalizes newlines through the existing shared normalizer, parses the focused
-token stream, accepts only level-zero ATX heading tokens whose source line begins with `#`, converts
-the zero-based token source map to a 1-based line, and applies the existing trailing-anchor rule to
-the raw inline token content. Missing or malformed token structure is an adapter invariant failure,
-not user input failure; the exact parser version and direct tests make that state actionable during
-development rather than silently changing document identity.
+`extract_headings` normalizes newlines through the existing shared normalizer, constructs a minimal
+`StateBlock`-compatible source map, and scans only the first nonspace marker of each source line.
+Fence and heading candidates are delegated to the pinned upstream block rules. The adapter accepts
+only column-zero headings, converts their zero-based source line to a 1-based line, and applies the
+existing trailing-anchor rule to raw inline content. Missing or malformed heading tokens are an
+adapter invariant failure, not user input failure; the exact parser version and direct tests make
+that state actionable during development rather than silently changing document identity.
 
 `github_slug` implements the pinned upstream operation: lowercase, remove every code point in the
 generated strip class, then replace each ASCII space with `-`. `anchor_ids` owns document-order
@@ -134,7 +135,7 @@ Each case contains Markdown input plus expected heading records, addressable ids
 Collectively the cases cover:
 
 - both fence characters, mismatched and short closers, trailing closer content, indentation, and
-  unclosed fences;
+  unclosed fences, including four-space fence markers treated as indented code;
 - ATX closing sequences and literal `#` content;
 - valid, invalid, nontrailing, and closing-sequence-adjacent explicit anchors;
 - repeated slugs, collisions with already suffixed slugs, and marker headings that reserve slugs;
@@ -155,12 +156,12 @@ the median of seven warmed `derive_file_sections` calls and reports document byt
 count, sample timings, and median milliseconds. It accepts an optional baseline so maintainers can
 fail the benchmark when the candidate median exceeds the baseline by more than 20 percent.
 
-The pre-change implementation measured between 115 ms and 163 ms locally for a 434 KB document
-with 10,000 headings and 271 fenced blocks. A full CommonMark tokenization measured about 308 ms
-and is rejected. A prototype of the focused parser configuration measured about 72 ms before slug
-and span assembly. The completed adapter must be benchmarked with the committed script against the
-same main-branch implementation and stay within the 20 percent threshold. Timings are evidence for
-the pull request, not a hardware-dependent CI test.
+On the committed 736,570-byte, 41,354-line corpus, main measured a median 88.568 ms and the
+completed adapter measured 97.259 ms with the same executable. The 9.813 percent regression passes
+the fixed 20 percent threshold. A focused parse using the generic upstream `StateBlock` measured
+171.370 ms and was rejected. Building only the source maps required by the unmodified heading and
+fence rules removed that regression. Timings are pull-request evidence, not a hardware-dependent CI
+test.
 
 ## 8. Documentation and dependency changes
 
@@ -171,9 +172,10 @@ generator. `CHANGELOG.md` records the internal refactor and unchanged public sem
 
 ## 9. Alternatives considered
 
-1. **Focused `markdown-it-py` adapter, selected.** It supplies maintained CommonMark fence and ATX
-   rules plus exact source maps, is pure Python, is already present transitively, and becomes an
-   explicit exact dependency. Disabling irrelevant parsing meets the performance requirement.
+1. **Focused `markdown-it-py` rule adapter, selected.** It supplies maintained CommonMark fence and
+   ATX rules while a minimal local state supplies exact source maps. It is pure Python and becomes
+   an explicit exact dependency. Skipping unrelated block and inline rules meets the performance
+   requirement.
 2. **Full `markdown-it-py` CommonMark parse.** This is simpler configuration, but measured roughly
    2.7 times the current extractor on the representative document and materially regresses a core
    load path.

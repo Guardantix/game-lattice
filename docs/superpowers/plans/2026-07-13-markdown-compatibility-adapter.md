@@ -8,10 +8,11 @@
 a versioned compatibility adapter while preserving section identity, spans, cache structure, and
 load performance.
 
-**Architecture:** A focused `markdown-it-py==4.2.0` parser supplies only the upstream normalization,
-fence, and ATX-heading rules, while `markdown_compat.py` exposes the narrow heading/anchor/slug
-interface consumed by `sections.py`. A maintenance script evaluates `github-slugger@2.0.0` over all
-Unicode scalar values and deterministically generates the Python slug-strip pattern.
+**Architecture:** The unmodified fence and ATX-heading rules from `markdown-it-py==4.2.0` operate on
+a minimal adapter-owned source map, while `markdown_compat.py` exposes the narrow
+heading/anchor/slug interface consumed by `sections.py`. A maintenance script evaluates
+`github-slugger@2.0.0` over all Unicode scalar values and deterministically generates the Python
+slug-strip pattern.
 
 **Tech Stack:** Python 3.13+, markdown-it-py 4.2.0, pytest, Node/npm for maintenance verification,
 uv, Ruff, ty.
@@ -34,7 +35,7 @@ uv, Ruff, ty.
 - Modify `README.md`, `CLAUDE.md`, and `CHANGELOG.md`: compatibility contract and maintenance docs.
 - Modify the design spec to expose the shared first-line anchor-stripping helper.
 
-### Task 1: Golden heading extraction through the focused parser
+### Task 1: Golden heading extraction through pinned upstream rules
 
 **Files:**
 - Create: `tests/fixtures/markdown_compatibility.json`
@@ -247,6 +248,11 @@ def extract_headings(body: str) -> list[Heading]:
 ```
 
 Malformed token pairs raise `RuntimeError` naming `MARKDOWN_COMPAT_VERSION`.
+
+Implementation note: Task 4's benchmark rejected this generic parser state. The completed adapter
+instead constructs the exact line-offset and indentation fields required by `StateBlock`, then
+invokes the pinned upstream `fence` and `heading` rules directly. This keeps Markdown recognition
+upstream-owned while avoiding unrelated block and inline parsing.
 
 - [x] **Step 5: Run the extraction test and existing section tests**
 
@@ -480,26 +486,26 @@ git commit -m "test: preserve cache structure across markdown adapter"
 - Create: `tests/test_bench_sections.py`
 - Create: `scripts/bench_sections.py`
 
-- [ ] **Step 1: Write failing benchmark-helper tests**
+- [x] **Step 1: Write failing benchmark-helper tests**
 
 Test that `build_document(100)` contains exactly 100 addressable headings plus fenced hidden
 headings, and that `regression_percent(100.0, 120.0) == 20.0`. Test the threshold accepts 120 ms
 against a 100 ms baseline and rejects 120.01 ms.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run: `UV_CACHE_DIR=/tmp/uv-cache uv run --group dev pytest tests/test_bench_sections.py -v`
 
 Expected: collection fails because `scripts/bench_sections.py` is absent.
 
-- [ ] **Step 3: Implement benchmark CLI**
+- [x] **Step 3: Implement benchmark CLI**
 
 Implement `build_document`, `regression_percent`, and `benchmark`. Default to 10,000 headings,
 seven measured runs, and two warmups. CLI options are `--headings`, `--runs`, `--baseline-ms`, and
 `--max-regression-percent` (default 20). Print bytes, lines, derived heading count, every sample,
 median milliseconds, and regression. Exit 1 only when the optional baseline threshold is exceeded.
 
-- [ ] **Step 4: Run benchmark on main and candidate implementations**
+- [x] **Step 4: Run benchmark on main and candidate implementations**
 
 Use the committed script against the main checkout's `src` and this worktree's `src`, with the same
 Python executable and default corpus. Record both medians, then run the candidate again with
@@ -507,7 +513,10 @@ Python executable and default corpus. Record both medians, then run the candidat
 
 Expected: candidate median is no more than 20 percent above main and the threshold run exits 0.
 
-- [ ] **Step 5: Commit benchmark**
+Recorded result on the 736,570-byte, 41,354-line default corpus: main median 88.568 ms, candidate
+median 97.259 ms, regression 9.813 percent, threshold passed.
+
+- [x] **Step 5: Commit benchmark**
 
 ```bash
 git add scripts/bench_sections.py tests/test_bench_sections.py
@@ -523,19 +532,20 @@ git commit -m "perf: add section compatibility benchmark"
 - Modify: `docs/superpowers/specs/2026-07-13-markdown-compatibility-adapter-design.md`
 - Modify: `docs/superpowers/plans/2026-07-13-markdown-compatibility-adapter.md`
 
-- [ ] **Step 1: Document the compatibility contract**
+- [x] **Step 1: Document the compatibility contract**
 
 README must state the supported top-level ATX/fence subset, exclusions, explicit marker rule,
 `markdown-it-py==4.2.0`, and `github-slugger@2.0.0`. CLAUDE.md must add `markdown_compat.py`, the
 generated data module, and the generation/check command to its architecture and command sections.
 Add one `[Unreleased]` Changed entry to CHANGELOG.md.
 
-- [ ] **Step 2: Mark completed plan checkboxes and run diff checks**
+- [x] **Step 2: Mark completed plan checkboxes and run diff checks**
 
-Run: `git diff --check` and `rg -n "TBD|TODO|FIXME|—|…"` over all changed documentation and source
-comments. Expected: no findings and exit 0 from `git diff --check`.
+Run: `git diff --check`, `rg -n "T[B]D|T[O]DO|F[I]XME"`, and
+`rg -n -P "\x{2014}|\x{2026}"` over all changed documentation and source comments. Expected: no
+findings and exit 0 from `git diff --check`.
 
-- [ ] **Step 3: Run the full verification matrix**
+- [x] **Step 3: Run the full verification matrix**
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run --group dev pytest
@@ -550,7 +560,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run --group dev python scripts/generate_github_slu
 Expected: every command exits 0, full pytest coverage remains at least 80 percent, and generator
 output confirms exhaustive parity.
 
-- [ ] **Step 4: Review acceptance criteria against authoritative evidence**
+- [x] **Step 4: Review acceptance criteria against authoritative evidence**
 
 Inspect the adapter imports, JSON fixture case names, generated header and check output, README
 version text, cold/warm test output, and benchmark threshold output. Each of issue #88's six
