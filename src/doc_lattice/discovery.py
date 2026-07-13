@@ -25,21 +25,24 @@ def discover_doc_paths(
         project_root: Boundary that resolved document paths must remain inside.
 
     Returns:
-        A sorted, de-duplicated list of markdown file paths. A file that resolves outside
-        the project root (via a symlink or absolute path) is skipped with a warning rather
-        than read, so a silently missing doc does not masquerade as a broken ref later.
+        A sorted list of markdown file paths, de-duplicated by resolved target while
+        retaining the first configured root's unresolved path as document identity. A
+        file that resolves outside the project root (via a symlink or absolute path) is
+        skipped with a warning rather than read, so a silently missing doc does not
+        masquerade as a broken ref later.
     """
     found: set[Path] = set()
+    resolved_targets: set[Path] = set()
     for root in roots:
         if not root.exists():
             continue
-        for path in root.rglob("*.md"):
+        for path in sorted(root.rglob("*.md")):
             if not path.is_file():
                 continue
             if _ignored(path, root, ignore_globs):
                 continue
             try:
-                safe_resolve(path, project_root)
+                resolved = safe_resolve(path, project_root)
             except ValueError:
                 warnings.warn(
                     f"skipping {path}: it escapes the project root via a symlink or "
@@ -47,6 +50,9 @@ def discover_doc_paths(
                     stacklevel=2,
                 )
                 continue
+            if resolved in resolved_targets:
+                continue
+            resolved_targets.add(resolved)
             found.add(path)
     return sorted(found)
 

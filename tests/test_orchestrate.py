@@ -109,7 +109,7 @@ def test_multiple_docs_roots_combine(tmp_path: Path):
 
 
 @pytest.mark.parametrize("cache_enabled", [False, True], ids=["uncached", "cached"])
-def test_load_lattice_includes_in_project_symlink(
+def test_load_lattice_deduplicates_in_project_symlink_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, cache_enabled: bool
 ):
     project_root = tmp_path / "repo"
@@ -122,7 +122,7 @@ def test_load_lattice_includes_in_project_symlink(
     link = docs / "linked.md"
     link.symlink_to(Path("../shared/spec.md"))
 
-    config_lines = ['docs_roots: ["docs"]']
+    config_lines = ['docs_roots: ["docs", "shared"]']
     if cache_enabled:
         config_lines.append("cache_key: symlink-test")
     (project_root / ".doc-lattice.yml").write_text("\n".join(config_lines) + "\n", encoding="utf-8")
