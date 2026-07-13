@@ -3,8 +3,8 @@
 A deterministic, offline traceability engine for design and production documentation.
 
 doc-lattice tracks the dependencies *between* your markdown docs. When a downstream
-document derives from an upstream one (a player-character spec built on the art direction,
-an implementation plan built on a product brief), it records that link in frontmatter. When
+document derives from an upstream one (an integration guide built on an API design, an
+engineering design built on a product brief), it records that link in frontmatter. When
 the upstream changes, doc-lattice tells you exactly which downstream docs went stale, and a
 CI gate keeps stale work from shipping silently.
 
@@ -13,8 +13,8 @@ no database. The dependency graph is derived from your docs on demand, never com
 
 ## The problem it solves
 
-Design docs drift apart. Someone retunes the economy, edits the art direction, or rewrites
-the core loop, and the dozen documents downstream of that decision keep citing the old
+Docs drift apart. Someone changes the API contract, revises a requirement, or reverses an
+architecture decision, and the documents downstream of that decision keep citing the old
 version. Nothing breaks loudly; the docs just quietly disagree, and the drift surfaces as a
 bug, a re-do, or an argument weeks later.
 
@@ -22,6 +22,23 @@ doc-lattice makes those dependencies explicit and *checkable*. Each downstream d
 what it derives from and records a hash of what it last saw. A change upstream that the
 downstream hasn't acknowledged is **drift**, and `check` fails CI on it until a human
 consciously reconciles the link.
+
+## Where it fits
+
+doc-lattice is domain-agnostic: it needs nothing but markdown files with frontmatter. Three
+doc sets it fits naturally:
+
+- **Software product docs.** Product briefs feed engineering designs, which feed runbooks
+  and integration guides. When a requirement changes, `impact` lists every downstream doc
+  that cited it, and `check` keeps the ones that never acknowledged the change from passing
+  CI quietly.
+- **Game studio design docs** (the project's original home). Art direction, economy tuning,
+  and core-loop docs sit upstream of dozens of character, level, and systems specs. One
+  retuned economy value can quietly invalidate a season of downstream work; drift detection
+  surfaces that the day it happens instead of weeks later in a playtest.
+- **Policy and compliance doc sets.** Procedures and checklists derive from a controls
+  document or a policy. An unacknowledged upstream edit there is an audit finding waiting to
+  happen; a CI gate turns it into a red build instead.
 
 ## How it works
 
@@ -78,63 +95,63 @@ structure, independent of drift, and exits 1 on a violation just like `check`.
 
 Two docs. The upstream owns a decision; the downstream depends on it.
 
-`docs/art-direction.md`, the upstream:
+`docs/api-design.md`, the upstream:
 
 ```markdown
 ---
-id: art-direction
+id: api-design
 layer: design
 authority: binding
 ---
-# Art Direction
+# API Design
 
-## Accent Color {#accent}
-Warm amber, used for every interactive highlight.
+## Pagination {#pagination}
+List endpoints use cursor pagination: pass the last item's cursor as `after`.
 ```
 
-`docs/pc-design.md`, which derives from the accent decision:
+`docs/billing-integration-guide.md`, which derives from the pagination decision:
 
 ```markdown
 ---
-id: pc-design
-layer: design
+id: billing-integration-guide
+layer: technical
 authority: derived
 derives_from:
-  - ref: art-direction#accent
-    seen: 7f3a9c2e1b8d4f6a0c5e9d2b7a1f4e8c
-tickets: [PC-228]
+  - ref: api-design#pagination
+    seen: 647cc64481bee8d8541ef7d1733b5204
+tickets: [ENG-412]
 ---
-# Player Character Design
+# Billing Integration Guide
 
-The PC's UI highlights use the accent color.
+Invoice listings page through results with the cursor scheme the API design defines.
 ```
 
-The ref `art-direction#accent` resolves file-scoped: it points at the section in the `art-direction`
-file whose heading carries the `{#accent}` marker. Markers are optional; a heading with no marker is
-addressed by its GitHub slug instead, and the `{#accent}` marker here pins a short stable id
-regardless of the heading's wording. The `seen` hash records the accent text pc-design was last built
-against.
+The ref `api-design#pagination` resolves file-scoped: it points at the section in the
+`api-design` file whose heading carries the `{#pagination}` marker. Markers are optional; a
+heading with no marker is addressed by its GitHub slug instead, and an explicit marker pins
+the id so the ref survives a later rewording of the heading. The `seen` hash records the
+pagination text the guide was last built against.
 
-Now someone changes the accent to "cool teal." The `{#accent}` section's content hash no
-longer matches `seen`, so:
+Now someone switches the API to page-number pagination. The `{#pagination}` section's
+content hash no longer matches `seen`, so:
 
 ```console
 $ doc-lattice check
-STALE         pc-design -> art-direction#accent
+STALE         billing-integration-guide -> api-design#pagination
 
-$ doc-lattice impact art-direction#accent
-pc-design  (docs/pc-design.md)  tickets: PC-228
+$ doc-lattice impact api-design#pagination
+billing-integration-guide  (/work/acme-api/docs/billing-integration-guide.md)  tickets: ENG-412
 ```
 
-`check` exits 1, so CI is now red. A human reviews pc-design against the new accent, updates
-the body if needed, and then locks in the new hash:
+`check` exits 1, so CI is now red. A human reviews the guide against the new pagination
+scheme, updates the body if needed, and then locks in the new hash:
 
 ```console
-$ doc-lattice reconcile pc-design
-reconciled pc-design.md: art-direction#accent
+$ doc-lattice reconcile billing-integration-guide
+reconciled billing-integration-guide.md: api-design#pagination
 
 $ doc-lattice check
-OK            pc-design -> art-direction#accent
+OK            billing-integration-guide -> api-design#pagination
 ```
 
 That edit → `check` → review → `reconcile` loop is the whole workflow. `reconcile` is the
@@ -260,13 +277,13 @@ writes complete.
 | `layer` | optional | `design`, `technical`, or `production`. |
 | `authority` | optional | `binding`, `derived`, or `exploratory`. Ranked by `lint`. |
 | `derives_from` | downstream files | List of `{ ref, seen }` edges. |
-| `derives_from[].ref` | each edge | The upstream id: bare (whole-file target, e.g. `art-direction`) or file-scoped (section target, e.g. `art-direction#accent`). |
+| `derives_from[].ref` | each edge | The upstream id: bare (whole-file target, e.g. `api-design`) or file-scoped (section target, e.g. `api-design#pagination`). |
 | `derives_from[].seen` | each edge | The locked upstream hash, or omitted for a never-reconciled (UNRECONCILED) edge. |
 | `tickets` | optional | Issue ids associated with the doc (used by `impact` and `linear`). |
 
-Section ids are optional: a heading is addressed by its GitHub slug by default (e.g. `## Accent Color`
-resolves to `accent-color`), and an explicit `{#anchor}` marker on the heading wins as an escape hatch for
-a stable id independent of heading text (e.g. `## Accent Color {#accent-hue}`). Section refs are
+Section ids are optional: a heading is addressed by its GitHub slug by default (e.g. `## Error Handling`
+resolves to `error-handling`), and an explicit `{#anchor}` marker on the heading wins as an escape hatch
+for a stable id independent of heading text (e.g. `## Error Handling {#errors}`). Section refs are
 file-scoped (`file#anchor`), so the same anchor in two files does not collide.
 
 ## Configuration
