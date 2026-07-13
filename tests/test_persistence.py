@@ -69,6 +69,38 @@ def test_stage_bytes_cleans_temp_when_file_fsync_fails(tmp_path: Path, monkeypat
     assert list(tmp_path.glob(f"{prefix}*.tmp")) == []
 
 
+def test_stage_bytes_preserves_fsync_error_when_durable_cleanup_sync_fails(
+    tmp_path: Path, monkeypatch
+):
+    destination = tmp_path / "doc.md"
+    prefix = ".doc.md.failed."
+    real_durable_unlink = persistence.durable_unlink
+    cleanup_attempts: list[Path] = []
+    fsync_attempts = 0
+
+    def _fail_fsync(fd: int) -> None:  # noqa: ARG001
+        nonlocal fsync_attempts
+        fsync_attempts += 1
+        if fsync_attempts == 1:
+            raise OSError("stage fsync failed")
+        raise OSError("cleanup sync failed")
+
+    def _observe_cleanup(staged: Path) -> None:
+        cleanup_attempts.append(staged)
+        real_durable_unlink(staged)
+
+    monkeypatch.setattr(persistence.os, "fsync", _fail_fsync)
+    monkeypatch.setattr(persistence, "durable_unlink", _observe_cleanup)
+
+    with pytest.raises(OSError, match="stage fsync failed") as caught:
+        stage_bytes(destination, b"replacement", prefix=prefix)
+
+    assert str(caught.value) == "stage fsync failed"
+    assert len(cleanup_attempts) == 1
+    assert list(tmp_path.glob(f"{prefix}*.tmp")) == []
+    assert any("cleanup sync failed" in note for note in getattr(caught.value, "__notes__", []))
+
+
 def test_replace_staged_publishes_bytes_and_syncs_destination_directory(
     tmp_path: Path, monkeypatch
 ):
@@ -86,6 +118,23 @@ def test_replace_staged_publishes_bytes_and_syncs_destination_directory(
     assert synced == [destination.parent]
 
 
+def test_replace_staged_refuses_different_directories_without_mutation(tmp_path: Path):
+    stage_directory = tmp_path / "staging"
+    destination_directory = tmp_path / "destination"
+    stage_directory.mkdir()
+    destination_directory.mkdir()
+    staged = stage_directory / "doc.md.tmp"
+    destination = destination_directory / "doc.md"
+    staged.write_bytes(b"new")
+    destination.write_bytes(b"original")
+
+    with pytest.raises(ValueError, match="same directory"):
+        replace_staged(staged, destination)
+
+    assert staged.read_bytes() == b"new"
+    assert destination.read_bytes() == b"original"
+
+
 def test_atomic_replace_bytes_replaces_target_and_cleans_stage(tmp_path: Path):
     destination = tmp_path / "doc.md"
     destination.write_bytes(b"old")
@@ -94,6 +143,18 @@ def test_atomic_replace_bytes_replaces_target_and_cleans_stage(tmp_path: Path):
     atomic_replace_bytes(destination, b"new", prefix=prefix)
 
     assert destination.read_bytes() == b"new"
+    assert list(tmp_path.glob(f"{prefix}*.tmp")) == []
+
+
+def test_atomic_replace_bytes_supports_relative_destination(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    destination = Path("doc.md")
+    destination.write_bytes(b"original")
+    prefix = ".doc.md.replace."
+
+    atomic_replace_bytes(destination, b"replacement", prefix=prefix)
+
+    assert destination.read_bytes() == b"replacement"
     assert list(tmp_path.glob(f"{prefix}*.tmp")) == []
 
 
@@ -127,6 +188,53 @@ def test_atomic_replace_bytes_cleans_stage_when_replacement_fails(tmp_path: Path
     assert sync_observations[-1] is False
 
 
+def test_atomic_replace_bytes_preserves_replace_error_when_cleanup_fails(
+    tmp_path: Path, monkeypatch
+):
+    destination = tmp_path / "doc.md"
+    destination.write_bytes(b"original")
+    prefix = ".doc.md.replace."
+    cleanup_attempts: list[Path] = []
+
+    def _fail_replacement(staged: Path, target: Path) -> None:  # noqa: ARG001
+        raise OSError("replace failed")
+
+    def _fail_cleanup_sync(staged: Path) -> None:
+        cleanup_attempts.append(staged)
+        staged.unlink()
+        raise OSError("cleanup sync failed")
+
+    monkeypatch.setattr(persistence, "replace_staged", _fail_replacement)
+    monkeypatch.setattr(persistence, "durable_unlink", _fail_cleanup_sync)
+
+    with pytest.raises(OSError, match="replace failed") as caught:
+        atomic_replace_bytes(destination, b"replacement", prefix=prefix)
+
+    assert str(caught.value) == "replace failed"
+    assert len(cleanup_attempts) == 1
+    assert destination.read_bytes() == b"original"
+    assert list(tmp_path.glob(f"{prefix}*.tmp")) == []
+    assert any("cleanup sync failed" in note for note in getattr(caught.value, "__notes__", []))
+
+
+def test_atomic_replace_bytes_raises_cleanup_error_after_successful_replace(
+    tmp_path: Path, monkeypatch
+):
+    destination = tmp_path / "doc.md"
+    destination.write_bytes(b"original")
+
+    def _fail_cleanup(staged: Path) -> None:
+        assert not staged.exists()
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(persistence, "durable_unlink", _fail_cleanup)
+
+    with pytest.raises(OSError, match="cleanup failed"):
+        atomic_replace_bytes(destination, b"replacement", prefix=".doc.md.replace.")
+
+    assert destination.read_bytes() == b"replacement"
+
+
 def test_atomic_create_bytes_refuses_existing_target_and_cleans_stage(tmp_path: Path):
     destination = tmp_path / "doc.md"
     destination.write_bytes(b"original")
@@ -139,11 +247,64 @@ def test_atomic_create_bytes_refuses_existing_target_and_cleans_stage(tmp_path: 
     assert list(tmp_path.glob(f"{prefix}*.tmp")) == []
 
 
+def test_atomic_create_bytes_preserves_existing_error_when_cleanup_fails(
+    tmp_path: Path, monkeypatch
+):
+    destination = tmp_path / "doc.md"
+    destination.write_bytes(b"original")
+    prefix = ".doc.md.create."
+    link_attempts: list[Path] = []
+    cleanup_attempts: list[Path] = []
+
+    def _fail_existing_link(staged: Path, target: Path) -> None:
+        assert target == destination
+        assert destination.exists()
+        link_attempts.append(staged)
+        raise FileExistsError("target exists")
+
+    def _fail_cleanup_sync(staged: Path) -> None:
+        cleanup_attempts.append(staged)
+        staged.unlink()
+        raise OSError("cleanup sync failed")
+
+    monkeypatch.setattr(persistence.os, "link", _fail_existing_link)
+    monkeypatch.setattr(persistence, "durable_unlink", _fail_cleanup_sync)
+
+    with pytest.raises(FileExistsError) as caught:
+        atomic_create_bytes(destination, b"replacement", prefix=prefix)
+
+    assert str(caught.value) == "target exists"
+    assert len(link_attempts) == 1
+    assert len(cleanup_attempts) == 1
+    assert destination.read_bytes() == b"original"
+    assert list(tmp_path.glob(f"{prefix}*.tmp")) == []
+    assert any("cleanup sync failed" in note for note in getattr(caught.value, "__notes__", []))
+
+
 def test_atomic_create_bytes_creates_absent_target_and_cleans_stage(tmp_path: Path):
     destination = tmp_path / "doc.md"
     prefix = ".doc.md.create."
 
     atomic_create_bytes(destination, b"created", prefix=prefix)
+
+    assert destination.read_bytes() == b"created"
+    assert list(tmp_path.glob(f"{prefix}*.tmp")) == []
+
+
+def test_atomic_create_bytes_raises_cleanup_error_after_successful_create(
+    tmp_path: Path, monkeypatch
+):
+    destination = tmp_path / "doc.md"
+    prefix = ".doc.md.create."
+
+    def _fail_cleanup_sync(staged: Path) -> None:
+        staged.unlink()
+        raise OSError("cleanup sync failed")
+
+    monkeypatch.setattr(persistence, "durable_unlink", _fail_cleanup_sync)
+
+    with pytest.raises(OSError, match="cleanup sync failed"):
+        atomic_create_bytes(destination, b"created", prefix=prefix)
 
     assert destination.read_bytes() == b"created"
     assert list(tmp_path.glob(f"{prefix}*.tmp")) == []

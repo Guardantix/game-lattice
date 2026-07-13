@@ -46,6 +46,14 @@ def sync_directory(path: Path) -> None:
         os.close(fd)
 
 
+def _durable_unlink_preserving_error(staged: Path, primary: OSError) -> None:
+    """Clean a stage without replacing the primary operation error."""
+    try:
+        durable_unlink(staged)
+    except OSError as cleanup_error:
+        primary.add_note(f"durable cleanup failed for {staged}: {cleanup_error}")
+
+
 def stage_bytes(destination: Path, data: bytes, *, prefix: str) -> Path:
     """Write and synchronize bytes to a unique file beside a destination.
 
@@ -68,22 +76,26 @@ def stage_bytes(destination: Path, data: bytes, *, prefix: str) -> Path:
             handle.flush()
             os.fsync(handle.fileno())
         sync_directory(destination.parent)
-    except OSError:
-        staged.unlink(missing_ok=True)
+    except OSError as primary:
+        _durable_unlink_preserving_error(staged, primary)
         raise
     return staged
 
 
 def replace_staged(staged: Path, destination: Path) -> None:
-    """Publish a staged file as a durable atomic replacement.
+    """Publish a same-directory staged file as a durable atomic replacement.
 
     Args:
-        staged: The staged file to publish.
+        staged: The staged file to publish from the destination directory.
         destination: The path to create or replace.
 
     Raises:
+        ValueError: If the staged file is not in the destination directory.
         OSError: If replacement or directory synchronization fails.
     """
+    if staged.parent.absolute() != destination.parent.absolute():
+        msg = "staged and destination paths must be in the same directory"
+        raise ValueError(msg)
     os.replace(staged, destination)  # noqa: PTH105 (required atomic replacement primitive)
     sync_directory(destination.parent)
 
@@ -102,8 +114,10 @@ def atomic_replace_bytes(path: Path, data: bytes, *, prefix: str) -> None:
     staged = stage_bytes(path, data, prefix=prefix)
     try:
         replace_staged(staged, path)
-    finally:
-        durable_unlink(staged)
+    except OSError as primary:
+        _durable_unlink_preserving_error(staged, primary)
+        raise
+    durable_unlink(staged)
 
 
 def atomic_create_bytes(path: Path, data: bytes, *, prefix: str) -> None:
@@ -121,8 +135,10 @@ def atomic_create_bytes(path: Path, data: bytes, *, prefix: str) -> None:
     try:
         os.link(staged, path)
         sync_directory(path.parent)
-    finally:
-        durable_unlink(staged)
+    except OSError as primary:
+        _durable_unlink_preserving_error(staged, primary)
+        raise
+    durable_unlink(staged)
 
 
 def durable_unlink(path: Path) -> None:
