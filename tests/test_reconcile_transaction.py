@@ -1,6 +1,7 @@
 """Tests for durable reconcile transaction recovery."""
 
 import json
+import os
 from dataclasses import FrozenInstanceError, dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -60,8 +61,8 @@ def _write_synthetic_transaction(  # noqa: PLR0913
     docs = root / "docs"
     docs.mkdir()
     destination = docs / "doc.md"
-    before = docs / ".doc.md.before.tmp"
-    after = docs / ".doc.md.after.tmp"
+    before = docs / ".doc.md.doc-lattice-before.before123.tmp"
+    after = docs / ".doc.md.doc-lattice-after.after123.tmp"
     journal = root / RECONCILE_JOURNAL_NAME
     if destination_bytes is not None:
         destination.write_bytes(destination_bytes)
@@ -123,6 +124,104 @@ def test_second_live_reconcile_holder_is_refused(tmp_path: Path):
         assert journal.read_bytes() == journal_bytes
 
 
+def test_lock_unlock_failure_does_not_mask_body_exception(tmp_path: Path, monkeypatch):
+    body_error = ReconcilePersistenceError("body recovery failure")
+    real_close = os.close
+    close_calls: list[int] = []
+
+    def _fail_unlock(fd: int, operation: int) -> None:  # noqa: ARG001
+        if operation == reconcile_transaction.fcntl.LOCK_UN:
+            raise OSError("injected lock release failure")
+
+    def _observe_close(fd: int) -> None:
+        close_calls.append(fd)
+        real_close(fd)
+
+    monkeypatch.setattr(reconcile_transaction.fcntl, "flock", _fail_unlock)
+    monkeypatch.setattr(reconcile_transaction.os, "close", _observe_close)
+
+    with (
+        pytest.raises(ReconcilePersistenceError) as caught,
+        reconcile_lock(tmp_path),
+    ):
+        raise body_error
+
+    assert caught.value is body_error
+    assert any(
+        "lock release" in note and "injected lock release failure" in note
+        for note in getattr(body_error, "__notes__", [])
+    )
+    assert len(close_calls) == 1
+
+
+def test_lock_close_failure_does_not_mask_body_exception(tmp_path: Path, monkeypatch):
+    body_error = ReconcilePersistenceError("body recovery failure")
+    real_close = os.close
+
+    def _fail_close(fd: int) -> None:
+        real_close(fd)
+        raise OSError("injected lock close failure")
+
+    monkeypatch.setattr(reconcile_transaction.os, "close", _fail_close)
+
+    with (
+        pytest.raises(ReconcilePersistenceError) as caught,
+        reconcile_lock(tmp_path),
+    ):
+        raise body_error
+
+    assert caught.value is body_error
+    assert any(
+        "lock close" in note and "injected lock close failure" in note
+        for note in getattr(body_error, "__notes__", [])
+    )
+
+
+def test_lock_unlock_failure_after_success_is_typed_and_still_closes(tmp_path: Path, monkeypatch):
+    real_close = os.close
+    close_calls: list[int] = []
+
+    def _fail_unlock(fd: int, operation: int) -> None:  # noqa: ARG001
+        if operation == reconcile_transaction.fcntl.LOCK_UN:
+            raise OSError("injected lock release failure")
+
+    def _observe_close(fd: int) -> None:
+        close_calls.append(fd)
+        real_close(fd)
+
+    monkeypatch.setattr(reconcile_transaction.fcntl, "flock", _fail_unlock)
+    monkeypatch.setattr(reconcile_transaction.os, "close", _observe_close)
+
+    with (
+        pytest.raises(ReconcilePersistenceError) as caught,
+        reconcile_lock(tmp_path),
+    ):
+        pass
+
+    assert "lock release" in str(caught.value)
+    assert "injected lock release failure" in str(caught.value)
+    assert len(close_calls) == 1
+
+
+def test_lock_close_failure_after_success_is_typed(tmp_path: Path, monkeypatch):
+    real_close = os.close
+
+    def _fail_close(fd: int) -> None:
+        real_close(fd)
+        raise OSError("injected lock close failure")
+
+    monkeypatch.setattr(reconcile_transaction.os, "close", _fail_close)
+
+    with (
+        pytest.raises(ReconcilePersistenceError) as caught,
+        reconcile_lock(tmp_path),
+    ):
+        pass
+
+    assert "lock close" in str(caught.value)
+    assert "injected lock close failure" in str(caught.value)
+
+
 def test_dry_run_refuses_existing_journal_without_mutation(tmp_path: Path):
     document = tmp_path / "doc.md"
     journal = tmp_path / RECONCILE_JOURNAL_NAME
@@ -148,9 +247,9 @@ def test_dry_run_allows_project_without_journal(tmp_path: Path):
 def test_journal_models_are_frozen():
     entry = JournalEntry(
         destination="docs/doc.md",
-        before_path="docs/.doc.md.before.tmp",
+        before_path="docs/.doc.md.doc-lattice-before.before123.tmp",
         before_sha256="a" * 64,
-        after_path="docs/.doc.md.after.tmp",
+        after_path="docs/.doc.md.doc-lattice-after.after123.tmp",
         after_sha256="b" * 64,
     )
     journal = Journal(version=RECONCILE_JOURNAL_VERSION, state="prepared", entries=(entry,))
@@ -171,9 +270,9 @@ def test_journal_models_are_frozen():
 def test_journal_entry_rejects_unknown_field_or_invalid_digest(field: str, value: object):
     payload = {
         "destination": "docs/doc.md",
-        "before_path": "docs/.doc.md.before.tmp",
+        "before_path": "docs/.doc.md.doc-lattice-before.before123.tmp",
         "before_sha256": "a" * 64,
-        "after_path": "docs/.doc.md.after.tmp",
+        "after_path": "docs/.doc.md.doc-lattice-after.after123.tmp",
         "after_sha256": "b" * 64,
     }
     payload[field] = value
@@ -252,6 +351,20 @@ def test_unsupported_journal_version_is_rejected_without_cleanup(tmp_path: Path)
     assert _tree_snapshot(tmp_path) == before
 
 
+@pytest.mark.parametrize("invalid_version", [True, 1.0, "1"])
+def test_journal_version_rejects_non_integer_json_types(tmp_path: Path, invalid_version: object):
+    transaction = _write_synthetic_transaction(tmp_path, state="committed")
+    payload = json.loads(transaction.journal.read_text(encoding="utf-8"))
+    payload["version"] = invalid_version
+    transaction.journal.write_text(json.dumps(payload), encoding="utf-8")
+    before = _tree_snapshot(tmp_path)
+
+    with pytest.raises(ReconcilePersistenceError):
+        recover_transaction(tmp_path)
+
+    assert _tree_snapshot(tmp_path) == before
+
+
 @pytest.mark.parametrize(
     "unsafe_path",
     ["../escape.md", str(Path("/") / "tmp" / "absolute-escape.md")],
@@ -289,6 +402,151 @@ def test_symlink_escape_in_journal_path_is_rejected(tmp_path: Path):
     assert transaction.journal.read_bytes() == journal_bytes
     assert escaped.read_bytes() == b"outside evidence"
     assert transaction.destination.read_bytes() == b"after image\n"
+
+
+@pytest.mark.parametrize("protected_relative", ["README.md", ".git/HEAD"])
+def test_journal_artifact_cannot_name_protected_project_file(
+    tmp_path: Path, protected_relative: str
+):
+    transaction = _write_synthetic_transaction(tmp_path, state="committed")
+    protected = tmp_path / protected_relative
+    protected.parent.mkdir(parents=True, exist_ok=True)
+    protected.write_bytes(b"protected project bytes\n")
+    payload = json.loads(transaction.journal.read_text(encoding="utf-8"))
+    payload["entries"][0]["before_path"] = protected_relative
+    transaction.journal.write_text(json.dumps(payload), encoding="utf-8")
+    before = _tree_snapshot(tmp_path)
+
+    with pytest.raises(ReconcilePersistenceError) as caught:
+        recover_transaction(tmp_path)
+
+    assert "invalid reconcile journal" in str(caught.value)
+    assert str(protected) in str(caught.value)
+    assert _tree_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    "invalid_relative",
+    [
+        "other/.doc.md.doc-lattice-before.token.tmp",
+        "docs/.doc.md.wrong-before.token.tmp",
+        "docs/.doc.md.doc-lattice-before.token.bad",
+        "docs/.doc.md.doc-lattice-before..tmp",
+    ],
+)
+def test_journal_artifact_requires_destination_directory_and_exact_role_name(
+    tmp_path: Path, invalid_relative: str
+):
+    transaction = _write_synthetic_transaction(tmp_path, state="committed")
+    invalid = tmp_path / invalid_relative
+    invalid.parent.mkdir(parents=True, exist_ok=True)
+    invalid.write_bytes(b"before image\n")
+    payload = json.loads(transaction.journal.read_text(encoding="utf-8"))
+    payload["entries"][0]["before_path"] = invalid_relative
+    transaction.journal.write_text(json.dumps(payload), encoding="utf-8")
+    before = _tree_snapshot(tmp_path)
+
+    with pytest.raises(ReconcilePersistenceError) as caught:
+        recover_transaction(tmp_path)
+
+    assert "invalid reconcile journal" in str(caught.value)
+    assert invalid_relative in str(caught.value)
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_existing_journal_artifact_symlink_is_rejected_without_mutation(tmp_path: Path):
+    transaction = _write_synthetic_transaction(tmp_path, state="committed")
+    target = transaction.destination.parent / "symlink-target.bin"
+    target.write_bytes(b"before image\n")
+    symlink = transaction.destination.parent / ".doc.md.doc-lattice-before.symlink123.tmp"
+    symlink.symlink_to(target.name)
+    payload = json.loads(transaction.journal.read_text(encoding="utf-8"))
+    payload["entries"][0]["before_path"] = symlink.relative_to(tmp_path).as_posix()
+    transaction.journal.write_text(json.dumps(payload), encoding="utf-8")
+    journal_bytes = transaction.journal.read_bytes()
+
+    with pytest.raises(ReconcilePersistenceError, match="symlink"):
+        recover_transaction(tmp_path)
+
+    assert symlink.is_symlink()
+    assert target.read_bytes() == b"before image\n"
+    assert transaction.journal.read_bytes() == journal_bytes
+
+
+def test_self_referential_artifact_symlink_is_typed_invalid_journal(
+    tmp_path: Path,
+):
+    transaction = _write_synthetic_transaction(tmp_path, state="committed")
+    loop = transaction.destination.parent / ".doc.md.doc-lattice-before.loop123.tmp"
+    loop.symlink_to(loop.name)
+    payload = json.loads(transaction.journal.read_text(encoding="utf-8"))
+    payload["entries"][0]["before_path"] = loop.relative_to(tmp_path).as_posix()
+    transaction.journal.write_text(json.dumps(payload), encoding="utf-8")
+    journal_bytes = transaction.journal.read_bytes()
+
+    with pytest.raises(ReconcilePersistenceError) as caught:
+        recover_transaction(tmp_path)
+
+    assert "invalid reconcile journal" in str(caught.value)
+    assert "symlink" in str(caught.value).lower()
+    assert loop.is_symlink()
+    assert transaction.journal.read_bytes() == journal_bytes
+
+
+def test_cleanup_rejects_artifact_replaced_by_symlink_during_authentication(
+    tmp_path: Path, monkeypatch
+):
+    transaction = _write_synthetic_transaction(tmp_path, state="committed")
+    target = transaction.destination.parent / "substitution-target.bin"
+    target.write_bytes(b"before image\n")
+    journal_bytes = transaction.journal.read_bytes()
+    real_file_sha256 = reconcile_transaction.file_sha256
+    before_reads = 0
+
+    def _substitute_on_delete_check(path: Path) -> str:
+        nonlocal before_reads
+        if path == transaction.before:
+            before_reads += 1
+            if before_reads == 2:
+                path.unlink()
+                path.symlink_to(target.name)
+                return real_file_sha256(target)
+        return real_file_sha256(path)
+
+    monkeypatch.setattr(reconcile_transaction, "file_sha256", _substitute_on_delete_check)
+
+    with pytest.raises(ReconcilePersistenceError) as caught:
+        recover_transaction(tmp_path)
+
+    assert "artifact" in str(caught.value)
+    assert "manual" in str(caught.value)
+    assert transaction.before.is_symlink()
+    assert target.read_bytes() == b"before image\n"
+    assert transaction.journal.read_bytes() == journal_bytes
+
+
+@pytest.mark.parametrize("nonregular_kind", ["directory", "fifo"])
+def test_existing_nonregular_journal_artifact_is_rejected_without_mutation(
+    tmp_path: Path, nonregular_kind: str
+):
+    transaction = _write_synthetic_transaction(tmp_path, state="committed")
+    nonregular = transaction.destination.parent / ".doc.md.doc-lattice-before.nonregular123.tmp"
+    if nonregular_kind == "directory":
+        nonregular.mkdir()
+    else:
+        os.mkfifo(nonregular)
+    payload = json.loads(transaction.journal.read_text(encoding="utf-8"))
+    payload["entries"][0]["before_path"] = nonregular.relative_to(tmp_path).as_posix()
+    transaction.journal.write_text(json.dumps(payload), encoding="utf-8")
+    journal_bytes = transaction.journal.read_bytes()
+
+    with pytest.raises(ReconcilePersistenceError) as caught:
+        recover_transaction(tmp_path)
+
+    assert "invalid reconcile journal" in str(caught.value)
+    assert "nonregular" in str(caught.value)
+    assert nonregular.exists()
+    assert transaction.journal.read_bytes() == journal_bytes
 
 
 @pytest.mark.parametrize("artifact_field", ["before_path", "after_path"])
@@ -330,8 +588,8 @@ def test_paths_cannot_alias_across_journal_entries(tmp_path: Path, duplicate_rol
     first = payload["entries"][0]
     second = dict(first)
     second_destination = tmp_path / "docs" / "second.md"
-    second_before = tmp_path / "docs" / ".second.md.before.tmp"
-    second_after = tmp_path / "docs" / ".second.md.after.tmp"
+    second_before = tmp_path / "docs" / ".second.md.doc-lattice-before.before456.tmp"
+    second_after = tmp_path / "docs" / ".second.md.doc-lattice-after.after456.tmp"
     second_destination.write_bytes(b"second destination\n")
     second_before.write_bytes(b"second before\n")
     second_after.write_bytes(b"second after\n")
@@ -407,9 +665,12 @@ def test_committed_recovery_never_reads_or_changes_destination(tmp_path: Path, m
         state="committed",
         destination_bytes=b"newer unrelated bytes\n",
     )
+    real_file_sha256 = reconcile_transaction.file_sha256
 
     def _unexpected_digest(path: Path) -> str:
-        pytest.fail(f"committed recovery unexpectedly read destination {path}")
+        if path == transaction.destination:
+            pytest.fail(f"committed recovery unexpectedly read destination {path}")
+        return real_file_sha256(path)
 
     monkeypatch.setattr(reconcile_transaction, "file_sha256", _unexpected_digest)
 
@@ -420,6 +681,104 @@ def test_committed_recovery_never_reads_or_changes_destination(tmp_path: Path, m
     assert not transaction.before.exists()
     assert not transaction.after.exists()
     assert not transaction.journal.exists()
+
+
+@pytest.mark.parametrize("state", ["prepared", "committed"])
+@pytest.mark.parametrize("role", ["before", "after"])
+def test_cleanup_rejects_correctly_named_artifact_with_wrong_digest(
+    tmp_path: Path, state: JournalState, role: str
+):
+    transaction = _write_synthetic_transaction(
+        tmp_path,
+        state=state,
+        destination_bytes=b"before image\n" if state == "prepared" else b"after image\n",
+    )
+    forged = getattr(transaction, role)
+    forged.write_bytes(f"forged {role} artifact\n".encode())
+    before = _tree_snapshot(tmp_path)
+
+    with pytest.raises(ReconcilePersistenceError) as caught:
+        recover_transaction(tmp_path)
+
+    message = str(caught.value)
+    assert str(forged) in message
+    assert "digest mismatch" in message
+    assert "manual" in message
+    assert "rerun 'doc-lattice reconcile --recover'" in message
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_prepared_recovery_authenticates_all_artifacts_before_rollback_mutation(
+    tmp_path: Path,
+):
+    transaction = _write_synthetic_transaction(tmp_path, state="prepared")
+    transaction.after.write_bytes(b"forged after artifact\n")
+    before = _tree_snapshot(tmp_path)
+
+    with pytest.raises(ReconcilePersistenceError) as caught:
+        recover_transaction(tmp_path)
+
+    message = str(caught.value)
+    assert str(transaction.destination) in message
+    assert str(transaction.after) in message
+    assert "digest mismatch" in message
+    assert "manual" in message
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_prepared_rollback_rejects_before_symlink_substitution_before_replace(
+    tmp_path: Path, monkeypatch
+):
+    transaction = _write_synthetic_transaction(tmp_path, state="prepared")
+    target = transaction.destination.parent / "rollback-substitution-target.bin"
+    target.write_bytes(b"before image\n")
+    journal_bytes = transaction.journal.read_bytes()
+    real_file_sha256 = reconcile_transaction.file_sha256
+    before_reads = 0
+
+    def _substitute_on_rollback_check(path: Path) -> str:
+        nonlocal before_reads
+        if path == transaction.before:
+            before_reads += 1
+            if before_reads == 2:
+                path.unlink()
+                path.symlink_to(target.name)
+                return real_file_sha256(target)
+        return real_file_sha256(path)
+
+    monkeypatch.setattr(reconcile_transaction, "file_sha256", _substitute_on_rollback_check)
+
+    with pytest.raises(ReconcilePersistenceError) as caught:
+        recover_transaction(tmp_path)
+
+    assert "artifact changed" in str(caught.value)
+    assert transaction.destination.read_bytes() == b"after image\n"
+    assert not transaction.destination.is_symlink()
+    assert transaction.before.is_symlink()
+    assert target.read_bytes() == b"before image\n"
+    assert transaction.journal.read_bytes() == journal_bytes
+
+
+def test_cleanup_preserves_unreadable_artifact_and_journal(tmp_path: Path, monkeypatch):
+    transaction = _write_synthetic_transaction(tmp_path, state="committed")
+    before = _tree_snapshot(tmp_path)
+    real_file_sha256 = reconcile_transaction.file_sha256
+
+    def _fail_artifact_read(path: Path) -> str:
+        if path == transaction.before:
+            raise OSError("injected artifact read failure")
+        return real_file_sha256(path)
+
+    monkeypatch.setattr(reconcile_transaction, "file_sha256", _fail_artifact_read)
+
+    with pytest.raises(ReconcilePersistenceError) as caught:
+        recover_transaction(tmp_path)
+
+    message = str(caught.value)
+    assert str(transaction.before) in message
+    assert "injected artifact read failure" in message
+    assert "manual" in message
+    assert _tree_snapshot(tmp_path) == before
 
 
 def test_committed_recovery_allows_both_staged_artifacts_to_be_absent(tmp_path: Path):
@@ -434,6 +793,31 @@ def test_committed_recovery_allows_both_staged_artifacts_to_be_absent(tmp_path: 
 
     assert result.action == "cleaned_committed"
     assert transaction.destination.read_bytes() == b"after image\n"
+    assert not transaction.journal.exists()
+
+
+def test_absent_artifact_is_never_passed_to_unlink(tmp_path: Path, monkeypatch):
+    transaction = _write_synthetic_transaction(
+        tmp_path,
+        state="committed",
+        before_present=False,
+        after_present=False,
+    )
+    real_unlink = reconcile_transaction.durable_unlink
+    injected_paths: list[Path] = []
+
+    def _inject_before_unlink(path: Path) -> None:
+        if path in (transaction.before, transaction.after) and not path.exists():
+            injected_paths.append(path)
+            path.write_bytes(b"forged race artifact\n")
+        real_unlink(path)
+
+    monkeypatch.setattr(reconcile_transaction, "durable_unlink", _inject_before_unlink)
+
+    result = recover_transaction(tmp_path)
+
+    assert result.action == "cleaned_committed"
+    assert injected_paths == []
     assert not transaction.journal.exists()
 
 
@@ -516,8 +900,8 @@ def test_prepared_rollback_processes_destinations_in_reverse_order(tmp_path: Pat
     destinations: list[Path] = []
     for name in ("first.md", "second.md"):
         destination = docs / name
-        before = docs / f".{name}.before.tmp"
-        after = docs / f".{name}.after.tmp"
+        before = docs / f".{name}.doc-lattice-before.before789.tmp"
+        after = docs / f".{name}.doc-lattice-after.after789.tmp"
         before_bytes = f"before {name}\n".encode()
         after_bytes = f"after {name}\n".encode()
         destination.write_bytes(after_bytes)
@@ -691,15 +1075,16 @@ def test_retry_syncs_absent_isolated_stage_parent_before_removing_journal(
 ):
     transaction = _write_synthetic_transaction(tmp_path, state="committed")
     isolated = tmp_path / "isolated-stage"
-    other = tmp_path / "other-stage"
     isolated.mkdir()
-    other.mkdir()
-    failed_unlink_artifact = isolated / ".doc.md.before.tmp"
-    other_absent_artifact = other / ".doc.md.after.tmp"
+    isolated_destination = isolated / "doc.md"
+    failed_unlink_artifact = isolated / ".doc.md.doc-lattice-before.failed123.tmp"
+    other_absent_artifact = isolated / ".doc.md.doc-lattice-after.absent123.tmp"
     failed_unlink_artifact.write_bytes(b"before image\n")
+    transaction.destination.unlink()
     transaction.before.unlink()
     transaction.after.unlink()
     payload = json.loads(transaction.journal.read_text(encoding="utf-8"))
+    payload["entries"][0]["destination"] = isolated_destination.relative_to(tmp_path).as_posix()
     payload["entries"][0]["before_path"] = failed_unlink_artifact.relative_to(tmp_path).as_posix()
     payload["entries"][0]["after_path"] = other_absent_artifact.relative_to(tmp_path).as_posix()
     transaction.journal.write_text(json.dumps(payload), encoding="utf-8")
@@ -741,8 +1126,81 @@ def test_retry_syncs_absent_isolated_stage_parent_before_removing_journal(
     result = recover_transaction(tmp_path)
 
     assert result.action == "cleaned_committed"
-    assert sync_order == [isolated, other, tmp_path]
+    assert sync_order == [isolated, isolated, tmp_path]
     assert not transaction.journal.exists()
+
+
+@pytest.mark.parametrize(
+    ("state", "expected_action"),
+    [("prepared", "rolled_back"), ("committed", "cleaned_committed")],
+)
+def test_absent_artifacts_and_parent_sync_existing_ancestor_before_journal_removal(
+    tmp_path: Path,
+    monkeypatch,
+    state: JournalState,
+    expected_action: str,
+):
+    transaction = _write_synthetic_transaction(tmp_path, state=state)
+    for path in (transaction.destination, transaction.before, transaction.after):
+        path.unlink()
+    transaction.destination.parent.rmdir()
+    real_sync = reconcile_transaction.sync_directory
+    real_unlink = reconcile_transaction.durable_unlink
+    events: list[tuple[str, Path]] = []
+
+    def _record_sync(path: Path) -> None:
+        events.append(("sync", path))
+        real_sync(path)
+
+    def _observe_unlink(path: Path) -> None:
+        if path == transaction.journal:
+            events.append(("journal_unlink", path))
+        real_unlink(path)
+
+    monkeypatch.setattr(reconcile_transaction, "sync_directory", _record_sync)
+    monkeypatch.setattr(reconcile_transaction, "durable_unlink", _observe_unlink)
+
+    result = recover_transaction(tmp_path)
+
+    assert result.action == expected_action
+    assert events[:3] == [
+        ("sync", tmp_path),
+        ("sync", tmp_path),
+        ("journal_unlink", transaction.journal),
+    ]
+    assert not transaction.destination.parent.exists()
+    assert not transaction.journal.exists()
+
+
+def test_missing_artifact_parent_replaced_by_symlink_is_not_synchronized(
+    tmp_path: Path, monkeypatch
+):
+    transaction = _write_synthetic_transaction(tmp_path, state="committed")
+    for path in (transaction.destination, transaction.before, transaction.after):
+        path.unlink()
+    artifact_parent = transaction.destination.parent
+    artifact_parent.rmdir()
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-sync-target"
+    outside.mkdir()
+    journal_bytes = transaction.journal.read_bytes()
+    real_sync = reconcile_transaction.sync_directory
+
+    def _substitute_parent_during_absence_sync(path: Path) -> None:
+        if path == tmp_path and not artifact_parent.is_symlink():
+            artifact_parent.symlink_to(outside, target_is_directory=True)
+        real_sync(path)
+
+    monkeypatch.setattr(
+        reconcile_transaction, "sync_directory", _substitute_parent_during_absence_sync
+    )
+
+    with pytest.raises(ReconcilePersistenceError) as caught:
+        recover_transaction(tmp_path)
+
+    assert "not a directory" in str(caught.value)
+    assert artifact_parent.is_symlink()
+    assert list(outside.iterdir()) == []
+    assert transaction.journal.read_bytes() == journal_bytes
 
 
 def test_one_shot_post_unlink_journal_sync_failure_is_healed(tmp_path: Path, monkeypatch):
@@ -822,3 +1280,120 @@ def test_persistent_post_unlink_journal_sync_failure_restores_exact_journal_for_
     assert result.action == "cleaned_committed"
     assert not transaction.journal.exists()
     assert list(tmp_path.glob(f"{RECONCILE_JOURNAL_NAME}.*.tmp")) == []
+
+
+def test_journal_restoration_collision_is_preserved_and_reported(tmp_path: Path, monkeypatch):
+    transaction = _write_synthetic_transaction(
+        tmp_path,
+        state="committed",
+        before_present=False,
+        after_present=False,
+    )
+    collision_bytes = b"external journal collision\n"
+    real_sync = persistence.sync_directory
+
+    def _fail_original_journal_sync(path: Path) -> None:
+        if path == tmp_path:
+            raise OSError("original journal cleanup sync failure")
+        real_sync(path)
+
+    def _create_collision_then_fail_resync(path: Path) -> None:
+        if path == tmp_path:
+            transaction.journal.write_bytes(collision_bytes)
+            raise OSError("secondary journal resync failure")
+        real_sync(path)
+
+    monkeypatch.setattr(persistence, "sync_directory", _fail_original_journal_sync)
+    monkeypatch.setattr(reconcile_transaction, "sync_directory", _create_collision_then_fail_resync)
+
+    with pytest.raises(ReconcilePersistenceError) as caught:
+        recover_transaction(tmp_path)
+
+    message = str(caught.value)
+    assert "exact recovery journal could not be restored" in message
+    assert "collision" in message
+    assert "secondary journal resync failure" in message
+    assert "remains for retry" not in message
+    assert transaction.journal.read_bytes() == collision_bytes
+
+
+def test_journal_collision_created_during_successful_resync_is_not_accepted(
+    tmp_path: Path, monkeypatch
+):
+    transaction = _write_synthetic_transaction(
+        tmp_path,
+        state="committed",
+        before_present=False,
+        after_present=False,
+    )
+    collision_bytes = b"resync-time journal collision\n"
+    real_sync = persistence.sync_directory
+
+    def _fail_original_journal_sync(path: Path) -> None:
+        if path == tmp_path:
+            raise OSError("original journal cleanup sync failure")
+        real_sync(path)
+
+    def _create_collision_during_resync(path: Path) -> None:
+        if path == tmp_path:
+            transaction.journal.write_bytes(collision_bytes)
+        real_sync(path)
+
+    monkeypatch.setattr(persistence, "sync_directory", _fail_original_journal_sync)
+    monkeypatch.setattr(reconcile_transaction, "sync_directory", _create_collision_during_resync)
+
+    with pytest.raises(ReconcilePersistenceError) as caught:
+        recover_transaction(tmp_path)
+
+    assert "exact recovery journal could not be restored" in str(caught.value)
+    assert "collision" in str(caught.value)
+    assert "remains for retry" not in str(caught.value)
+    assert transaction.journal.read_bytes() == collision_bytes
+
+
+def test_journal_restoration_read_failure_is_reported_without_overwrite(
+    tmp_path: Path, monkeypatch
+):
+    transaction = _write_synthetic_transaction(
+        tmp_path,
+        state="committed",
+        before_present=False,
+        after_present=False,
+    )
+    journal_bytes = transaction.journal.read_bytes()
+    real_read_bytes = Path.read_bytes
+    real_sync = persistence.sync_directory
+    journal_reads = 0
+
+    def _fail_original_journal_sync(path: Path) -> None:
+        if path == tmp_path:
+            raise OSError("original journal cleanup sync failure")
+        real_sync(path)
+
+    def _recreate_then_fail_resync(path: Path) -> None:
+        if path == tmp_path:
+            transaction.journal.write_bytes(journal_bytes)
+            raise OSError("secondary journal resync failure")
+        real_sync(path)
+
+    def _fail_restoration_read(path: Path) -> bytes:
+        nonlocal journal_reads
+        if path == transaction.journal:
+            journal_reads += 1
+            if journal_reads >= 2:
+                raise OSError("injected journal restoration read failure")
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(persistence, "sync_directory", _fail_original_journal_sync)
+    monkeypatch.setattr(reconcile_transaction, "sync_directory", _recreate_then_fail_resync)
+    monkeypatch.setattr(Path, "read_bytes", _fail_restoration_read)
+
+    with pytest.raises(ReconcilePersistenceError) as caught:
+        recover_transaction(tmp_path)
+
+    message = str(caught.value)
+    assert "exact recovery journal could not be restored" in message
+    assert "injected journal restoration read failure" in message
+    assert "secondary journal resync failure" in message
+    assert "remains for retry" not in message
+    assert real_read_bytes(transaction.journal) == journal_bytes
