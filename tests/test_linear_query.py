@@ -152,11 +152,15 @@ def test_build_query_filter_shape():
 def test_build_query_caps_first_at_batch_size():
     plan = build_query("PC", [1, 2])
     issues_line = next(
-        line for line in plan.document.splitlines() if line.strip().startswith("issues(")
+        (line for line in plan.document.splitlines() if line.strip().startswith("issues(")),
+        None,
     )
+    assert issues_line is not None, "Query document is missing the 'issues(' line"
     children_line = next(
-        line for line in plan.document.splitlines() if line.strip().startswith("children(")
+        (line for line in plan.document.splitlines() if line.strip().startswith("children(")),
+        None,
     )
+    assert children_line is not None, "Query document is missing the 'children(' line"
     # first must equal BATCH_SIZE so a full chunk returns on one page (no pagination).
     assert f"first: {BATCH_SIZE}" in issues_line
     assert f"children(first: {CHILD_TICKET_LIMIT})" in children_line
