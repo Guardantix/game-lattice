@@ -15,7 +15,7 @@ from .model import (
     TargetId,
     parse_ref,
 )
-from .sections import anchor_ids, build_toc, section_span, split_body_lines
+from .sections import anchor_ids, build_toc, section_spans, split_body_lines
 
 
 def derive_file_sections(body: str) -> FileSections:
@@ -35,8 +35,9 @@ def derive_file_sections(body: str) -> FileSections:
     total_lines = _line_count(body)
     toc = build_toc(body)
     records: list[SectionRecord] = []
-    for heading_index, anchor in enumerate(anchor_ids(toc)):
-        start_line, end_line = section_span(toc, heading_index, total_lines)
+    anchors = anchor_ids(toc)
+    spans = section_spans(toc, total_lines)
+    for anchor, (start_line, end_line) in zip(anchors, spans, strict=True):
         records.append(SectionRecord(anchor=anchor, start=start_line, end=end_line))
     return FileSections(total_lines=total_lines, sections=tuple(records))
 
