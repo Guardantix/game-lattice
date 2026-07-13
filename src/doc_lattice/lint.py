@@ -68,9 +68,14 @@ def lint_json(result: LintResult) -> dict:
     }
 
 
+_AUTHORITY_RANK: dict[Authority, int] = {
+    authority: rank for rank, authority in enumerate(AUTHORITY_LADDER)
+}
+
+
 def _rank(authority: Authority) -> int:
     """Return the ladder position of an authority; higher means stronger."""
-    return AUTHORITY_LADDER.index(authority)
+    return _AUTHORITY_RANK[authority]
 
 
 def _target_authority(lattice: Lattice, target_id: TargetId) -> Authority | None:
