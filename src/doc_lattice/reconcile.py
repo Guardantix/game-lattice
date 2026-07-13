@@ -11,6 +11,7 @@ from ruamel.yaml.error import YAMLError
 
 from .error_types import BrokenRefError, UnreadableDocError, ValidationError
 from .frontmatter_parser import split_frontmatter
+from .hashing import normalize_newlines
 from .model import Lattice, TargetId, parse_ref
 from .resolve import cached_target_hash
 
@@ -171,7 +172,8 @@ def plan_rewrites(
     """Compute exact-byte fresh-read reconcile rewrites before any write lands.
 
     The injected reader retains the exact source bytes for later fingerprinting and
-    restoration while UTF-8 text is decoded only for ``apply_reconcile``.
+    restoration while UTF-8 text is decoded and newline-normalized only for
+    ``apply_reconcile``.
 
     Args:
         plan: The planned mapping of downstream file path to ``{ref: new_seen}``.
@@ -189,7 +191,7 @@ def plan_rewrites(
     for path, updates in plan.items():
         try:
             before = read_bytes(path)
-            fresh = before.decode("utf-8")
+            fresh = normalize_newlines(before.decode("utf-8"))
         except (OSError, UnicodeDecodeError) as exc:
             msg = f"cannot read {path} to reconcile: {exc}"
             raise UnreadableDocError(msg) from exc

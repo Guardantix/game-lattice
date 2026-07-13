@@ -32,7 +32,12 @@ def _planned_refs(plan: dict[Path, dict[str, str]]) -> set[str]:
 
 def test_plan_rewrites_applies_updates_from_reader():
     path = Path("downstream.md")
-    source = b"---\r\nid: d\r\nderives_from:\r\n  - ref: a#x\r\n    seen: old\r\n---\r\nbody\r\n"
+    source = (
+        "---\r\nid: d\r\nderives_from:\r\n  - ref: a#x\r\n    seen: old\r\n---\r\ncafé ☕\r\n"
+    ).encode()
+    expected_after = (
+        "---\nid: d\nderives_from:\n- ref: a#x\n  seen: newhash\n---\ncafé ☕\n".encode()
+    )
 
     rewrites = plan_rewrites({path: {"a#x": "newhash"}}, lambda _path: source)
 
@@ -41,9 +46,20 @@ def test_plan_rewrites_applies_updates_from_reader():
     assert rewrite.path == path
     assert rewrite.before == source
     assert isinstance(rewrite.after, bytes)
-    assert b"seen: newhash" in rewrite.after
+    assert rewrite.after == expected_after
     assert isinstance(rewrite.applied, frozenset)
     assert rewrite.applied == frozenset({"a#x"})
+
+
+def test_plan_rewrites_normalizes_lone_cr_only_for_transformation():
+    path = Path("downstream.md")
+    source = b"---\rid: d\rderives_from:\r  - ref: a#x\r    seen: old\r---\rbody\r"
+
+    rewrites = plan_rewrites({path: {"a#x": "newhash"}}, lambda _path: source)
+
+    assert len(rewrites) == 1
+    assert rewrites[0].before == source
+    assert b"seen: newhash" in rewrites[0].after
 
 
 def test_plan_rewrites_wraps_reader_error_with_path():
