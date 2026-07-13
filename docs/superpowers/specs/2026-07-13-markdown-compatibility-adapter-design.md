@@ -63,6 +63,7 @@ class Heading:
 def extract_headings(body: str) -> list[Heading]: ...
 def github_slug(text: str) -> str: ...
 def anchor_ids(headings: list[Heading]) -> list[str]: ...
+def strip_heading_anchor(text: str) -> str: ...
 ```
 
 `extract_headings` normalizes newlines through the existing shared normalizer, parses the focused
@@ -79,9 +80,10 @@ marker, preserving the current mixed marker/slug collision behavior.
 
 `src/doc_lattice/sections.py` retains line splitting, `section_span`, batch `section_spans`, and
 `section_text`. It imports and re-exports `Heading`, `github_slug`, and `anchor_ids`, and makes
-`build_toc` a compatibility-preserving wrapper over `extract_headings`. This keeps the current
-internal Python import surface while moving all upstream-sensitive parsing and slug behavior behind
-one module boundary.
+`build_toc` a compatibility-preserving wrapper over `extract_headings`. `section_text` delegates
+first-line marker removal to `strip_heading_anchor`, so the explicit-marker expression has one
+owner. This keeps the current internal Python import surface while moving all upstream-sensitive
+parsing, anchor, and slug behavior behind one module boundary.
 
 ## 4. Generated slug compatibility data
 
