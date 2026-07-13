@@ -140,6 +140,24 @@ def test_absent_tag_with_no_version_file_in_parent_is_new_release(repo: Path):
     assert outputs == ["proceed=true", "create_tag=true"]
 
 
+def test_malformed_first_parent_version_source_fails(repo: Path):
+    path = repo / _VERSION_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("VERSION = unknown\n", encoding="utf-8")
+    _commit(repo, "malformed parent source")
+    _write_version(repo, "1.0.0")
+    sha = _commit(repo, "introduce valid release version")
+
+    result, outputs = _run_gate(repo, tag="v1.0.0", version="1.0.0", sha=sha)
+
+    assert result.returncode != 0
+    assert (
+        "::error::first-parent source has a malformed version declaration "
+        "in src/doc_lattice/__init__.py"
+    ) in result.stdout
+    assert outputs == []
+
+
 def test_malformed_current_version_source_fails(repo: Path):
     _write_version(repo, "0.9.0")
     _commit(repo, "old version")
