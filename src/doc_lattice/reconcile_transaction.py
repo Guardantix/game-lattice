@@ -14,7 +14,13 @@ from pydantic import ValidationError as PydanticValidationError
 from .constants import RECONCILE_JOURNAL_NAME, RECONCILE_JOURNAL_VERSION
 from .error_types import ReconcileInProgressError, ReconcilePersistenceError
 from .path_utils import safe_resolve
-from .persistence import durable_unlink, file_sha256, replace_staged
+from .persistence import (
+    atomic_create_bytes,
+    durable_unlink,
+    file_sha256,
+    replace_staged,
+    sync_directory,
+)
 
 JournalState = Literal["prepared", "committed"]
 RecoveryAction = Literal["none", "rolled_back", "cleaned_committed"]
@@ -85,14 +91,51 @@ def _resolve_journal_path(project_root: Path, field: str, raw_path: str) -> Path
         raise ValueError(message) from cause
 
 
+def _validate_path_roles(entries: tuple[_ResolvedEntry, ...], journal_path: Path) -> None:
+    """Reject aliases between journal destinations and transaction artifacts."""
+    canonical_journal = journal_path.resolve()
+    destinations: dict[Path, int] = {}
+    for index, entry in enumerate(entries):
+        if entry.destination == canonical_journal:
+            message = f"entry {index} destination aliases journal path {journal_path}"
+            raise ValueError(message)
+        if entry.destination in destinations:
+            first = destinations[entry.destination]
+            message = f"destination alias across entries {first} and {index}: {entry.destination}"
+            raise ValueError(message)
+        destinations[entry.destination] = index
+
+    artifacts: dict[Path, tuple[int, str]] = {}
+    for index, entry in enumerate(entries):
+        for role, artifact in (
+            ("before_path", entry.before_path),
+            ("after_path", entry.after_path),
+        ):
+            if artifact == canonical_journal:
+                message = f"entry {index} {role} aliases journal path {journal_path}"
+                raise ValueError(message)
+            if artifact in destinations:
+                message = f"entry {index} {role} artifact {artifact} aliases destination path"
+                raise ValueError(message)
+            if artifact in artifacts:
+                first_index, first_role = artifacts[artifact]
+                message = (
+                    f"artifact alias between entry {first_index} {first_role} and "
+                    f"entry {index} {role}: {artifact}"
+                )
+                raise ValueError(message)
+            artifacts[artifact] = (index, role)
+
+
 def _load_journal(
     project_root: Path,
     journal_path: Path,
-) -> tuple[Journal, tuple[_ResolvedEntry, ...]]:
+) -> tuple[Journal, tuple[_ResolvedEntry, ...], bytes]:
     """Read, validate, and contain every path in a reconcile journal."""
     try:
-        encoded = journal_path.read_text(encoding="utf-8")
-        journal = Journal.model_validate_json(encoded)
+        encoded = journal_path.read_bytes()
+        decoded = encoded.decode("utf-8")
+        journal = Journal.model_validate_json(decoded)
     except (OSError, UnicodeDecodeError, PydanticValidationError) as cause:
         raise _invalid_journal_error(journal_path, cause) from cause
     if journal.version != RECONCILE_JOURNAL_VERSION:
@@ -111,7 +154,11 @@ def _load_journal(
         )
     except ValueError as cause:
         raise _invalid_journal_error(journal_path, cause) from cause
-    return journal, entries
+    try:
+        _validate_path_roles(entries, journal_path)
+    except ValueError as cause:
+        raise _invalid_journal_error(journal_path, cause) from cause
+    return journal, entries, encoded
 
 
 def _recovery_operation_error(
@@ -121,12 +168,20 @@ def _recovery_operation_error(
     cause: object,
 ) -> ReconcilePersistenceError:
     """Build a retryable recovery operation diagnostic."""
+    journal_status = _journal_retry_status(journal)
     message = (
-        f"reconcile recovery failed while {operation} {path}: {cause}; journal {journal} "
-        "remains for retry; correct the filesystem problem and rerun "
+        f"reconcile recovery failed while {operation} {path}: {cause}; {journal_status}; "
+        "correct the filesystem problem and rerun "
         "'doc-lattice reconcile --recover'"
     )
     return ReconcilePersistenceError(message)
+
+
+def _journal_retry_status(journal: Path) -> str:
+    """Describe only the journal state currently observable on disk."""
+    if journal.is_file():
+        return f"journal {journal} remains for retry"
+    return f"journal {journal} is not present; preserve all available recovery artifacts"
 
 
 def _unsafe_before_error(
@@ -135,35 +190,85 @@ def _unsafe_before_error(
     state: str,
 ) -> ReconcilePersistenceError:
     """Build a diagnostic for an after-image that cannot be safely restored."""
+    journal_status = _journal_retry_status(journal)
     message = (
         f"cannot safely recover destination {entry.destination}: it still matches the "
         f"transaction after image, but before image {entry.before_path} is {state}; journal "
-        f"{journal} and available artifacts remain; restore the required before image or "
+        f"status: {journal_status}; restore the required before image or "
         "preserve the destination manually, then rerun 'doc-lattice reconcile --recover'"
     )
     return ReconcilePersistenceError(message)
 
 
+def _resync_after_unlink(path: Path, primary: OSError) -> bool:
+    """Retry parent synchronization only when an unlink already removed its path."""
+    if path.exists():
+        return False
+    try:
+        sync_directory(path.parent)
+    except OSError as retry_error:
+        primary.add_note(f"directory resync failed after unlink of {path}: {retry_error}")
+        return False
+    return True
+
+
+def _cleanup_staged_artifact(staged: Path, journal: Path) -> None:
+    """Remove one stage, healing a one-shot post-unlink sync failure."""
+    try:
+        durable_unlink(staged)
+    except OSError as primary:
+        if _resync_after_unlink(staged, primary):
+            return
+        raise _recovery_operation_error(
+            "cleaning staged artifact", staged, journal, primary
+        ) from primary
+
+
+def _restore_journal(journal: Path, journal_bytes: bytes, primary: OSError) -> None:
+    """Best-effort restore an unlinked journal after persistent sync failure."""
+    if journal.is_file():
+        return
+    try:
+        atomic_create_bytes(
+            journal,
+            journal_bytes,
+            prefix=f"{RECONCILE_JOURNAL_NAME}.",
+        )
+    except OSError as restore_error:
+        primary.add_note(f"journal restoration failed for {journal}: {restore_error}")
+    if not journal.is_file():
+        primary.add_note(f"journal restoration left no regular file at {journal}")
+
+
+def _cleanup_journal(journal: Path, journal_bytes: bytes) -> None:
+    """Remove the journal last, restoring it if persistent post-unlink sync fails."""
+    try:
+        durable_unlink(journal)
+    except OSError as primary:
+        if _resync_after_unlink(journal, primary):
+            return
+        if not journal.exists():
+            _restore_journal(journal, journal_bytes, primary)
+        raise _recovery_operation_error("cleaning journal", journal, journal, primary) from primary
+
+
 def _cleanup_transaction_artifacts(
     entries: tuple[_ResolvedEntry, ...],
     journal: Path,
+    journal_bytes: bytes,
 ) -> None:
     """Durably remove staged images and then remove the journal last."""
     for entry in entries:
         for staged in (entry.before_path, entry.after_path):
-            try:
-                durable_unlink(staged)
-            except OSError as cause:
-                raise _recovery_operation_error(
-                    "cleaning staged artifact", staged, journal, cause
-                ) from cause
-    try:
-        durable_unlink(journal)
-    except OSError as cause:
-        raise _recovery_operation_error("cleaning journal", journal, journal, cause) from cause
+            _cleanup_staged_artifact(staged, journal)
+    _cleanup_journal(journal, journal_bytes)
 
 
-def _rollback_prepared(entries: tuple[_ResolvedEntry, ...], journal: Path) -> None:
+def _rollback_prepared(
+    entries: tuple[_ResolvedEntry, ...],
+    journal: Path,
+    journal_bytes: bytes,
+) -> None:
     """Restore transaction-owned after-images while preserving unrelated changes."""
     for entry in reversed(entries):
         try:
@@ -192,7 +297,7 @@ def _rollback_prepared(entries: tuple[_ResolvedEntry, ...], journal: Path) -> No
             raise _recovery_operation_error(
                 "restoring destination", entry.destination, journal, cause
             ) from cause
-    _cleanup_transaction_artifacts(entries, journal)
+    _cleanup_transaction_artifacts(entries, journal, journal_bytes)
 
 
 def _journal_path(project_root: Path) -> Path:
@@ -262,9 +367,9 @@ def recover_transaction(project_root: Path) -> RecoveryResult:
     journal = _journal_path(project_root)
     if not journal.exists():
         return RecoveryResult(action="none", journal=journal)
-    loaded, entries = _load_journal(project_root, journal)
+    loaded, entries, journal_bytes = _load_journal(project_root, journal)
     if loaded.state == "prepared":
-        _rollback_prepared(entries, journal)
+        _rollback_prepared(entries, journal, journal_bytes)
         return RecoveryResult(action="rolled_back", journal=journal)
-    _cleanup_transaction_artifacts(entries, journal)
+    _cleanup_transaction_artifacts(entries, journal, journal_bytes)
     return RecoveryResult(action="cleaned_committed", journal=journal)
