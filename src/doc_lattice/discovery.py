@@ -10,7 +10,11 @@ from .hashing import normalize_newlines
 from .path_utils import safe_resolve
 
 
-def discover_doc_paths(roots: Sequence[Path], ignore_globs: Sequence[str]) -> list[Path]:
+def discover_doc_paths(
+    roots: Sequence[Path],
+    ignore_globs: Sequence[str],
+    project_root: Path,
+) -> list[Path]:
     """Return every ``.md`` path under the roots, minus ignored matches, sorted.
 
     Args:
@@ -18,6 +22,7 @@ def discover_doc_paths(roots: Sequence[Path], ignore_globs: Sequence[str]) -> li
         ignore_globs: Glob patterns matched against each file's path relative to its
             root, anchored at the root. ``drafts/*.md`` skips only top-level drafts, not
             a same-named subdirectory; use ``**`` to match at any depth.
+        project_root: Boundary that resolved document paths must remain inside.
 
     Returns:
         A sorted, de-duplicated list of markdown file paths. A file that resolves outside
@@ -34,7 +39,7 @@ def discover_doc_paths(roots: Sequence[Path], ignore_globs: Sequence[str]) -> li
             if _ignored(path, root, ignore_globs):
                 continue
             try:
-                safe_resolve(path, root)
+                safe_resolve(path, project_root)
             except ValueError:
                 warnings.warn(
                     f"skipping {path}: it escapes the project root via a symlink or "
