@@ -21,6 +21,7 @@ error policies.
 ## Goals
 
 - Recheck the exact fresh-read source bytes immediately before replacement and reject a mismatch.
+- Serialize reconcile processes so recovery never interferes with a live batch.
 - Give reconcile durable all-or-nothing batch semantics through automatic rollback.
 - Make an interrupted or failed batch recoverable and make repeated recovery and reconcile runs
   safe.
@@ -29,11 +30,13 @@ error policies.
 - Emit reconcile success output only after the entire batch is durably committed.
 - Share low-level replace and create-if-absent primitives with cache persistence and `init` without
   changing their caller-specific error policies.
+- Keep dry-run strictly read-only and give operators a deliberate recovery-only command.
+- Keep journals and staged images out of version control through generated ignore guidance.
 
 ## Non-goals
 
-- Coordinating edits by unrelated tools through advisory locks. Reconcile detects changed bytes;
-  editors do not need to participate in a locking protocol.
+- Coordinating edits by unrelated editor tools through advisory locks. Reconcile processes do
+  serialize against each other, but editors do not need to participate in that protocol.
 - Resuming a partially applied batch. Recovery always rolls the batch back to its pre-reconcile
   contents unless a later unrelated edit has already superseded a transaction-owned image.
 - Providing a general-purpose database or public transaction API.
@@ -78,10 +81,19 @@ available for an exact fingerprint and before-image.
 ### `reconcile_transaction.py`
 
 This impure module owns the reconcile-only journal, prepare, commit, rollback, recovery, and
-cleanup state machine. The CLI supplies the contained resolved destination for each identity path
-and receives a recovery outcome or a committed set of rewrite records.
+cleanup state machine. It also owns the process-lifetime advisory lock that serializes reconcile
+against itself. The CLI supplies the contained resolved destination for each identity path and
+receives a recovery outcome or a committed set of rewrite records.
 
-## Journal and staged artifacts
+## Lock, journal, and staged artifacts
+
+Every reconcile mode opens the existing project-root directory and attempts to take a nonblocking
+OS advisory lock on its file descriptor. It holds that lock from preflight through completion.
+Locking the existing directory avoids creating a persistent lockfile, which keeps dry-run
+byte-for-byte and namespace-level read-only. A process that cannot acquire the lock exits 2 with
+`another reconcile is in progress; retry after it exits`; it never reads, recovers, or deletes the
+live process's journal or staged files. A crashed process automatically releases its kernel-owned
+lock, allowing the next real invocation or explicit recovery command to handle the journal safely.
 
 The journal is `.doc-lattice-reconcile.json` in the configured project root. All paths stored in it
 are relative to that root and are revalidated for containment before recovery uses them. The
@@ -94,7 +106,8 @@ journal has a schema version, a state (`prepared` or `committed`), and ordered e
 Before mutation, reconcile stages and `fsync`s a before-image and after-image beside every
 destination. Temporary names contain a descriptive prefix but rely on `mkstemp` for uniqueness.
 It then atomically creates and durably publishes the `prepared` journal. A journal already present
-prevents creation of another batch.
+after lock acquisition is either recovered or reported according to the selected reconcile mode;
+it is never assumed to belong to a live process.
 
 The journal is the recovery authority. Artifacts that cannot be tied to a valid contained journal
 entry are never applied to a document.
@@ -120,8 +133,9 @@ requiring editors to honor locks or depending on a platform-specific compare-and
 
 ## Rollback and recovery
 
-Any failure before the durable `committed` marker invokes rollback immediately. A later reconcile
-invocation also checks for a journal before loading the lattice:
+Any failure before the durable `committed` marker invokes rollback immediately while the process
+still holds the advisory lock. After acquiring that lock, a later real reconcile invocation checks
+for a journal before loading the lattice:
 
 - A `prepared` journal is rolled back, then the requested reconcile continues from a newly loaded
   lattice.
@@ -145,15 +159,33 @@ If rollback itself cannot restore a destination that still contains the transact
 the journal and required before-image remain in place. The error names the destination and
 artifacts so recovery never guesses or silently loses data.
 
-`--dry-run` never creates a new journal or staged artifacts. It still performs automatic recovery
-before loading the lattice, so an interrupted earlier batch may be rolled back before the dry-run
-preview.
+`reconcile --recover` is a recovery-only mode. It is mutually exclusive with a downstream id,
+`--all`, `--ref`, and `--dry-run`; it acquires the advisory lock, rolls back a valid `prepared`
+journal or cleans a valid `committed` journal, reports the action, and exits without planning a new
+batch. With no journal it reports `nothing to recover` and exits 0. Normal real reconcile
+invocations retain automatic recovery so a safe rerun remains sufficient after an ordinary crash.
+With `--json`, recovery mode emits one object containing the journal path and an action of `none`,
+`rolled_back`, or `cleaned_committed`; human mode prints the equivalent concise line.
+
+A malformed or unsafe journal is never deleted automatically, even under `--recover`. Its exit-2
+diagnostic names the journal, describes the validation failure, and instructs the operator to
+inspect the named journal and staged files, restore or preserve each named destination, then move
+the invalid journal aside and rerun `reconcile --recover`. This is the explicit manual escape hatch
+without authorizing the tool to guess which bytes are authoritative.
+
+`--dry-run` acquires the advisory lock but is strictly read-only. It never creates, rewrites,
+recovers, or removes a journal or staged artifact. If a journal exists, dry-run exits 2, names it,
+and instructs the operator to run `reconcile --recover` first. Holding the lock through planning
+also prevents a real reconcile from starting while dry-run reads the lattice.
 
 ## Reporting and errors
 
 Human and JSON success output is deferred until transaction commit and cleanup return successfully.
 A failed batch prints no `reconciled` lines and emits no JSON success payload. Its exit-2 diagnostic
-states whether rollback completed or recovery artifacts remain.
+uses a typed transaction conflict or persistence error. It names the first conflicting destination
+or failed operation, distinguishes changed source bytes from an I/O or durability failure, and
+states whether rollback completed or recovery artifacts remain. For example, a source conflict
+names the path and says that it changed after validation and no files were reconciled.
 
 Automatic startup recovery emits one concise stderr diagnostic and then proceeds with the newly
 requested reconcile. JSON stdout remains a single valid payload for the new command.
@@ -169,7 +201,10 @@ successful run reports exactly the rewrite records passed through the durable tr
   directories, swallows every `OSError`, emits exactly one stderr line, and never changes a command
   result.
 - `init` uses the same durable create-if-absent primitive. It still refuses an existing config,
-  surfaces other errors as `ConfigError`, and leaves no temporary file.
+  surfaces other errors as `ConfigError`, and leaves no temporary file. Its generated output adds
+  a `.gitignore` snippet for `.doc-lattice-reconcile.json`,
+  `.doc-lattice-reconcile.json.*.tmp`, `.*.doc-lattice-before.*.tmp`, and
+  `.*.doc-lattice-after.*.tmp`. It does not append to or overwrite a user's existing `.gitignore`.
 
 Sharing stops at the primitive boundary. Cache writes are disposable single-file replacements and
 `init` is a create-only operation, so neither participates in reconcile journals.
@@ -181,6 +216,7 @@ atomic create-if-absent, and cleanup after write, replace, link, and sync failur
 
 Transaction tests cover:
 
+- lock contention refusing to inspect or roll back a live process's batch;
 - an edit injected after fresh-read validation but before replacement;
 - a second-file replacement failure and an earlier-file rollback;
 - directory-sync failure after replacement;
@@ -192,14 +228,18 @@ Transaction tests cover:
 - collision-resistant staging and cleanup of every available artifact.
 
 CLI integration tests assert that failed batches produce no human or JSON success entries, startup
-recovery precedes lattice loading, successful output follows durable commit, and the dry-run recovery
-exception is documented behavior. Existing cache and `init` tests continue to enforce their
-different error policies through the shared primitives.
+recovery precedes lattice loading for real runs, `--recover` performs no new reconcile, dry-run is
+byte-for-byte read-only in the presence of a journal, conflict diagnostics name the path and cause,
+and successful output follows durable commit. Existing cache and `init` tests continue to enforce
+their different error policies through the shared primitives, and scaffold tests cover the
+generated ignore patterns.
 
 ## Documentation changes
 
 `ARCHITECTURE.md`, `README.md`, and `CLAUDE.md` will replace the admitted overwrite race and
 non-transactional batch descriptions with the fingerprint check, journal states, automatic
-rollback, durable reporting boundary, and `--dry-run` recovery caveat. The architecture decision
-will also describe `persistence.py` as the shared low-level write owner and
-`reconcile_transaction.py` as the reconcile batch owner.
+rollback, durable reporting boundary, and dry-run's read-only outstanding-journal refusal. The
+architecture decision will also describe `persistence.py` as the shared low-level write owner and
+`reconcile_transaction.py` as the reconcile batch owner. The README will document `--recover`,
+lock contention, conflict versus persistence diagnostics, artifact names, and the generated
+`.gitignore` snippet. Dry-run documentation will retain its unconditional no-write guarantee.
