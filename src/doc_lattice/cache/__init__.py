@@ -13,7 +13,6 @@ import os
 import sys
 import tempfile
 from collections.abc import Mapping
-from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -21,7 +20,8 @@ from pydantic import ValidationError
 from .. import __version__
 from ..constants import CACHE_FILE_NAME, CACHE_VERSION, MAX_STAT_ROOTS
 from ..discovery import read_doc_bytes_and_stat
-from ..model import FileSections, NodeMeta, ParsedDoc
+from ..model import FileSections, NodeMeta
+from .lookup import CacheHit, CacheMiss
 from .schema import (  # noqa: F401 (models re-exported for doc_lattice.cache importers)
     CacheFile,
     Entry,
@@ -63,26 +63,6 @@ def cache_path(cache_key: str, env: Mapping[str, str]) -> Path:
         ``<cache_home>/doc-lattice/<cache_key>/load-cache.json``.
     """
     return cache_home(env) / "doc-lattice" / cache_key / CACHE_FILE_NAME
-
-
-@dataclass(frozen=True, slots=True)
-class CacheHit:
-    """A tier hit. ``doc`` is the reconstructed ParsedDoc, or None for a cached non-node."""
-
-    doc: ParsedDoc | None
-
-
-@dataclass(frozen=True, slots=True)
-class CacheMiss:
-    """A miss. ``data`` is the raw bytes already read, for the caller to decode and parse.
-
-    ``stat`` is the ``os.stat_result`` captured from the same open handle as ``data``, so a
-    caller that later records the miss threads a stat hint that corresponds exactly to the
-    hashed bytes rather than one taken from a separate, possibly racy, stat call.
-    """
-
-    data: bytes
-    stat: os.stat_result
 
 
 class LoadCache:
