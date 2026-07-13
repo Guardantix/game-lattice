@@ -94,8 +94,9 @@ grades as a BLOCKED `not-found`. Spec: `docs/superpowers/specs/2026-06-27-doc-la
 **The `init` slice scaffolds an adopting repo and never loads the lattice.** `scaffold.py` is pure
 (`render_config`/`render_precommit`/`render_ci`/`build_scaffold` return text); `cli._atomic_create`
 publishes each file via temp -> fsync -> `os.link`, so a partial write never lands. `init` writes
-`.doc-lattice.yml` only if absent and always prints pre-commit and CI codegen pinned to the current
-release tag. Spec: `docs/superpowers/specs/2026-06-28-doc-lattice-init-design.md`.
+`.doc-lattice.yml` only if absent and always prints pre-commit and CI codegen pinned to Python 3.13
+and the exact PyPI requirement `doc-lattice==X.Y.Z`. Git commit sources are only fallbacks for
+testing unreleased code. Spec: `docs/superpowers/specs/2026-06-28-doc-lattice-init-design.md`.
 
 **Pure vs impure split.** All graph and report logic is pure and filesystem-free: `model`,
 `hashing`, `sections`, `resolve`, `loader`, `check`, `lint`, `impact`, `render`, `reconcile.reconcile`/
@@ -136,8 +137,11 @@ violation fails CI rather than just being a style preference:
 - **Version sync.** `__version__` (`src/doc_lattice/__init__.py`), the `pyproject.toml` `version`,
   and the first versioned `## [X.Y.Z]` `CHANGELOG.md` heading must agree (a `## [Unreleased]` block above it is tolerated and skipped, so notes can accumulate there between releases). The pure core is `version_check.py`;
   `scripts/check_version_sync.py` wraps it and runs in pre-commit and CI. On merge to `main` the
-  `release` job in `.github/workflows/ci.yml` verifies sync, smoke-tests the commit, and cuts the
-  lightweight `vX.Y.Z` tag. Release flow: `RELEASING.md`.
+  `release` job in `.github/workflows/ci.yml` verifies sync, smoke-tests the commit, creates the
+  lightweight `vX.Y.Z` tag, and publishes its GitHub Release. The unprivileged `build-release` job
+  checks out that exact tag, builds and validates the distributions with Twine, and uploads the
+  artifact; the OIDC-only `publish` job downloads that artifact and publishes it to PyPI. Release
+  flow: `RELEASING.md`.
 - ruff line length 100; module docstring on every module; Google-style docstrings on public
   functions; no em-dashes in any drafted content (docstrings, messages, comments).
 

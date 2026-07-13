@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.0] - 2026-07-12
+
+### Added
+
+- Publish release wheels and source distributions to PyPI through GitHub Actions Trusted
+  Publishing, with no stored PyPI credential.
+
+### Changed
+
+- Generated pre-commit and CI gates install an exact `doc-lattice==1.0.0` PyPI requirement
+  instead of cloning and building a tagged Git revision.
+- Release retries distinguish the current tagged commit from an ordinary unversioned merge,
+  making GitHub Release and PyPI publication safe to resume after a partial failure.
+- Source distributions contain only package source, tests, license, README, build metadata, and
+  Hatchling's required `.gitignore`.
+
 ## [0.9.0] - 2026-07-11
 
 ### Changed
