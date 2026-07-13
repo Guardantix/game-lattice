@@ -686,6 +686,65 @@ def test_persistent_post_unlink_stage_sync_failure_preserves_journal_for_retry(
     assert not transaction.journal.exists()
 
 
+def test_retry_syncs_absent_isolated_stage_parent_before_removing_journal(
+    tmp_path: Path, monkeypatch
+):
+    transaction = _write_synthetic_transaction(tmp_path, state="committed")
+    isolated = tmp_path / "isolated-stage"
+    other = tmp_path / "other-stage"
+    isolated.mkdir()
+    other.mkdir()
+    failed_unlink_artifact = isolated / ".doc.md.before.tmp"
+    other_absent_artifact = other / ".doc.md.after.tmp"
+    failed_unlink_artifact.write_bytes(b"before image\n")
+    transaction.before.unlink()
+    transaction.after.unlink()
+    payload = json.loads(transaction.journal.read_text(encoding="utf-8"))
+    payload["entries"][0]["before_path"] = failed_unlink_artifact.relative_to(tmp_path).as_posix()
+    payload["entries"][0]["after_path"] = other_absent_artifact.relative_to(tmp_path).as_posix()
+    transaction.journal.write_text(json.dumps(payload), encoding="utf-8")
+    journal_bytes = transaction.journal.read_bytes()
+    real_sync = persistence.sync_directory
+    original_sync_calls: list[Path] = []
+    immediate_resync_calls: list[Path] = []
+
+    def _fail_original_sync(path: Path) -> None:
+        original_sync_calls.append(path)
+        raise OSError("original isolated stage sync failure")
+
+    def _fail_immediate_resync(path: Path) -> None:
+        immediate_resync_calls.append(path)
+        raise OSError("immediate isolated stage resync failure")
+
+    monkeypatch.setattr(persistence, "sync_directory", _fail_original_sync)
+    monkeypatch.setattr(reconcile_transaction, "sync_directory", _fail_immediate_resync)
+
+    with pytest.raises(ReconcilePersistenceError):
+        recover_transaction(tmp_path)
+
+    assert original_sync_calls == [isolated]
+    assert immediate_resync_calls == [isolated]
+    assert not failed_unlink_artifact.exists()
+    assert list(isolated.iterdir()) == []
+    assert transaction.journal.is_file()
+    assert transaction.journal.read_bytes() == journal_bytes
+
+    sync_order: list[Path] = []
+
+    def _record_sync(path: Path) -> None:
+        sync_order.append(path)
+        real_sync(path)
+
+    monkeypatch.setattr(persistence, "sync_directory", _record_sync)
+    monkeypatch.setattr(reconcile_transaction, "sync_directory", _record_sync)
+
+    result = recover_transaction(tmp_path)
+
+    assert result.action == "cleaned_committed"
+    assert sync_order == [isolated, other, tmp_path]
+    assert not transaction.journal.exists()
+
+
 def test_one_shot_post_unlink_journal_sync_failure_is_healed(tmp_path: Path, monkeypatch):
     transaction = _write_synthetic_transaction(
         tmp_path,
@@ -725,13 +784,14 @@ def test_persistent_post_unlink_journal_sync_failure_restores_exact_journal_for_
     journal_bytes = b" \r\n" + transaction.journal.read_bytes() + b"\r\n "
     transaction.journal.write_bytes(journal_bytes)
     real_sync = persistence.sync_directory
-    sync_calls = 0
+    root_sync_calls = 0
 
     def _fail_twice_then_sync(path: Path) -> None:
-        nonlocal sync_calls
-        sync_calls += 1
-        if sync_calls <= 2:
-            raise OSError(f"persistent journal cleanup sync failure {sync_calls}")
+        nonlocal root_sync_calls
+        if path == tmp_path:
+            root_sync_calls += 1
+        if path == tmp_path and root_sync_calls <= 2:
+            raise OSError(f"persistent journal cleanup sync failure {root_sync_calls}")
         real_sync(path)
 
     monkeypatch.setattr(persistence, "sync_directory", _fail_twice_then_sync)
@@ -746,7 +806,7 @@ def test_persistent_post_unlink_journal_sync_failure_restores_exact_journal_for_
         recover_transaction(tmp_path)
 
     assert "persistent journal cleanup sync failure 1" in str(caught.value)
-    assert sync_calls >= 5
+    assert root_sync_calls >= 5
     assert transaction.journal.is_file()
     assert transaction.journal.read_bytes() == journal_bytes
     assert "remains for retry" in str(caught.value)

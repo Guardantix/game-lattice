@@ -214,6 +214,7 @@ def _resync_after_unlink(path: Path, primary: OSError) -> bool:
 
 def _cleanup_staged_artifact(staged: Path, journal: Path) -> None:
     """Remove one stage, healing a one-shot post-unlink sync failure."""
+    was_absent = not staged.exists()
     try:
         durable_unlink(staged)
     except OSError as primary:
@@ -222,6 +223,13 @@ def _cleanup_staged_artifact(staged: Path, journal: Path) -> None:
         raise _recovery_operation_error(
             "cleaning staged artifact", staged, journal, primary
         ) from primary
+    if was_absent:
+        try:
+            sync_directory(staged.parent)
+        except OSError as cause:
+            raise _recovery_operation_error(
+                "synchronizing absent staged artifact parent", staged, journal, cause
+            ) from cause
 
 
 def _restore_journal(journal: Path, journal_bytes: bytes, primary: OSError) -> None:
