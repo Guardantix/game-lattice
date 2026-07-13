@@ -8,6 +8,7 @@ from doc_lattice.sections import (
     build_toc,
     github_slug,
     section_span,
+    section_spans,
     section_text,
     split_body_lines,
 )
@@ -51,6 +52,13 @@ def test_section_span_stops_at_same_or_higher_level():
     assert section_span(toc, 2, total) == (7, 9)
     # "other" (index 3) spans to EOF.
     assert section_span(toc, 3, total) == (10, total)
+
+
+def test_section_spans_matches_individual_section_span_results():
+    toc = build_toc(DOC)
+    total = len(DOC.splitlines())
+
+    assert section_spans(toc, total) == [(1, total), (4, 9), (7, 9), (10, total)]
 
 
 def test_section_text_strips_anchor_from_heading_line():

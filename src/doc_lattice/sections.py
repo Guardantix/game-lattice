@@ -114,6 +114,28 @@ def build_toc(body: str) -> list[Heading]:
     return headings
 
 
+def section_spans(headings: list[Heading], total_lines: int) -> list[tuple[int, int]]:
+    """Return inclusive line ranges for every heading in one pass.
+
+    Args:
+        headings: The document TOC from ``build_toc``.
+        total_lines: Total line count of the document.
+
+    Returns:
+        A list of ``(start, end)`` spans positionally aligned with ``headings``. Each
+        section runs from its heading through the line before the next heading of equal
+        or higher level, or to ``total_lines``.
+    """
+    spans = [(heading.line, total_lines) for heading in headings]
+    stack: list[tuple[int, int]] = []
+    for idx, heading in enumerate(headings):
+        while stack and stack[-1][1] >= heading.level:
+            previous_idx, _ = stack.pop()
+            spans[previous_idx] = (spans[previous_idx][0], heading.line - 1)
+        stack.append((idx, heading.level))
+    return spans
+
+
 def section_span(headings: list[Heading], idx: int, total_lines: int) -> tuple[int, int]:
     """Return the inclusive 1-indexed line range for ``headings[idx]``.
 
@@ -126,13 +148,7 @@ def section_span(headings: list[Heading], idx: int, total_lines: int) -> tuple[i
         ``(start, end)`` from the heading line through the line before the next heading
         of equal or higher level, or to ``total_lines``.
     """
-    head = headings[idx]
-    end = total_lines
-    for nxt in headings[idx + 1 :]:
-        if nxt.level <= head.level:
-            end = nxt.line - 1
-            break
-    return (head.line, end)
+    return section_spans(headings, total_lines)[idx]
 
 
 def section_text(body: str, span: tuple[int, int]) -> str:
