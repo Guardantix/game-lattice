@@ -94,6 +94,9 @@ byte-for-byte and namespace-level read-only. A process that cannot acquire the l
 `another reconcile is in progress; retry after it exits`; it never reads, recovers, or deletes the
 live process's journal or staged files. A crashed process automatically releases its kernel-owned
 lock, allowing the next real invocation or explicit recovery command to handle the journal safely.
+This serialization guarantee assumes a local filesystem with reliable advisory-lock, atomic-rename,
+and directory-sync semantics. Reconcile on network mounts such as NFS is outside the durability
+contract because those filesystems may weaken or emulate `flock` behavior.
 
 The journal is `.doc-lattice-reconcile.json` in the configured project root. All paths stored in it
 are relative to that root and are revalidated for containment before recovery uses them. The
@@ -104,10 +107,14 @@ journal has a schema version, a state (`prepared` or `committed`), and ordered e
 - the after-image path and SHA-256 fingerprint.
 
 Before mutation, reconcile stages and `fsync`s a before-image and after-image beside every
-destination. Temporary names contain a descriptive prefix but rely on `mkstemp` for uniqueness.
-It then atomically creates and durably publishes the `prepared` journal. A journal already present
-after lock acquisition is either recovered or reported according to the selected reconcile mode;
-it is never assumed to belong to a live process.
+destination. The exact `mkstemp` calls use
+`prefix=f".{destination.name}.doc-lattice-before."` for before-images and
+`prefix=f".{destination.name}.doc-lattice-after."` for after-images, with `suffix=".tmp"` for
+both. Journal replacements use `prefix=".doc-lattice-reconcile.json."` and the same suffix. The
+random `mkstemp` component provides uniqueness, while these pinned prefixes remain coupled to the
+generated ignore globs. Reconcile then atomically creates and durably publishes the `prepared`
+journal. A journal already present after lock acquisition is either recovered or reported
+according to the selected reconcile mode; it is never assumed to belong to a live process.
 
 The journal is the recovery authority. Artifacts that cannot be tied to a valid contained journal
 entry are never applied to a document.
@@ -201,10 +208,12 @@ successful run reports exactly the rewrite records passed through the durable tr
   directories, swallows every `OSError`, emits exactly one stderr line, and never changes a command
   result.
 - `init` uses the same durable create-if-absent primitive. It still refuses an existing config,
-  surfaces other errors as `ConfigError`, and leaves no temporary file. Its generated output adds
-  a `.gitignore` snippet for `.doc-lattice-reconcile.json`,
+  surfaces other errors as `ConfigError`, and leaves no temporary file. On every invocation it
+  prints a `.gitignore` snippet to stdout, alongside the existing pre-commit and CI snippets,
+  whether or not `.gitignore` already exists. The snippet contains `.doc-lattice-reconcile.json`,
   `.doc-lattice-reconcile.json.*.tmp`, `.*.doc-lattice-before.*.tmp`, and
-  `.*.doc-lattice-after.*.tmp`. It does not append to or overwrite a user's existing `.gitignore`.
+  `.*.doc-lattice-after.*.tmp`. `init` never reads, appends to, or overwrites the user's
+  `.gitignore`; the output tells the user where to paste the block.
 
 Sharing stops at the primitive boundary. Cache writes are disposable single-file replacements and
 `init` is a create-only operation, so neither participates in reconcile journals.
