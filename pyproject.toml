@@ -29,6 +29,7 @@ authors = [
     {name = "Rick Passero", email = "24213466+riskandreason@users.noreply.github.com"},
 ]
 dependencies = [
+    "markdown-it-py==4.2.0",
     "typer>=0.12",
     "rich>=13",
     "pydantic>=2",

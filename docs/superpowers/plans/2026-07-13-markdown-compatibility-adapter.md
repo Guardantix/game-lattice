@@ -438,7 +438,7 @@ git commit -m "refactor: generate pinned GitHub slug compatibility data"
 - Modify: `uv.lock`
 - Modify: `tests/test_orchestrate.py`
 
-- [ ] **Step 1: Add a cold/warm parity test**
+- [x] **Step 1: Add a cold/warm parity test**
 
 Create a temporary project whose one node body contains fences, repeated Unicode headings, an
 explicit marker, and an empty heading. Load without a cache, then with a fresh cache key, then warm.
@@ -446,13 +446,13 @@ Assert the three returned `Lattice` objects are equal and the section locations 
 `TargetId`, start, and end values. Spy on `orchestrate.derive_file_sections` and assert the warm run
 does not call it.
 
-- [ ] **Step 2: Run the parity test**
+- [x] **Step 2: Run the parity test**
 
-Run: `UV_CACHE_DIR=/tmp/uv-cache uv run --group dev pytest tests/test_orchestrate.py -k section_compatibility -v`
+Run: `UV_CACHE_DIR=/tmp/uv-cache uv run --group dev pytest --no-cov tests/test_orchestrate.py -k section_compatibility -v`
 
 Expected: PASS as a characterization invariant.
 
-- [ ] **Step 3: Make markdown-it-py an exact direct dependency**
+- [x] **Step 3: Make markdown-it-py an exact direct dependency**
 
 Add `"markdown-it-py==4.2.0"` to `[project].dependencies`, then run:
 
@@ -461,13 +461,13 @@ Add `"markdown-it-py==4.2.0"` to `[project].dependencies`, then run:
 Expected: `uv.lock` lists `markdown-it-py` directly under the doc-lattice package while retaining
 version 4.2.0.
 
-- [ ] **Step 4: Run loader, cache, and orchestration suites**
+- [x] **Step 4: Run loader, cache, and orchestration suites**
 
-Run: `UV_CACHE_DIR=/tmp/uv-cache uv run --group dev pytest tests/test_loader.py tests/test_cache_schema.py tests/test_cache.py tests/test_orchestrate.py -v`
+Run: `UV_CACHE_DIR=/tmp/uv-cache uv run --group dev pytest --no-cov tests/test_loader.py tests/test_cache_schema.py tests/test_cache.py tests/test_orchestrate.py -v`
 
 Expected: all pass with unchanged cache version and payload structure.
 
-- [ ] **Step 5: Commit dependency and parity evidence**
+- [x] **Step 5: Commit dependency and parity evidence**
 
 ```bash
 git add pyproject.toml uv.lock tests/test_orchestrate.py
