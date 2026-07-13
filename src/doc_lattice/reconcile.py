@@ -55,11 +55,12 @@ def reconcile(
     for node_id in node_ids:
         node = lattice.nodes_by_id[node_id]
         for edge in node.derives_from:
-            if (
-                requested_target_id is not None
-                and parse_ref(edge.target_ref) != requested_target_id
-            ):
-                continue
+            if requested_target_id is not None:
+                edge_target_id = (
+                    edge.target_id if edge.target_id is not None else parse_ref(edge.target_ref)
+                )
+                if edge_target_id != requested_target_id:
+                    continue
             ref_matched = True
             if edge.target_id is None:
                 if targeting_specific_ref:
