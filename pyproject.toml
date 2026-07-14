@@ -14,8 +14,10 @@ include = [
     "/pyproject.toml",
 ]
 exclude = [
+    "/tests/test_bench_sections.py",
     "/tests/test_release_gate.py",
     "/tests/test_release_workflow.py",
+    "/tests/test_slugger_generator.py",
 ]
 
 [project]
