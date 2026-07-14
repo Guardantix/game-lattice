@@ -3,7 +3,6 @@
 import json
 import os
 import sys
-import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -33,8 +32,16 @@ from .lint import lint_json, lint_lattice
 from .model import Lattice
 from .orchestrate import load_lattice
 from .path_utils import safe_resolve
+from .persistence import atomic_create_bytes
 from .reconcile import Rewrite, plan_rewrites
 from .reconcile import reconcile as plan_reconcile
+from .reconcile_transaction import (
+    RecoveryResult,
+    commit_rewrites,
+    ensure_dry_run_safe,
+    reconcile_lock,
+    recover_transaction,
+)
 from .render import to_dot, to_json, to_mermaid
 from .report_render import render_impact, render_lint, render_statuses
 from .scaffold import build_scaffold
@@ -139,7 +146,7 @@ def _resolve_report_format(fmt: str, json_out: bool) -> ReportFormat:
 
 def _print_project_error(exc: ProjectError) -> None:
     """Render a ProjectError to stderr in the standard one-line format."""
-    _err.print(f"[red]error[/red]: {escape(str(exc))} ({exc.code})")
+    _err.print(f"[red]error[/red]: {escape(str(exc))} ({exc.code})", soft_wrap=True)
 
 
 @contextmanager
@@ -412,49 +419,46 @@ def _resolve_reconcile_write_paths(
     return write_paths
 
 
-def _write_and_report_reconcile(
+def _report_reconcile(
     plan: dict[Path, dict[str, str]],
     rewrites: list[Rewrite],
-    write_paths: dict[Path, Path],
     *,
     dry_run: bool,
     json_out: bool,
 ) -> None:
-    """Write the planned rewrites (unless dry run) and emit the reconcile report.
-
-    For a real human run, each file's confirmation prints as its write lands rather than
-    deferred to after the whole batch, so a mid-batch OSError still records which files
-    were durably rewritten (phase 2 is intentionally non-atomic across files). JSON emits
-    one payload after every write completes; a dry run writes nothing.
+    """Emit a reconcile report for a dry-run preview or durable committed batch.
 
     Args:
         plan: The full planned mapping of path to ``{ref: new_seen}``.
-        rewrites: The rewrites actually applied (fresh-read, non-empty ``applied`` set).
-        write_paths: Resolved, project-contained write destination for each document path.
-        dry_run: Whether this is a preview (no writes of any kind).
+        rewrites: The validated rewrites previewed or durably committed.
+        dry_run: Whether this is a read-only preview.
         json_out: Whether to emit the machine-readable payload instead of human lines.
-
-    Raises:
-        UnreadableDocError: If a downstream file cannot be written.
     """
-    report_progress = not dry_run and not json_out
-    if not dry_run:
-        for rewrite in rewrites:
-            try:
-                _atomic_write(write_paths[rewrite.path], rewrite.after.decode("utf-8"))
-            except OSError as exc:
-                msg = f"cannot write {rewrite.path}: {exc}"
-                raise UnreadableDocError(msg) from exc
-            if report_progress:
-                _print_reconcile_lines(rewrite.path, rewrite.applied, dry_run=False)
     if json_out:
         typer.echo(_reconcile_json_payload(plan, rewrites, dry_run=dry_run))
         return
-    if dry_run:
-        for rewrite in rewrites:
-            _print_reconcile_lines(rewrite.path, rewrite.applied, dry_run=True)
+    for rewrite in rewrites:
+        _print_reconcile_lines(rewrite.path, rewrite.applied, dry_run=dry_run)
     if not rewrites:
         _out.print("nothing to reconcile")
+
+
+def _report_recovery(recovery: RecoveryResult, *, json_out: bool) -> None:
+    """Report one explicit recovery-only outcome."""
+    if json_out:
+        typer.echo(json.dumps({"action": recovery.action, "journal": str(recovery.journal)}))
+    elif recovery.action == "none":
+        _out.print(f"nothing to recover: {escape(str(recovery.journal))}", soft_wrap=True)
+    elif recovery.action == "rolled_back":
+        _out.print(
+            f"rolled back reconcile transaction: {escape(str(recovery.journal))}",
+            soft_wrap=True,
+        )
+    else:
+        _out.print(
+            f"cleaned committed reconcile transaction: {escape(str(recovery.journal))}",
+            soft_wrap=True,
+        )
 
 
 @app.command()
@@ -471,29 +475,60 @@ def reconcile(  # noqa: PLR0913
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Show what would be reconciled without writing.")
     ] = False,
+    recover: Annotated[
+        bool,
+        typer.Option("--recover", help="Recover or clean up a prior transaction, then exit."),
+    ] = False,
     config: ConfigOpt = None,
     json_out: JsonOpt = False,
 ) -> None:
     """Set seen to current upstream hashes for the selected edges.
 
     With --dry-run, computes and reports the same plan without writing anything.
+    With --recover, performs only recovery or cleanup and never plans a batch.
     """
-    if not reconcile_all and not downstream_id:
+    if recover and (downstream_id or reconcile_all or ref is not None or dry_run):
+        _err.print(
+            "[red]error[/red]: --recover cannot be combined with a downstream id, "
+            "--all, --ref, or --dry-run"
+        )
+        raise typer.Exit(2)
+    if not recover and not reconcile_all and not downstream_id:
         _err.print("[red]error[/red]: provide a downstream id or --all")
         raise typer.Exit(2)
     with _exit_on_project_error():
         project = load_config(config, Path.cwd())
-        lattice = load_lattice(project, require_verified=True)
-        plan = plan_reconcile(lattice, downstream_id, ref=ref, reconcile_all=reconcile_all)
-        write_paths = _resolve_reconcile_write_paths(plan, project.project_root)
-        # Phase 1: compute every rewrite from a fresh read before touching disk, so a
-        # malformed concurrent edit aborts the whole command before any mutation.
-        # Computed unconditionally (even for --dry-run) so the preview reflects the
-        # same fresh-read validation a real run would perform.
-        rewrites = plan_rewrites(plan, lambda path: write_paths[path].read_bytes())
-        # Phase 2: only after all rewrites computed cleanly, write them (skipped
-        # entirely for --dry-run) and report the outcome.
-        _write_and_report_reconcile(plan, rewrites, write_paths, dry_run=dry_run, json_out=json_out)
+
+        if recover:
+            with reconcile_lock(project.project_root) as lock:
+                recovery = recover_transaction(project.project_root, lock=lock)
+            _report_recovery(recovery, json_out=json_out)
+            return
+
+        with reconcile_lock(project.project_root) as lock:
+            if dry_run:
+                ensure_dry_run_safe(project.project_root)
+            else:
+                recovery = recover_transaction(project.project_root, lock=lock)
+                if recovery.action != "none":
+                    _err.print(f"recovered reconcile transaction: {recovery.action}")
+
+            lattice = load_lattice(
+                project,
+                require_verified=True,
+                persist_cache=not dry_run,
+            )
+            plan = plan_reconcile(lattice, downstream_id, ref=ref, reconcile_all=reconcile_all)
+            write_paths = _resolve_reconcile_write_paths(plan, project.project_root)
+            rewrites = plan_rewrites(plan, lambda path: write_paths[path].read_bytes())
+            if not dry_run and rewrites:
+                commit_rewrites(
+                    project.project_root,
+                    rewrites,
+                    write_paths,
+                    lock=lock,
+                )
+        _report_reconcile(plan, rewrites, dry_run=dry_run, json_out=json_out)
 
 
 @app.command()
@@ -616,14 +651,18 @@ def init(
         ),
     ] = None,
 ) -> None:
-    """Scaffold .doc-lattice.yml and print pre-commit and CI codegen."""
+    """Scaffold .doc-lattice.yml and print ignore, pre-commit, and CI guidance."""
     with _exit_on_project_error():
         roots = tuple(docs_root) if docs_root else ("docs",)
         _validate_init_flags(roots, linear_team)
         scaffold = build_scaffold(roots, linear_team, __version__)
         target = Path.cwd() / DEFAULT_CONFIG_NAME
         try:
-            _atomic_create(target, scaffold.config_text)
+            atomic_create_bytes(
+                target,
+                scaffold.config_text.encode("utf-8"),
+                prefix=f"{target.name}.",
+            )
         except FileExistsError:
             _err.print(f"{escape(target.name)} already exists, leaving it untouched")
         except OSError as exc:
@@ -631,54 +670,20 @@ def init(
             raise ConfigError(msg) from exc
         else:
             _err.print(f"wrote {escape(target.name)}")
+        typer.echo("# ===== .gitignore (append these lines) =====")
+        typer.echo(scaffold.gitignore_text)
         typer.echo("# ===== .pre-commit-config.yaml (add under `repos:`) =====")
         typer.echo(scaffold.precommit_text)
         typer.echo("# ===== .github/workflows/doc-lattice.yml (new file) =====")
         typer.echo(scaffold.ci_text)
         _err.print(
-            "Add the pre-commit block under `repos:`, save the workflow as "
+            "Append the .gitignore block, add the pre-commit block under `repos:`, "
+            "save the workflow as "
             ".github/workflows/doc-lattice.yml, and make sure the "
             f"exact pinned version {__version__} is published on PyPI so the "
             "snippets resolve."
         )
     raise typer.Exit(0)
-
-
-def _atomic_write(path: Path, text: str) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    try:
-        tmp.write_text(text, encoding="utf-8")
-        tmp.replace(path)
-    except OSError:
-        tmp.unlink(missing_ok=True)
-        raise
-
-
-def _atomic_create(path: Path, text: str) -> None:
-    """Create path with text, crash-safe and never overwriting an existing file.
-
-    Writes the full text to a unique temp file in the same directory through a
-    buffered file object (so a short write surfaces as an error rather than a
-    truncated file), fsyncs it so the bytes are durable, then publishes by
-    hard-linking the temp onto the final path. os.link is atomic and raises
-    FileExistsError if the target already exists, so the final path only ever
-    appears complete, never empty or partial. The temp is always removed, so a
-    failed run leaves no litter.
-
-    Raises:
-        FileExistsError: If path already exists.
-        OSError: If the write or the link fails for another reason.
-    """
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        os.link(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
 
 
 def main() -> None:

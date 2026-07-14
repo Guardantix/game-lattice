@@ -22,9 +22,10 @@ _COMMENTED_BINDING = "# binding_layers: null\n"
 
 @dataclass(frozen=True, slots=True)
 class Scaffold:
-    """The three artifacts init produces: one written, two printed."""
+    """The four artifacts init produces: one written, three printed."""
 
     config_text: str
+    gitignore_text: str
     precommit_text: str
     ci_text: str
 
@@ -60,6 +61,16 @@ def render_config(docs_roots: tuple[str, ...], linear_team: str | None) -> str:
         parts.append(_COMMENTED_LINEAR)
     parts.append(_COMMENTED_BINDING)
     return "".join(parts)
+
+
+def render_gitignore() -> str:
+    """Render ignore patterns for recoverable reconcile artifacts."""
+    return (
+        ".doc-lattice-reconcile.json\n"
+        ".doc-lattice-reconcile.json.*.tmp\n"
+        ".*.doc-lattice-before.*.tmp\n"
+        ".*.doc-lattice-after.*.tmp\n"
+    )
 
 
 def render_precommit(version: str) -> str:
@@ -124,10 +135,11 @@ def build_scaffold(docs_roots: tuple[str, ...], linear_team: str | None, version
         version: The exact PyPI package version the snippets install, for example "1.0.0".
 
     Returns:
-        A Scaffold holding the config text and the two codegen snippets.
+        A Scaffold holding the config text and the three guidance snippets.
     """
     return Scaffold(
         config_text=render_config(docs_roots, linear_team),
+        gitignore_text=render_gitignore(),
         precommit_text=render_precommit(version),
         ci_text=render_ci(version),
     )

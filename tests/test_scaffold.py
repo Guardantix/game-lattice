@@ -11,6 +11,7 @@ from doc_lattice.config import Config
 from doc_lattice.scaffold import (
     build_scaffold,
     render_config,
+    render_gitignore,
 )
 
 
@@ -22,6 +23,21 @@ def _load(text: str) -> Config:
 def test_render_config_includes_commented_cache_key_example():
     text = render_config(("docs",), None)
     assert "# cache_key: my-project-docs" in text
+
+
+def test_render_gitignore_matches_reconcile_transaction_artifacts():
+    assert render_gitignore() == (
+        ".doc-lattice-reconcile.json\n"
+        ".doc-lattice-reconcile.json.*.tmp\n"
+        ".*.doc-lattice-before.*.tmp\n"
+        ".*.doc-lattice-after.*.tmp\n"
+    )
+
+
+def test_build_scaffold_includes_exact_gitignore_text():
+    scaffold = build_scaffold(("docs",), None, "1.0.0")
+
+    assert scaffold.gitignore_text == render_gitignore()
 
 
 def test_render_config_default_has_docs_active_and_keys_commented():
