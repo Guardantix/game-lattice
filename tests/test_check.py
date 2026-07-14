@@ -9,7 +9,7 @@ from doc_lattice.loader import build_lattice
 from doc_lattice.model import NodeMeta, ParsedDoc, RawEdge, TargetId
 from doc_lattice.orchestrate import load_lattice
 from doc_lattice.resolve import target_content
-from doc_lattice.sections import build_toc, section_span, section_text
+from doc_lattice.sections import build_toc, section_spans, section_text
 
 
 def test_statuses_json_returns_exact_payload_shape():
@@ -162,7 +162,7 @@ def test_check_memoizes_shared_target_hash(monkeypatch):
 
 def test_has_drift_false_when_all_ok():
     up_body = "# Up {#accent}\naccent\n"
-    span = section_span(build_toc(up_body), 0, len(up_body.splitlines()))
+    span = section_spans(build_toc(up_body), len(up_body.splitlines()))[0]
     seen = content_hash(section_text(up_body, span))
     docs = [
         ParsedDoc(Path("up.md"), NodeMeta(id="up"), up_body),

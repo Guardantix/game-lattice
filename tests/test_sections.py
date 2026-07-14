@@ -8,7 +8,6 @@ from doc_lattice.sections import (
     anchor_ids,
     build_toc,
     github_slug,
-    section_span,
     section_spans,
     section_text,
     split_body_lines,
@@ -53,40 +52,15 @@ def test_build_toc_rejects_spaceless_heading_text():
     assert build_toc("#not head") == []
 
 
-def test_section_span_stops_at_same_or_higher_level():
-    toc = build_toc(DOC)
-    total = len(DOC.splitlines())
-    # "accent" (index 1) spans through its nested child until "## Other" at line 10.
-    assert section_span(toc, 1, total) == (4, 9)
-    # "nested" (index 2) spans until "## Other".
-    assert section_span(toc, 2, total) == (7, 9)
-    # "other" (index 3) spans to EOF.
-    assert section_span(toc, 3, total) == (10, total)
-
-
-def test_section_span_does_not_compute_all_spans(monkeypatch):
-    toc = build_toc(DOC)
-    total = len(DOC.splitlines())
-
-    def reject_batch_call(_headings, _total_lines):
-        pytest.fail("section_span must not delegate a single lookup to section_spans")
-
-    monkeypatch.setattr(sections_module, "section_spans", reject_batch_call)
-
-    assert section_span(toc, 1, total) == (4, 9)
-
-
-def test_section_spans_matches_individual_section_span_results():
-    toc = build_toc(DOC)
-    total = len(DOC.splitlines())
-
-    expected = [section_span(toc, i, total) for i in range(len(toc))]
-    assert section_spans(toc, total) == expected
+def test_single_section_span_helper_is_not_exported_or_present():
+    assert "section_span" not in sections_module.__all__
+    assert not hasattr(sections_module, "section_span")
 
 
 def test_section_text_strips_anchor_from_heading_line():
     toc = build_toc(DOC)
-    text = section_text(DOC, section_span(toc, 1, len(DOC.splitlines())))
+    spans = section_spans(toc, len(DOC.splitlines()))
+    text = section_text(DOC, spans[1])
     assert text.startswith("## Accent\n")
     assert "{#accent}" not in text
     assert "nested body" in text  # nested content is part of the parent span
@@ -146,7 +120,8 @@ def test_split_body_lines_empty_body_is_empty_list():
 
 def test_section_text_retains_inner_anchor_markers():
     toc = build_toc(DOC)
-    text = section_text(DOC, section_span(toc, 1, len(DOC.splitlines())))
+    spans = section_spans(toc, len(DOC.splitlines()))
+    text = section_text(DOC, spans[1])
     # Only the heading (first) line is de-anchored; inner anchors stay verbatim.
     assert text.startswith("## Accent\n")
     assert "{#accent}" not in text
