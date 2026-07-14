@@ -16,7 +16,7 @@ from doc_lattice.model import (
     RawEdge,
     TargetId,
 )
-from doc_lattice.sections import anchor_ids, build_toc, section_span
+from doc_lattice.sections import anchor_ids, build_toc, section_spans
 
 
 def _doc(path: str, body: str, **meta) -> ParsedDoc:
@@ -342,7 +342,7 @@ def _build_anchored_and_spans(
     """Build real ``anchored``/``spans`` from a list of heading levels.
 
     Renders a markdown body (one heading per level, each followed by a content line), then
-    runs it through ``build_toc``/``anchor_ids``/``section_span`` exactly as ``build_lattice``
+    runs it through ``build_toc``/``anchor_ids``/``section_spans`` exactly as ``build_lattice``
     does, so the inputs mirror what the loader feeds ``_record_ancestors``.
     """
     body_lines: list[str] = []
@@ -354,9 +354,10 @@ def _build_anchored_and_spans(
     total_lines = _line_count(body)
     anchored: list[TargetId] = []
     spans: dict[TargetId, tuple[int, int]] = {}
+    toc_spans = section_spans(toc, total_lines)
     for i, anchor in enumerate(anchor_ids(toc)):
         tid = TargetId("f", anchor)
-        spans[tid] = section_span(toc, i, total_lines)
+        spans[tid] = toc_spans[i]
         anchored.append(tid)
     return anchored, spans
 

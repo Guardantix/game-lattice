@@ -19,6 +19,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Documentation ownership is consolidated: README.md owns the user contract, ARCHITECTURE.md owns
+  durable decisions and module boundaries, CLAUDE.md routes contributors and agents, CHANGELOG.md
+  owns history and migrations, and roadmap.md contains future direction only.
 - Internal: `doc_lattice.cli` is now a package with a frozen per-invocation runtime, focused
   command adapters, centralized output and error handling, and command-mirrored CLI tests. Runtime
   behavior is unchanged. The silent 1.x `--json` compatibility alias and its 2.0 removal in favor
@@ -38,6 +41,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Markdown files that open YAML frontmatter without a closing `---` now fail with a
   source-naming tool error (exit 2) across cached and uncached loads instead of being silently
   omitted from the lattice. Existing version-1 load caches are rebuilt.
+
+### Removed
+
+- **BREAKING (2.0):** Removed the unsupported `binding_layers` configuration key. Migration:
+  delete the key from 1.x configs; there is no replacement, and `lint`'s fixed authority ladder
+  is unchanged. Strict configuration now rejects the key.
+- Internal: removed the singular `section_span` helper in favor of the existing `section_spans`
+  API.
+- Deleted completed design specs and implementation plans after recording their durable Linear,
+  load-cache, and Markdown compatibility decisions in ARCHITECTURE.md. Also deleted the duplicate
+  code-conventions guide and incomplete build log; their owners are CLAUDE.md and CHANGELOG.md.
+  Version control retains the implementation history.
 
 ## [1.0.1] - 2026-07-13
 

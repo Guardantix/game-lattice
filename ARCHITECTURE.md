@@ -20,8 +20,8 @@ Typer to the engine. Shared output policy lives in `cli/output.py`;
 `orchestrate.load_lattice(project)` is the single wiring point that runs the pipeline;
 `init` is a separate scaffolding command that never loads the lattice. The central
 structure is the `Lattice` (model.py), which every lattice-reading command reads.
-CLAUDE.md holds the module-by-module pure/impure inventory and the tooling-enforced
-invariants; this file records the load-bearing decisions and their rationale.
+This file owns the durable module boundaries and load-bearing decisions. CLAUDE.md
+routes contributors and agents to those decisions and lists enforced repository rules.
 
 ## Decision Log
 
@@ -245,3 +245,86 @@ silent 1.x alias remains behaviorally compatible and emits no deprecation warnin
 The cost is that selector inconsistency remains through 1.x, and the migration notice
 is documentation-only because stderr cannot carry a compatibility-safe warning. This
 decision does not newly freeze every 1.x output schema.
+
+### AD-11: Linear is a read-only, opt-in network boundary
+
+**Date:** 2026-06-27
+**Status:** Accepted
+**Context:** Live ticket status is useful for analysis, but the local graph must remain
+deterministic and repository-controlled input must not gain an open network capability.
+**Decision:** Only the opt-in `linear` command touches the network, and only
+`linear_client` performs requests. Its API key comes exclusively from the environment;
+the GraphQL endpoint is hardcoded HTTPS and redirects are refused. Repository-controlled
+ticket refs are validated, bounded, and queried within the configured team, failing closed
+when that scope is invalid. Ticket status is never persisted, and trigger construction,
+response parsing, grading, and rendering remain pure.
+**Consequences:** Every other command remains offline, and running `linear` requires an
+explicit secret-bearing environment. Live status affects only the current report, never
+the lattice or later results. Network policy stays concentrated in one auditable module,
+while the analysis can be tested without network access.
+
+### AD-12: The load cache is a disposable, opt-in accelerator
+
+**Date:** 2026-07-10
+**Status:** Accepted
+**Context:** Large doc sets benefit from reuse across runs and worktrees, but caching
+must not weaken default correctness or become part of the project state.
+**Decision:** A validated, safe `cache_key` opts into a cache slot under the user cache
+home, outside checkouts so worktrees can share it. By default, cache hits re-read and hash
+document bytes. `cache_trust_stat` explicitly permits read-only commands to trust unchanged
+size and modification time, accepting stale content or masked unreadability when both remain
+unchanged. Reconcile always verifies bytes. Cache contents are disposable, and cache write
+failure may report a diagnostic but cannot change command output or exit status.
+**Consequences:** The default tier matches uncached results for caches produced by doc-lattice
+and for missing, unreadable, schema-invalid, or version-stale cache files. The same-user cache
+is trusted; schema-valid manual tampering is outside the integrity guarantee. The stat tier's
+staleness and readability tradeoff applies only when explicitly enabled for read-only commands,
+and it cannot influence reconcile writes. Normal cache deletion, read failure, or write failure
+affects acceleration rather than command results.
+
+### AD-13: Section identity uses a pinned compatibility adapter
+
+**Date:** 2026-07-13
+**Status:** Accepted
+**Context:** Section refs need stable GitHub-compatible identities, while general Markdown
+parsers and Unicode behavior can change independently across runtimes.
+**Decision:** Section discovery intentionally supports a narrow addressable Markdown subset
+through a compatibility adapter pinned to exact `markdown-it-py==4.2.0` behavior and a
+`github-slugger@2.0.0` target. Generated Unicode data closes the supported Python and
+JavaScript runtime gap. Node is required only to regenerate and verify that artifact during
+maintenance, never at runtime.
+**Consequences:** Supported headings and slugs remain stable across ordinary dependency and
+runtime updates, and unsupported Markdown constructs stay deliberately unaddressable. Parser,
+slugger, or Unicode target changes require an explicit compatibility review, regeneration,
+parity verification, and benchmark validation. The shipped Python package has no Node
+dependency.
+
+### AD-14: Documentation ownership is one-way
+
+**Date:** 2026-07-14
+**Status:** Accepted
+**Context:** Repeating current behavior across user docs, contributor guidance, roadmaps,
+and completed implementation documents creates conflicting sources of truth.
+**Decision:** README.md owns the user contract; ARCHITECTURE.md owns durable decisions and
+module boundaries; CLAUDE.md routes contributors and agents and lists enforced repository
+rules without restating behavior; CHANGELOG.md owns release history and migrations; and
+roadmap.md owns future direction. Maintained documents link to the owner instead of copying
+its content. Completed implementation specs and plans, duplicate convention guides, and
+incomplete history logs are deleted after durable content reaches its owner, rather than
+maintained or archived in the repository.
+**Consequences:** Each fact has one maintained owner, so changes update one source and its
+incoming links. Historical implementation detail remains available through version control,
+while the maintained documentation stays smaller and current.
+
+### AD-15: Speculative configuration is removed instead of reserved
+
+**Date:** 2026-07-14
+**Status:** Accepted
+**Context:** `binding_layers` was accepted by strict configuration but had no consumer,
+which implied a future contract without an approved requirement or defined behavior.
+**Decision:** `binding_layers` is removed for 2.0 rather than implemented. Existing 1.x
+configs migrate by deleting the key, with no replacement. Authority behavior remains
+`lint`'s fixed binding > derived > exploratory ladder, and strict configuration rejects
+the removed key.
+**Consequences:** This is a documented breaking change in the next major release. Future
+configuration keys are not reserved as inert surface without an approved requirement.

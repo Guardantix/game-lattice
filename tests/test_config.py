@@ -94,15 +94,15 @@ def test_empty_docs_roots_yields_no_resolved_roots(tmp_path: Path):
 def test_optional_fields_default_to_none(tmp_path: Path):
     project = load_config(None, tmp_path)
     assert project.config.linear_team is None
-    assert project.config.binding_layers is None
 
 
-def test_binding_layers_roundtrips(tmp_path: Path):
+def test_binding_layers_is_rejected_as_an_extra_key(tmp_path: Path):
     (tmp_path / ".doc-lattice.yml").write_text(
         "binding_layers: [binding, derived]\n", encoding="utf-8"
     )
-    project = load_config(None, tmp_path)
-    assert project.config.binding_layers == ["binding", "derived"]
+    with pytest.raises(ConfigError) as exc:
+        load_config(None, tmp_path)
+    assert "extra_forbidden" in str(exc.value)
 
 
 def test_root_escaping_project_is_rejected(tmp_path: Path):

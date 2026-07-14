@@ -403,11 +403,10 @@ from the current directory:
 docs_roots:
   - docs                  # roots to scan for tracked .md files (default: ["docs"])
 # ignore_globs:           # paths to skip within those roots
-#   - "**/superpowers/plans/**"
+#   - "**/archive/**"
 # cache_key: my-docs      # opt-in incremental load cache slot (see Load cache below)
 # cache_trust_stat: false # opt-in stat fast tier for read-only commands (accepts the mtime caveat)
 # linear_team: ENG        # the Linear team the `linear` query targets
-# binding_layers: null    # accepted but inert today; setting it changes nothing (see below)
 ```
 
 The project root is the resolved parent of the selected config file, including an explicit
@@ -421,11 +420,8 @@ multiple roots or symlink aliases resolve to the same document, it is loaded onc
 unresolved path discovered. Reconcile re-resolves that identity path before writing so a retargeted
 symlink cannot escape the project root.
 
-`binding_layers` is accepted in the config for forward compatibility but is inert today: setting it
-changes nothing, because no command consults it. Authority ranking currently lives entirely in
-`lint` (binding > derived > exploratory); the
-[lint design spec](docs/superpowers/specs/2026-06-28-doc-lattice-lint-design.md) preserves
-historical design context for that ranking.
+For 2.0, `binding_layers` is unsupported. Delete it from 1.x configs; there is no replacement.
+`lint`'s fixed binding > derived > exploratory authority ladder is unchanged.
 
 ### Load cache (opt-in)
 
@@ -538,13 +534,10 @@ collision. Equal anchors in different files do not collide.
 | Document | Purpose |
 |----------|---------|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System design and the decision log |
-| [CLAUDE.md](CLAUDE.md) | Architecture map and tooling-enforced invariants |
-| [roadmap.md](roadmap.md) | Shipped slices and what is deferred |
-| [CHANGELOG.md](CHANGELOG.md) | Release history |
+| [CLAUDE.md](CLAUDE.md) | Short contributor and agent guide |
+| [roadmap.md](roadmap.md) | Future direction |
+| [CHANGELOG.md](CHANGELOG.md) | Release history and migrations |
 | [RELEASING.md](RELEASING.md) | Release checklist and version-tag procedure |
-| [build-log.md](build-log.md) | Historical development timeline |
-| [docs/superpowers/specs/](docs/superpowers/specs/) | Historical design context; current code and supported docs supersede conflicts |
-| [docs/superpowers/plans/](docs/superpowers/plans/) | Historical implementation context, not current user-facing documentation |
 
 ## Project structure
 
@@ -562,19 +555,10 @@ doc-lattice/
 │       └── store.py         # cache-file reads and atomic writes
 ├── tests/                   # test suite (mirrors sources; property-based hashing invariants)
 ├── scripts/                 # CI guards plus slug generation and section benchmark tools
-├── docs/superpowers/        # historical design and implementation context
 └── pyproject.toml           # project configuration
 ```
 
-The engine is a pure pipeline (`config -> discovery -> frontmatter parse -> build_lattice`
-feeding `{ check, impact, reconcile, graph, lint, linear }`) where all graph and report logic
-is filesystem-free. `config`, `discovery`, and `orchestrate` own load-path filesystem work;
-`persistence.py` owns shared durable single-path operations; `reconcile_transaction.py` owns the
-reconcile lock capability, independent live commit destination preflight, durable batch, rollback,
-and recovery; and the `doc_lattice.cli` package orchestrates and reports those operations. Cache I/O
-is split between document-reading `cache/lookup.py` and cache-file-owning `cache/store.py`. Only
-`linear_client` touches the network. See
-[ARCHITECTURE.md](ARCHITECTURE.md) for the decisions behind that split.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for module boundaries and their rationale.
 
 ## License
 
