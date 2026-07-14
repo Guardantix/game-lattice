@@ -75,8 +75,8 @@ def _run_cli_subprocess(argv: list[str], env: dict[str, str]) -> subprocess.Comp
     ids=["help", "invalid-indent"],
 )
 def test_no_color_suppresses_typer_rendered_colors(argv):
-    # These two invocations never reach _out/_err: --help and a --indent range failure
-    # are rendered by typer's own rich_utils consoles before or outside main_callback.
+    # These two invocations never create a callback runtime: --help and an --indent
+    # range failure are rendered by Typer's parsing/help consoles first.
     # Regression test for the review finding that --no-color left them styled: even with an
     # ambient FORCE_COLOR (as CI sets), the explicit flag must yield escape-free captured output,
     # so we assert on raw ANSI, not just color spans (bold/dim escapes would otherwise survive).
@@ -283,9 +283,8 @@ def test_main_passes_systemexit_through_unchanged(monkeypatch):
 
 
 def test_main_sets_no_color_env_before_app_runs(monkeypatch):
-    # typer/click build their own rich_utils consoles (help text, parameter-validation
-    # errors) from scratch on demand; those are untouched by _disable_color() and only
-    # honor NO_COLOR if it is already set in the environment before app() parses argv.
+    # Typer/Click build their parsing/help consoles on demand, before a callback-created
+    # runtime exists. They honor NO_COLOR when it is set before app() parses argv.
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setattr(sys, "argv", ["doc-lattice", "--no-color", "check"])
     seen = {}
