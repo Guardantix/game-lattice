@@ -1498,6 +1498,34 @@ def test_one_shot_post_unlink_journal_sync_failure_is_healed(tmp_path: Path, mon
     assert not transaction.journal.exists()
 
 
+def test_journal_replaced_after_stage_cleanup_is_preserved_and_reported(
+    tmp_path: Path, monkeypatch
+):
+    transaction = _write_synthetic_transaction(tmp_path, state="committed")
+    collision_bytes = b"intervening recovery authority\n"
+    real_cleanup_journal = reconcile_transaction._cleanup_journal
+
+    def _replace_before_journal_cleanup(journal: Path, journal_bytes: bytes) -> None:
+        assert not transaction.before.exists()
+        assert not transaction.after.exists()
+        journal.write_bytes(collision_bytes)
+        real_cleanup_journal(journal, journal_bytes)
+
+    monkeypatch.setattr(
+        reconcile_transaction,
+        "_cleanup_journal",
+        _replace_before_journal_cleanup,
+    )
+
+    with pytest.raises(ReconcilePersistenceError) as caught:
+        recover_transaction(tmp_path)
+
+    assert "journal collision" in str(caught.value)
+    assert "refusing to remove" in str(caught.value)
+    assert transaction.journal.read_bytes() == collision_bytes
+    assert transaction.destination.read_bytes() == b"after image\n"
+
+
 def test_persistent_post_unlink_journal_sync_failure_restores_exact_journal_for_retry(
     tmp_path: Path, monkeypatch
 ):
@@ -1631,7 +1659,7 @@ def test_journal_restoration_read_failure_is_reported_without_overwrite(
     journal_bytes = transaction.journal.read_bytes()
     real_read_bytes = Path.read_bytes
     real_sync = persistence.sync_directory
-    journal_reads = 0
+    fail_restoration_read = False
 
     def _fail_original_journal_sync(path: Path) -> None:
         if path == tmp_path:
@@ -1639,17 +1667,16 @@ def test_journal_restoration_read_failure_is_reported_without_overwrite(
         real_sync(path)
 
     def _recreate_then_fail_resync(path: Path) -> None:
+        nonlocal fail_restoration_read
         if path == tmp_path:
             transaction.journal.write_bytes(journal_bytes)
+            fail_restoration_read = True
             raise OSError("secondary journal resync failure")
         real_sync(path)
 
     def _fail_restoration_read(path: Path) -> bytes:
-        nonlocal journal_reads
-        if path == transaction.journal:
-            journal_reads += 1
-            if journal_reads >= 2:
-                raise OSError("injected journal restoration read failure")
+        if path == transaction.journal and fail_restoration_read:
+            raise OSError("injected journal restoration read failure")
         return real_read_bytes(path)
 
     monkeypatch.setattr(persistence, "sync_directory", _fail_original_journal_sync)

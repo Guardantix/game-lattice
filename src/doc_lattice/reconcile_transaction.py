@@ -596,6 +596,14 @@ def _restore_journal(journal: Path, journal_bytes: bytes, primary: OSError) -> b
 
 def _cleanup_journal(journal: Path, journal_bytes: bytes) -> None:
     """Remove the journal last, restoring it if persistent post-unlink sync fails."""
+    status, detail = _exact_journal_status(journal, journal_bytes)
+    if status != "exact":
+        message = (
+            f"cannot safely clean reconcile journal {journal}: {detail}; refusing to remove "
+            "an unverified journal path; preserve all available recovery evidence for manual "
+            "inspection"
+        )
+        raise ReconcilePersistenceError(message)
     try:
         durable_unlink(journal)
     except OSError as primary:
