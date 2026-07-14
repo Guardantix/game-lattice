@@ -345,10 +345,11 @@ Expected: it reports `github-slugger@2.0.0`, 1,112,064 checked Unicode scalar va
 count, and writes `src/doc_lattice/_github_slugger_data.py`.
 
 Implementation note: review found that regex parity alone did not cover JavaScript/Python Unicode
-lowercase differences. The completed generator also checks 1,112,067 calls to the actual upstream
+lowercase differences. The completed generator checks 1,112,070 calls to the actual upstream
 `slug()` operation under JavaScript Unicode 17.0, compares lowercase mappings against the minimum
-Python 3.13 Unicode 15.1 table, and generates the 55 required post-lowercase patches. The CLI's
-`--python-baseline` defaults to `python3.13`.
+Python 3.13 Unicode 15.1 table, and generates the 55 required lowercase patches plus pinned
+`Cased` and `Case_Ignorable` tables for contextual casing. The CLI's `--python-baseline` defaults
+to `python3.13`.
 
 - [x] **Step 5: Implement slug and marker operations in the adapter**
 

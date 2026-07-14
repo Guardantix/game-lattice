@@ -45,3 +45,6 @@ def test_slug_lowercase_uses_pinned_javascript_unicode_data() -> None:
     assert github_slug("\ua7cb") == "\u0264"
     assert github_slug("\ua7dc") == "\u019b"
     assert github_slug("\u039f\u03a3") == "\u03bf\u03c2"
+    assert github_slug("\ua7cb\u03a3") == "\u0264\u03c2"
+    assert github_slug("\u1c89\u03a3") == "\u03c2"
+    assert github_slug("A\u03a3\u1ad0A") == "a\u03c3a"

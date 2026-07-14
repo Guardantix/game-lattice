@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Generate Python slug compatibility data from pinned upstream behavior.
 
-Node evaluates the exact upstream slug operation over every Unicode scalar value. Python 3.13
-supplies the minimum supported lowercase table so the generated artifact can patch version gaps.
+Node evaluates the exact upstream slug operation and casing properties over every Unicode scalar
+value. Python 3.13 supplies the minimum supported lowercase table so the generated artifact can
+patch version gaps.
 """
 
 import argparse
@@ -12,6 +13,7 @@ import subprocess
 import tempfile
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 
 UPSTREAM_VERSION = "2.0.0"
@@ -33,8 +35,12 @@ const regexUrl = pathToFileURL(process.argv[1])
 const module = await import(regexUrl.href)
 const slugger = await import(new URL('index.js', regexUrl).href)
 const regex = module.regex
+const casedRegex = /^\p{Cased}$/u
+const caseIgnorableRegex = /^\p{Case_Ignorable}$/u
 const stripped = []
 const lowercase = []
+const cased = []
+const caseIgnorable = []
 let slugOperations = 0
 for (let codePoint = 0; codePoint <= 0x10FFFF; codePoint++) {
   if (codePoint >= 0xD800 && codePoint <= 0xDFFF) continue
@@ -43,6 +49,8 @@ for (let codePoint = 0; codePoint <= 0x10FFFF; codePoint++) {
   if (lower !== value) {
     lowercase.push([codePoint, [...lower].map(character => character.codePointAt(0))])
   }
+  if (casedRegex.test(value)) cased.push(codePoint)
+  if (caseIgnorableRegex.test(value)) caseIgnorable.push(codePoint)
   regex.lastIndex = 0
   const composed = lower.replace(regex, '').replace(/ /g, '-')
   if (slugger.slug(value) !== composed) {
@@ -52,7 +60,7 @@ for (let codePoint = 0; codePoint <= 0x10FFFF; codePoint++) {
   regex.lastIndex = 0
   if (regex.test(value)) stripped.push(codePoint)
 }
-for (const value of ['ΟΣ', 'A B', 'İ']) {
+for (const value of ['ΟΣ', 'A B', 'İ', 'ꟋΣ', '\u{1C89}Σ', 'AΣ\u{1AD0}A']) {
   regex.lastIndex = 0
   const composed = value.toLowerCase().replace(regex, '').replace(/ /g, '-')
   if (slugger.slug(value) !== composed) throw new Error(`contextual slug mismatch for ${value}`)
@@ -63,6 +71,8 @@ process.stdout.write(JSON.stringify({
   unicode: process.versions.unicode,
   stripped,
   lowercase,
+  cased,
+  caseIgnorable,
   slugOperations,
 }))
 """
@@ -94,6 +104,8 @@ class ArtifactMetadata:
     python_baseline_unicode: str
     upstream_lowercase_count: int
     slug_operation_count: int
+    cased_count: int
+    case_ignorable_count: int
 
 
 def coalesce(code_points: Iterable[int]) -> list[tuple[int, int]]:
@@ -167,6 +179,9 @@ def render_module(
     pattern: str,
     lowercase_patches: Sequence[tuple[int, Sequence[int]]],
     metadata: ArtifactMetadata,
+    *,
+    cased_pattern: str,
+    case_ignorable_pattern: str,
 ) -> str:
     """Render the generated Python module.
 
@@ -174,6 +189,8 @@ def render_module(
         pattern: Generated Python regular-expression pattern.
         lowercase_patches: JavaScript mappings absent from the Python baseline.
         metadata: Upstream versions, integrity hash, and exhaustive operation counts.
+        cased_pattern: JavaScript Unicode ``Cased`` property as an explicit pattern.
+        case_ignorable_pattern: JavaScript Unicode ``Case_Ignorable`` property pattern.
 
     Returns:
         Complete deterministic Python module text.
@@ -187,6 +204,8 @@ def render_module(
     )
     patch_pattern = render_pattern(coalesce(source for source, _ in lowercase_patches))
     patch_pattern_lines = _render_wrapped_pattern(patch_pattern)
+    cased_pattern_lines = _render_wrapped_pattern(cased_pattern)
+    case_ignorable_pattern_lines = _render_wrapped_pattern(case_ignorable_pattern)
     return (
         '"""Generated compatibility data for github-slugger. Do not edit by hand."""\n\n'
         f'UPSTREAM_PACKAGE = "github-slugger@{metadata.version}"\n'
@@ -200,8 +219,12 @@ def render_module(
         f"UPSTREAM_LOWERCASE_MAPPINGS = {metadata.upstream_lowercase_count:_}\n"
         f"LOWERCASE_PATCH_MAPPINGS = {len(lowercase_patches):_}\n"
         f"CHECKED_SLUG_OPERATIONS = {metadata.slug_operation_count:_}\n"
+        f"CASED_UNICODE_SCALARS = {metadata.cased_count:_}\n"
+        f"CASE_IGNORABLE_UNICODE_SCALARS = {metadata.case_ignorable_count:_}\n"
         f"LOWERCASE_PATCH_TRANSLATION = {{\n{lowercase_lines}}}\n"
         f"LOWERCASE_PATCH_PATTERN = (\n{patch_pattern_lines})\n"
+        f"CASED_PATTERN = (\n{cased_pattern_lines})\n"
+        f"CASE_IGNORABLE_PATTERN = (\n{case_ignorable_pattern_lines})\n"
         f"SLUG_STRIP_PATTERN = (\n{pattern_lines})\n"
     )
 
@@ -231,7 +254,15 @@ def _parse_lowercase_mappings(values: object, *, source: str) -> list[tuple[int,
 
 def _evaluate_upstream(
     regex_path: Path,
-) -> tuple[list[int], list[tuple[int, tuple[int, ...]]], str, str, int]:
+) -> tuple[
+    list[int],
+    list[tuple[int, tuple[int, ...]]],
+    list[int],
+    list[int],
+    str,
+    str,
+    int,
+]:
     result = subprocess.run(
         ["node", "--input-type=module", "--eval", _NODE_PROGRAM, str(regex_path)],
         check=True,
@@ -244,11 +275,21 @@ def _evaluate_upstream(
         raise ValueError(msg)
     stripped = data.get("stripped")
     lowercase = data.get("lowercase")
+    cased = data.get("cased")
+    case_ignorable = data.get("caseIgnorable")
     node_version = data.get("node")
     unicode_version = data.get("unicode")
     slug_operations = data.get("slugOperations")
     if not isinstance(stripped, list) or not all(isinstance(value, int) for value in stripped):
         msg = "upstream regex evaluator returned a non-integer result"
+        raise ValueError(msg)
+    if not isinstance(cased, list) or not all(isinstance(value, int) for value in cased):
+        msg = "upstream cased-property evaluator returned a non-integer result"
+        raise ValueError(msg)
+    if not isinstance(case_ignorable, list) or not all(
+        isinstance(value, int) for value in case_ignorable
+    ):
+        msg = "upstream case-ignorable evaluator returned a non-integer result"
         raise ValueError(msg)
     mappings = _parse_lowercase_mappings(lowercase, source="upstream")
     if not isinstance(node_version, str) or not isinstance(unicode_version, str):
@@ -257,7 +298,15 @@ def _evaluate_upstream(
     if not isinstance(slug_operations, int) or slug_operations < CHECKED_UNICODE_SCALARS:
         msg = "upstream evaluator returned an invalid slug-operation count"
         raise ValueError(msg)
-    return stripped, mappings, node_version, unicode_version, slug_operations
+    return (
+        stripped,
+        mappings,
+        cased,
+        case_ignorable,
+        node_version,
+        unicode_version,
+        slug_operations,
+    )
 
 
 def _evaluate_python_lowercase(
@@ -319,6 +368,21 @@ def derive_lowercase_patches(
     return sorted(patches.items())
 
 
+def _validate_unicode_property_values(values: Sequence[int], *, property_name: str) -> None:
+    if len(values) > CHECKED_UNICODE_SCALARS:
+        msg = f"upstream {property_name} property exceeds the Unicode scalar set"
+        raise ValueError(msg)
+    if any(current >= following for current, following in pairwise(values)):
+        msg = f"upstream {property_name} property values are not unique and ordered"
+        raise ValueError(msg)
+    if any(value < 0 or value > _MAX_UNICODE for value in values):
+        msg = f"upstream {property_name} property contains a value outside the Unicode range"
+        raise ValueError(msg)
+    if any(_SURROGATE_START <= value <= _SURROGATE_END for value in values):
+        msg = f"upstream {property_name} property contains a surrogate code point"
+        raise ValueError(msg)
+
+
 def _render_from_package(
     package_root: Path, python_executable: str
 ) -> tuple[str, int, int, int, int, str, str]:
@@ -331,9 +395,15 @@ def _render_from_package(
     regex_path = package_root / "regex.js"
     regex_bytes = regex_path.read_bytes()
     regex_sha256 = hashlib.sha256(regex_bytes).hexdigest()
-    stripped, lowercase, node_version, unicode_version, slug_operations = _evaluate_upstream(
-        regex_path
-    )
+    (
+        stripped,
+        lowercase,
+        cased,
+        case_ignorable,
+        node_version,
+        unicode_version,
+        slug_operations,
+    ) = _evaluate_upstream(regex_path)
     if unicode_version != UPSTREAM_JAVASCRIPT_UNICODE:
         msg = (
             f"expected JavaScript Unicode {UPSTREAM_JAVASCRIPT_UNICODE}, "
@@ -371,9 +441,16 @@ def _render_from_package(
     if any(_SURROGATE_START <= value <= _SURROGATE_END for value in all_values):
         msg = "upstream lowercase mapping contains a surrogate code point"
         raise ValueError(msg)
+    for values, property_name in (
+        (cased, "cased"),
+        (case_ignorable, "case-ignorable"),
+    ):
+        _validate_unicode_property_values(values, property_name=property_name)
 
     lowercase_patches = derive_lowercase_patches(lowercase, baseline_lowercase)
     pattern = render_pattern(coalesce(stripped))
+    cased_pattern = render_pattern(coalesce(cased))
+    case_ignorable_pattern = render_pattern(coalesce(case_ignorable))
     metadata = ArtifactMetadata(
         version=version,
         regex_sha256=regex_sha256,
@@ -382,8 +459,16 @@ def _render_from_package(
         python_baseline_unicode=baseline_unicode,
         upstream_lowercase_count=len(lowercase),
         slug_operation_count=slug_operations,
+        cased_count=len(cased),
+        case_ignorable_count=len(case_ignorable),
     )
-    rendered = render_module(pattern, lowercase_patches, metadata)
+    rendered = render_module(
+        pattern,
+        lowercase_patches,
+        metadata,
+        cased_pattern=cased_pattern,
+        case_ignorable_pattern=case_ignorable_pattern,
+    )
     return (
         rendered,
         len(stripped),

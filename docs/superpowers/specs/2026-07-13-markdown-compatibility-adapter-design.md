@@ -90,18 +90,20 @@ parsing, anchor, and slug behavior behind one module boundary.
 
 `src/doc_lattice/_github_slugger_data.py` is generated and must not be hand-edited. It contains the
 Python regular-expression pattern derived mechanically from the strip behavior of
-`github-slugger@2.0.0`, plus lowercase patches between the minimum Python 3.13 Unicode 15.1 table
-and JavaScript Unicode 17.0. It records the exact upstream and Unicode versions and integrity
-metadata in its header. `markdown_compat.py` compiles the generated patterns.
+`github-slugger@2.0.0`, plus lowercase patches and contextual casing-property tables bridging the
+minimum Python 3.13 Unicode 15.1 table to JavaScript Unicode 17.0. It records the exact upstream and
+Unicode versions and integrity metadata in its header. `markdown_compat.py` compiles the generated
+patterns.
 
 `scripts/generate_github_slugger_data.py` is the maintenance entry point. It installs or reads the
 exact pinned npm package in a temporary working directory, asks Node to evaluate the upstream regex
 and actual `slug()` operation over every Unicode scalar value, and checks contextual lowercase
-examples. It compares the JavaScript lowercase map with `python3.13`, coalesces the stripped and
-patch code points into ranges, and renders the Python artifact deterministically. `--check`
-compares a fresh rendering with the committed file. The script reports both Unicode versions,
-1,112,064 checked scalars, and 1,112,067 upstream slug operations. Node, npm, and a Python 3.13
-executable are maintenance-time tools only; none becomes an additional runtime dependency.
+examples. It compares the JavaScript lowercase map with `python3.13`, captures JavaScript's
+`Cased` and `Case_Ignorable` properties, coalesces the generated code points into ranges, and
+renders the Python artifact deterministically. `--check` compares a fresh rendering with the
+committed file. The script reports both Unicode versions, 1,112,064 checked scalars, and 1,112,070
+upstream slug operations. Node, npm, and a Python 3.13 executable are maintenance-time tools only;
+none becomes an additional runtime dependency.
 
 Tests cover the official operation with representative upstream fixtures, contextual Greek case
 mapping, and scalars that differ between the supported Python and JavaScript Unicode tables. The

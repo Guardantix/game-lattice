@@ -17,8 +17,9 @@ from markdown_it.token import Token
 from markdown_it.utils import EnvType
 
 from ._github_slugger_data import (
+    CASE_IGNORABLE_PATTERN,
+    CASED_PATTERN,
     JAVASCRIPT_UNICODE_VERSION,
-    LOWERCASE_PATCH_PATTERN,
     LOWERCASE_PATCH_TRANSLATION,
     SLUG_STRIP_PATTERN,
 )
@@ -29,9 +30,13 @@ SLUG_COMPAT_VERSION = "github-slugger@2.0.0"
 SLUG_UNICODE_VERSION = JAVASCRIPT_UNICODE_VERSION
 
 _ANCHOR_RE = re.compile(r"(?:^|\s+)\{#([A-Za-z0-9][A-Za-z0-9_-]*)\}(?:\s*$|\s+(?=#+\s*$))")
-_LOWERCASE_PATCH_RE = re.compile(LOWERCASE_PATCH_PATTERN)
+_CASED_RE = re.compile(CASED_PATTERN)
+_CASE_IGNORABLE_RE = re.compile(CASE_IGNORABLE_PATTERN)
 _SLUG_STRIP_RE = re.compile(SLUG_STRIP_PATTERN)
 _HEADING_TOKEN_COUNT = 3
+_GREEK_CAPITAL_SIGMA = "\u03a3"
+_GREEK_SMALL_SIGMA = "\u03c3"
+_GREEK_FINAL_SIGMA = "\u03c2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +168,36 @@ def extract_headings(body: str) -> list[Heading]:
     return headings
 
 
+def _is_final_sigma(text: str, index: int) -> bool:
+    for position in range(index - 1, -1, -1):
+        character = text[position]
+        if _CASE_IGNORABLE_RE.fullmatch(character):
+            continue
+        if not _CASED_RE.fullmatch(character):
+            return False
+        break
+    else:
+        return False
+
+    for character in text[index + 1 :]:
+        if _CASE_IGNORABLE_RE.fullmatch(character):
+            continue
+        return _CASED_RE.fullmatch(character) is None
+    return True
+
+
+def _lower_with_pinned_unicode(text: str) -> str:
+    lowercase: list[str] = []
+    for index, character in enumerate(text):
+        if character == _GREEK_CAPITAL_SIGMA:
+            lowercase.append(
+                _GREEK_FINAL_SIGMA if _is_final_sigma(text, index) else _GREEK_SMALL_SIGMA
+            )
+            continue
+        lowercase.append(character.lower().translate(LOWERCASE_PATCH_TRANSLATION))
+    return "".join(lowercase)
+
+
 def github_slug(text: str) -> str:
     """Return a github-slugger 2.0.0 base slug without deduplication.
 
@@ -172,9 +207,7 @@ def github_slug(text: str) -> str:
     Returns:
         The JavaScript Unicode 17 lowercased, stripped, and space-replaced compatible slug.
     """
-    lowercase = text.lower()
-    if not lowercase.isascii() and _LOWERCASE_PATCH_RE.search(lowercase):
-        lowercase = lowercase.translate(LOWERCASE_PATCH_TRANSLATION)
+    lowercase = text.lower() if text.isascii() else _lower_with_pinned_unicode(text)
     return _SLUG_STRIP_RE.sub("", lowercase).replace(" ", "-")
 
 

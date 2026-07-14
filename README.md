@@ -305,8 +305,8 @@ backtick and tilde fences suppress headings inside them. Setext headings, headin
 or list items, and indented headings are not addressable. Inline Markdown remains part of the raw
 heading text used for slugging. Heading and fence recognition is pinned to
 `markdown-it-py==4.2.0`; generated slugs and document-order duplicate suffixes target
-`github-slugger@2.0.0` under JavaScript Unicode 17.0. Generated lowercase patches bridge the
-minimum supported Python 3.13 Unicode 15.1 table to that target.
+`github-slugger@2.0.0` under JavaScript Unicode 17.0. Generated lowercase patches and contextual
+casing-property tables bridge the minimum supported Python 3.13 Unicode 15.1 table to that target.
 
 ## Configuration
 

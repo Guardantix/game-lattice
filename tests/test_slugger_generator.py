@@ -48,7 +48,11 @@ def test_render_module_includes_lowercase_data_and_wraps_for_lint() -> None:
             python_baseline_unicode="15.1.0",
             upstream_lowercase_count=1_488,
             slug_operation_count=1_112_067,
+            cased_count=2,
+            case_ignorable_count=1,
         ),
+        cased_pattern=r"[\u0041\uA7CB]",
+        case_ignorable_pattern=r"[\u0307]",
     )
     namespace: dict[str, object] = {}
     exec(rendered, namespace)  # noqa: S102 -- generated module behavior is the subject
@@ -62,6 +66,10 @@ def test_render_module_includes_lowercase_data_and_wraps_for_lint() -> None:
         0x0130: "i\u0307",
     }
     assert namespace["LOWERCASE_PATCH_PATTERN"] == r"[\u0130\uA7CB]"
+    assert namespace["CASED_PATTERN"] == r"[\u0041\uA7CB]"
+    assert namespace["CASE_IGNORABLE_PATTERN"] == r"[\u0307]"
+    assert namespace["CASED_UNICODE_SCALARS"] == 2
+    assert namespace["CASE_IGNORABLE_UNICODE_SCALARS"] == 1
     assert namespace["UPSTREAM_LOWERCASE_MAPPINGS"] == 1_488
     assert namespace["CHECKED_SLUG_OPERATIONS"] == 1_112_067
     hash_line = next(line for line in rendered.splitlines() if '"' + "a" * 64 + '"' in line)
@@ -86,7 +94,27 @@ def test_generated_provenance_matches_runtime_version_pins() -> None:
     assert generator["PYTHON_BASELINE_UNICODE"] == PYTHON_BASELINE_UNICODE_VERSION
     assert len(LOWERCASE_PATCH_TRANSLATION) == LOWERCASE_PATCH_MAPPINGS
     assert UPSTREAM_LOWERCASE_MAPPINGS > LOWERCASE_PATCH_MAPPINGS
-    assert CHECKED_SLUG_OPERATIONS > CHECKED_UNICODE_SCALARS
+    assert CHECKED_SLUG_OPERATIONS == CHECKED_UNICODE_SCALARS + 6
+
+
+@pytest.mark.parametrize(
+    ("values", "message"),
+    [
+        (range(CHECKED_UNICODE_SCALARS + 1), "exceeds the Unicode scalar set"),
+        ([1, 0], "not unique and ordered"),
+        ([-1], "outside the Unicode range"),
+        ([0xD800], "contains a surrogate"),
+    ],
+)
+def test_validate_unicode_property_values_rejects_invalid_data(
+    values: object, message: str
+) -> None:
+    generator = run_path(
+        str(Path(__file__).parents[1] / "scripts" / "generate_github_slugger_data.py")
+    )
+
+    with pytest.raises(ValueError, match=message):
+        generator["_validate_unicode_property_values"](values, property_name="cased")
 
 
 def test_install_package_reports_missing_npm(
