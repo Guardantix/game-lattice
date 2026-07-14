@@ -101,6 +101,37 @@ def test_stage_bytes_preserves_fsync_error_when_durable_cleanup_sync_fails(
     assert any("cleanup sync failed" in note for note in getattr(caught.value, "__notes__", []))
 
 
+def test_stage_bytes_cleanup_failure_names_unpublished_orphan_and_manual_remediation(
+    tmp_path: Path, monkeypatch
+):
+    destination = tmp_path / "doc.md"
+    prefix = ".doc.md.failed."
+    cleanup_attempts: list[Path] = []
+
+    def _fail_stage_fsync(fd: int) -> None:  # noqa: ARG001
+        raise OSError("stage fsync failed")
+
+    def _fail_cleanup_before_unlink(staged: Path) -> None:
+        cleanup_attempts.append(staged)
+        raise OSError("cleanup unlink blocked")
+
+    monkeypatch.setattr(persistence.os, "fsync", _fail_stage_fsync)
+    monkeypatch.setattr(persistence, "durable_unlink", _fail_cleanup_before_unlink)
+
+    with pytest.raises(OSError, match="stage fsync failed") as caught:
+        stage_bytes(destination, b"replacement", prefix=prefix)
+
+    assert str(caught.value) == "stage fsync failed"
+    assert len(cleanup_attempts) == 1
+    orphan = cleanup_attempts[0]
+    assert orphan.exists()
+    assert list(tmp_path.glob(f"{prefix}*.tmp")) == [orphan]
+    notes = "; ".join(getattr(caught.value, "__notes__", ()))
+    assert str(orphan) in notes
+    assert "not governed by a recovery journal" in notes
+    assert "inspect and remove it manually when safe" in notes
+
+
 def test_replace_staged_publishes_bytes_and_syncs_destination_directory(
     tmp_path: Path, monkeypatch
 ):
@@ -279,6 +310,38 @@ def test_atomic_create_bytes_preserves_existing_error_when_cleanup_fails(
     assert destination.read_bytes() == b"original"
     assert list(tmp_path.glob(f"{prefix}*.tmp")) == []
     assert any("cleanup sync failed" in note for note in getattr(caught.value, "__notes__", []))
+
+
+def test_atomic_create_link_cleanup_failure_names_unpublished_orphan_and_remediation(
+    tmp_path: Path, monkeypatch
+):
+    destination = tmp_path / "doc.md"
+    prefix = ".doc.md.create."
+    cleanup_attempts: list[Path] = []
+
+    def _fail_link(staged: Path, target: Path) -> None:  # noqa: ARG001
+        raise OSError("link publication failed")
+
+    def _fail_cleanup_before_unlink(staged: Path) -> None:
+        cleanup_attempts.append(staged)
+        raise OSError("cleanup unlink blocked")
+
+    monkeypatch.setattr(persistence.os, "link", _fail_link)
+    monkeypatch.setattr(persistence, "durable_unlink", _fail_cleanup_before_unlink)
+
+    with pytest.raises(OSError, match="link publication failed") as caught:
+        atomic_create_bytes(destination, b"replacement", prefix=prefix)
+
+    assert str(caught.value) == "link publication failed"
+    assert not destination.exists()
+    assert len(cleanup_attempts) == 1
+    orphan = cleanup_attempts[0]
+    assert orphan.exists()
+    assert list(tmp_path.glob(f"{prefix}*.tmp")) == [orphan]
+    notes = "; ".join(getattr(caught.value, "__notes__", ()))
+    assert str(orphan) in notes
+    assert "not governed by a recovery journal" in notes
+    assert "inspect and remove it manually when safe" in notes
 
 
 def test_atomic_create_bytes_creates_absent_target_and_cleans_stage(tmp_path: Path):

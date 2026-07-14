@@ -46,12 +46,25 @@ def sync_directory(path: Path) -> None:
         os.close(fd)
 
 
+def _add_unpublished_stage_cleanup_note(
+    primary: OSError,
+    staged: Path,
+    cleanup_error: OSError,
+) -> None:
+    """Attach exact manual remediation for a helper-owned stage orphan."""
+    primary.add_note(
+        f"durable cleanup failed for helper-owned stage {staged}: {cleanup_error}; "
+        "it is not governed by a recovery journal, so inspect and remove it manually "
+        "when safe"
+    )
+
+
 def _durable_unlink_preserving_error(staged: Path, primary: OSError) -> None:
     """Clean a stage without replacing the primary operation error."""
     try:
         durable_unlink(staged)
     except OSError as cleanup_error:
-        primary.add_note(f"durable cleanup failed for {staged}: {cleanup_error}")
+        _add_unpublished_stage_cleanup_note(primary, staged, cleanup_error)
 
 
 def stage_bytes(destination: Path, data: bytes, *, prefix: str) -> Path:
@@ -141,10 +154,7 @@ def atomic_create_bytes(path: Path, data: bytes, *, prefix: str) -> None:
     try:
         durable_unlink(staged)
     except OSError as cleanup_error:
-        cleanup_error.add_note(
-            f"atomic-create stage {staged} could not be durably cleaned; inspect and remove "
-            f"it manually after confirming destination {path} is in its intended state"
-        )
+        _add_unpublished_stage_cleanup_note(cleanup_error, staged, cleanup_error)
         raise
 
 
