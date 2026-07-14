@@ -5,6 +5,8 @@ import os
 import tempfile
 from pathlib import Path
 
+from .constants import PERSISTENCE_TEMP_SUFFIX
+
 
 def sha256_bytes(data: bytes) -> str:
     """Return the full SHA-256 hexadecimal digest of bytes.
@@ -81,7 +83,11 @@ def stage_bytes(destination: Path, data: bytes, *, prefix: str) -> Path:
     Raises:
         OSError: If staging or synchronization fails.
     """
-    fd, tmp_name = tempfile.mkstemp(dir=destination.parent, prefix=prefix, suffix=".tmp")
+    fd, tmp_name = tempfile.mkstemp(
+        dir=destination.parent,
+        prefix=prefix,
+        suffix=PERSISTENCE_TEMP_SUFFIX,
+    )
     staged = Path(tmp_name)
     try:
         with os.fdopen(fd, "wb") as handle:

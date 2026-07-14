@@ -22,7 +22,13 @@ from .constants import (
     VALID_REPORT_FORMATS,
     ReportFormat,
 )
-from .error_types import ConfigError, ProjectError, UnreadableDocError
+from .error_types import (
+    ConfigError,
+    ProjectError,
+    UnreadableDocError,
+    copy_exception_notes,
+    exception_details,
+)
 from .impact import impact as impact_walk
 from .impact import impact_json
 from .linear_fetch import fetch_tickets
@@ -146,7 +152,10 @@ def _resolve_report_format(fmt: str, json_out: bool) -> ReportFormat:
 
 def _print_project_error(exc: ProjectError) -> None:
     """Render a ProjectError to stderr in the standard one-line format."""
-    _err.print(f"[red]error[/red]: {escape(str(exc))} ({exc.code})", soft_wrap=True)
+    _err.print(
+        f"[red]error[/red]: {escape(exception_details(exc))} ({exc.code})",
+        soft_wrap=True,
+    )
 
 
 @contextmanager
@@ -663,11 +672,17 @@ def init(
                 scaffold.config_text.encode("utf-8"),
                 prefix=f"{target.name}.",
             )
-        except FileExistsError:
-            _err.print(f"{escape(target.name)} already exists, leaving it untouched")
+        except FileExistsError as exc:
+            if not getattr(exc, "__notes__", ()):
+                _err.print(f"{escape(target.name)} already exists, leaving it untouched")
+            else:
+                error = ConfigError(f"cannot write {target.name}: {exc}")
+                copy_exception_notes(error, exc)
+                raise error from exc
         except OSError as exc:
-            msg = f"cannot write {target.name}: {exc}"
-            raise ConfigError(msg) from exc
+            error = ConfigError(f"cannot write {target.name}: {exc}")
+            copy_exception_notes(error, exc)
+            raise error from exc
         else:
             _err.print(f"wrote {escape(target.name)}")
         typer.echo("# ===== .gitignore (append these lines) =====")

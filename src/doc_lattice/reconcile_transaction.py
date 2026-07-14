@@ -14,11 +14,18 @@ from typing import Annotated, Literal, NoReturn
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from pydantic import ValidationError as PydanticValidationError
 
-from .constants import RECONCILE_JOURNAL_NAME, RECONCILE_JOURNAL_VERSION
+from .constants import (
+    PERSISTENCE_TEMP_SUFFIX,
+    RECONCILE_AFTER_IMAGE_INFIX,
+    RECONCILE_BEFORE_IMAGE_INFIX,
+    RECONCILE_JOURNAL_NAME,
+    RECONCILE_JOURNAL_VERSION,
+)
 from .error_types import (
     ReconcileConflictError,
     ReconcileInProgressError,
     ReconcilePersistenceError,
+    copy_exception_notes,
 )
 from .path_utils import safe_resolve
 from .persistence import (
@@ -172,6 +179,28 @@ def _invalid_journal_error(journal: Path, cause: object) -> ReconcilePersistence
     return ReconcilePersistenceError(message)
 
 
+def _journal_is_present(journal: Path) -> bool:
+    """Inspect the canonical journal entry without following symlinks.
+
+    Only a missing namespace entry is absence. Every present journal must be a regular,
+    non-symlink file before any caller reads or treats it as recovery authority.
+    """
+    try:
+        mode = journal.lstat().st_mode
+    except FileNotFoundError:
+        return False
+    except OSError as cause:
+        problem = f"cannot inspect canonical journal path: {cause}"
+        raise _invalid_journal_error(journal, problem) from cause
+    if stat.S_ISLNK(mode):
+        problem = "canonical journal path is a symlink; refusing to follow it"
+        raise _invalid_journal_error(journal, problem)
+    if not stat.S_ISREG(mode):
+        problem = "canonical journal path is not a regular file"
+        raise _invalid_journal_error(journal, problem)
+    return True
+
+
 def _resolve_journal_path(project_root: Path, field: str, raw_path: str) -> Path:
     """Resolve one relative journal path while enforcing project containment."""
     path = Path(raw_path)
@@ -200,8 +229,9 @@ def _validate_artifact_path(
             f"{field} {raw_path} ({artifact}) must be in destination directory {destination.parent}"
         )
         raise ValueError(message)
-    prefix = f".{destination.name}.doc-lattice-{role}."
-    suffix = ".tmp"
+    infix = RECONCILE_BEFORE_IMAGE_INFIX if role == "before" else RECONCILE_AFTER_IMAGE_INFIX
+    prefix = f".{destination.name}{infix}"
+    suffix = PERSISTENCE_TEMP_SUFFIX
     name = Path(raw_path).name
     component = name[len(prefix) : -len(suffix)]
     if not name.startswith(prefix) or not name.endswith(suffix) or not component:
@@ -263,6 +293,9 @@ def _load_journal(
     journal_path: Path,
 ) -> tuple[Journal, tuple[_ResolvedEntry, ...], bytes]:
     """Read, validate, and contain every path in a reconcile journal."""
+    if not _journal_is_present(journal_path):
+        cause = FileNotFoundError(f"canonical journal {journal_path} is absent")
+        raise _invalid_journal_error(journal_path, cause) from cause
     try:
         encoded = journal_path.read_bytes()
         decoded = encoded.decode("utf-8")
@@ -784,8 +817,7 @@ def _preflight_rewrite_destinations(
 
 def _copy_notes(target: BaseException, source: BaseException) -> None:
     """Copy diagnostic notes from a lower-level failure to its typed wrapper."""
-    for note in getattr(source, "__notes__", ()):
-        target.add_note(str(note))
+    copy_exception_notes(target, source)
 
 
 def _prepare_transaction(
@@ -795,6 +827,12 @@ def _prepare_transaction(
 ) -> _PreparedTransaction:
     """Stage exact images and durably publish an ordered prepared journal."""
     journal_path = _journal_path(project_root)
+    if _journal_is_present(journal_path):
+        message = (
+            f"reconcile journal {journal_path} already exists; preserve it and run "
+            "'doc-lattice reconcile --recover'"
+        )
+        raise ReconcilePersistenceError(message)
     staged_paths: list[Path] = []
     journal_entries: list[JournalEntry] = []
     operation = "validating transaction destinations"
@@ -815,13 +853,13 @@ def _prepare_transaction(
             before_path = stage_bytes(
                 destination,
                 rewrite.before,
-                prefix=f".{destination.name}.doc-lattice-before.",
+                prefix=f".{destination.name}{RECONCILE_BEFORE_IMAGE_INFIX}",
             )
             staged_paths.append(before_path)
             after_path = stage_bytes(
                 destination,
                 rewrite.after,
-                prefix=f".{destination.name}.doc-lattice-after.",
+                prefix=f".{destination.name}{RECONCILE_AFTER_IMAGE_INFIX}",
             )
             staged_paths.append(after_path)
             journal_entries.append(
@@ -1081,6 +1119,46 @@ def _commit_rewrites_locked(
         )
 
 
+def _open_reconcile_lock_directory(project_root: Path) -> int:
+    """Open the project directory or raise a typed lock setup error."""
+    try:
+        return os.open(project_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError as cause:
+        raise _lock_setup_error("opening project directory", project_root, cause) from cause
+
+
+def _claim_reconcile_lock(fd: int, project_root: Path) -> None:
+    """Acquire the nonblocking advisory lock or raise its typed domain error."""
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        message = "another reconcile is in progress; retry after it exits"
+        raise ReconcileInProgressError(message) from None
+    except OSError as cause:
+        raise _lock_setup_error("acquiring reconcile lock", project_root, cause) from cause
+
+
+def _inspect_reconcile_lock_directory(fd: int, project_root: Path) -> os.stat_result:
+    """Inspect the locked directory descriptor or raise a typed setup error."""
+    try:
+        return os.fstat(fd)
+    except OSError as cause:
+        operation = "inspecting locked project directory"
+        raise _lock_setup_error(operation, project_root, cause) from cause
+
+
+def _new_reconcile_lock(
+    project_root: Path,
+    directory_stat: os.stat_result,
+) -> ReconcileLock:
+    """Create the root-bound capability or raise a typed setup error."""
+    try:
+        return ReconcileLock(project_root, directory_stat, _LOCK_FACTORY_TOKEN)
+    except (OSError, RuntimeError) as cause:
+        operation = "creating reconcile lock capability"
+        raise _lock_setup_error(operation, project_root, cause) from cause
+
+
 @contextmanager
 def reconcile_lock(project_root: Path) -> Iterator[ReconcileLock]:
     """Hold the existing project directory's nonblocking advisory reconcile lock.
@@ -1093,20 +1171,16 @@ def reconcile_lock(project_root: Path) -> Iterator[ReconcileLock]:
 
     Raises:
         ReconcileInProgressError: If another reconcile process holds the lock.
-        ReconcilePersistenceError: If releasing or closing the lock fails after success.
-        OSError: If the project directory cannot be opened or locked.
+        ReconcilePersistenceError: If lock setup, release, or close fails.
     """
-    fd = os.open(project_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    fd = _open_reconcile_lock_directory(project_root)
     acquired = False
     capability: ReconcileLock | None = None
     try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            message = "another reconcile is in progress; retry after it exits"
-            raise ReconcileInProgressError(message) from None
+        _claim_reconcile_lock(fd, project_root)
         acquired = True
-        capability = ReconcileLock(project_root, os.fstat(fd), _LOCK_FACTORY_TOKEN)
+        directory_stat = _inspect_reconcile_lock_directory(fd, project_root)
+        capability = _new_reconcile_lock(project_root, directory_stat)
         yield capability
     finally:
         active_error = sys.exception()
@@ -1132,6 +1206,19 @@ def reconcile_lock(project_root: Path) -> Iterator[ReconcileLock]:
                 raise error from cleanup_errors[0][1]
 
 
+def _lock_setup_error(
+    operation: str,
+    project_root: Path,
+    cause: BaseException,
+) -> ReconcilePersistenceError:
+    """Wrap one lock context-entry failure with its operation and project root."""
+    error = ReconcilePersistenceError(
+        f"reconcile lock setup failed while {operation} for project root {project_root}: {cause}"
+    )
+    copy_exception_notes(error, cause)
+    return error
+
+
 def ensure_dry_run_safe(project_root: Path) -> None:
     """Refuse a read-only dry run while a reconcile journal needs recovery.
 
@@ -1142,7 +1229,7 @@ def ensure_dry_run_safe(project_root: Path) -> None:
         ReconcilePersistenceError: If a reconcile journal already exists.
     """
     journal = _journal_path(project_root)
-    if journal.exists():
+    if _journal_is_present(journal):
         message = (
             f"reconcile journal {journal} requires recovery; "
             "run 'doc-lattice reconcile --recover' first"
@@ -1174,7 +1261,7 @@ def recover_transaction(
 def _recover_transaction_locked(project_root: Path) -> RecoveryResult:
     """Recover one journal while the public API holds its capability lease."""
     journal = _journal_path(project_root)
-    if not journal.exists():
+    if not _journal_is_present(journal):
         return RecoveryResult(action="none", journal=journal)
     loaded, entries, journal_bytes = _load_journal(project_root, journal)
     _authenticate_transaction_artifacts(_staged_artifacts(entries), journal, journal_bytes)

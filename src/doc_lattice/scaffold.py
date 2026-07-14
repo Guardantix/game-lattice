@@ -10,6 +10,13 @@ from dataclasses import dataclass
 
 from ruamel.yaml import YAML
 
+from .constants import (
+    PERSISTENCE_TEMP_SUFFIX,
+    RECONCILE_AFTER_IMAGE_INFIX,
+    RECONCILE_BEFORE_IMAGE_INFIX,
+    RECONCILE_JOURNAL_NAME,
+)
+
 DOC_LATTICE_REPO_URL = "https://github.com/Guardantix/doc-lattice"
 PYTHON_PIN = "3.13"
 
@@ -66,10 +73,10 @@ def render_config(docs_roots: tuple[str, ...], linear_team: str | None) -> str:
 def render_gitignore() -> str:
     """Render ignore patterns for recoverable reconcile artifacts."""
     return (
-        ".doc-lattice-reconcile.json\n"
-        ".doc-lattice-reconcile.json.*.tmp\n"
-        ".*.doc-lattice-before.*.tmp\n"
-        ".*.doc-lattice-after.*.tmp\n"
+        f"{RECONCILE_JOURNAL_NAME}\n"
+        f"{RECONCILE_JOURNAL_NAME}.*{PERSISTENCE_TEMP_SUFFIX}\n"
+        f".*{RECONCILE_BEFORE_IMAGE_INFIX}*{PERSISTENCE_TEMP_SUFFIX}\n"
+        f".*{RECONCILE_AFTER_IMAGE_INFIX}*{PERSISTENCE_TEMP_SUFFIX}\n"
     )
 
 
@@ -127,7 +134,7 @@ def render_ci(version: str) -> str:
 
 
 def build_scaffold(docs_roots: tuple[str, ...], linear_team: str | None, version: str) -> Scaffold:
-    """Build all three init artifacts from typed inputs.
+    """Build all four init artifacts from typed inputs.
 
     Args:
         docs_roots: The docs roots for the config's docs_roots list.

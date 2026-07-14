@@ -152,6 +152,39 @@ def test_commit_accepts_current_root_bound_lock(tmp_path: Path):
     _assert_no_transaction_artifacts(tmp_path)
 
 
+def test_commit_rejects_dangling_canonical_journal_before_staging(tmp_path: Path, monkeypatch):
+    destination = tmp_path / "doc.md"
+    destination.write_bytes(b"old bytes")
+    rewrite = _rewrite(destination, b"old bytes", b"new bytes", "up#x")
+    journal = tmp_path / RECONCILE_JOURNAL_NAME
+    journal.symlink_to("missing-journal-target")
+    staged: list[Path] = []
+    real_stage = reconcile_transaction.stage_bytes
+
+    def observe_stage(path: Path, data: bytes, *, prefix: str) -> Path:
+        staged.append(path)
+        return real_stage(path, data, prefix=prefix)
+
+    monkeypatch.setattr(reconcile_transaction, "stage_bytes", observe_stage)
+
+    with (
+        reconcile_transaction.reconcile_lock(tmp_path) as lock,
+        pytest.raises(ReconcilePersistenceError) as caught,
+    ):
+        _UNLOCKED_COMMIT_REWRITES(
+            tmp_path,
+            [rewrite],
+            {destination: destination},
+            lock=lock,
+        )
+
+    assert "symlink" in str(caught.value)
+    assert staged == []
+    assert destination.read_bytes() == b"old bytes"
+    assert journal.is_symlink()
+    assert not list(tmp_path.glob("*.tmp"))
+
+
 def test_commit_rejects_same_capability_reentrant_recovery(tmp_path: Path, monkeypatch):
     destination = tmp_path / "doc.md"
     destination.write_bytes(b"old bytes")

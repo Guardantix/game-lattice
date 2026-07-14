@@ -2,6 +2,7 @@
 
 import json
 import os
+import stat
 from dataclasses import FrozenInstanceError, dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -10,7 +11,13 @@ import pytest
 from pydantic import ValidationError
 
 from doc_lattice import persistence, reconcile_transaction
-from doc_lattice.constants import RECONCILE_JOURNAL_NAME, RECONCILE_JOURNAL_VERSION
+from doc_lattice.constants import (
+    PERSISTENCE_TEMP_SUFFIX,
+    RECONCILE_AFTER_IMAGE_INFIX,
+    RECONCILE_BEFORE_IMAGE_INFIX,
+    RECONCILE_JOURNAL_NAME,
+    RECONCILE_JOURNAL_VERSION,
+)
 from doc_lattice.error_types import (
     ProjectError,
     ReconcileConflictError,
@@ -30,13 +37,21 @@ from doc_lattice.reconcile_transaction import (
 )
 
 
-def _tree_snapshot(root: Path) -> dict[str, bytes]:
-    """Capture relative file names and exact bytes under a test root."""
-    return {
-        str(path.relative_to(root)): path.read_bytes()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
+def _tree_snapshot(root: Path) -> dict[str, tuple[str, bytes]]:
+    """Capture every namespace entry without following symlinks or reading special files."""
+    snapshot: dict[str, tuple[str, bytes]] = {}
+    for path in sorted(root.rglob("*")):
+        mode = path.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            entry = ("symlink", os.fsencode(path.readlink()))
+        elif stat.S_ISREG(mode):
+            entry = ("file", path.read_bytes())
+        elif stat.S_ISDIR(mode):
+            entry = ("directory", b"")
+        else:
+            entry = ("special", b"")
+        snapshot[str(path.relative_to(root))] = entry
+    return snapshot
 
 
 def recover_transaction(project_root: Path) -> RecoveryResult:
@@ -95,6 +110,9 @@ def _write_synthetic_transaction(  # noqa: PLR0913
 def test_reconcile_constants_are_pinned():
     assert RECONCILE_JOURNAL_NAME == ".doc-lattice-reconcile.json"
     assert RECONCILE_JOURNAL_VERSION == 1
+    assert PERSISTENCE_TEMP_SUFFIX == ".tmp"
+    assert RECONCILE_BEFORE_IMAGE_INFIX == ".doc-lattice-before."
+    assert RECONCILE_AFTER_IMAGE_INFIX == ".doc-lattice-after."
 
 
 @pytest.mark.parametrize(
@@ -230,6 +248,91 @@ def test_lock_close_failure_after_success_is_typed(tmp_path: Path, monkeypatch):
     assert "injected lock close failure" in str(caught.value)
 
 
+def test_lock_open_failure_is_typed_and_names_operation_and_root(tmp_path: Path, monkeypatch):
+    before = _tree_snapshot(tmp_path)
+
+    def fail_open(_path: Path, _flags: int) -> int:
+        raise PermissionError("open denied")
+
+    monkeypatch.setattr(reconcile_transaction.os, "open", fail_open)
+
+    with pytest.raises(ReconcilePersistenceError) as caught, reconcile_lock(tmp_path):
+        pytest.fail("lock unexpectedly acquired")
+
+    message = str(caught.value)
+    assert "opening project directory" in message
+    assert str(tmp_path) in message
+    assert "open denied" in message
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_lock_noncontention_flock_failure_is_typed_and_names_operation(tmp_path: Path, monkeypatch):
+    before = _tree_snapshot(tmp_path)
+    real_flock = reconcile_transaction.fcntl.flock
+
+    def fail_acquisition(fd: int, operation: int) -> None:
+        if operation == reconcile_transaction.fcntl.LOCK_EX | reconcile_transaction.fcntl.LOCK_NB:
+            raise OSError("flock device failure")
+        real_flock(fd, operation)
+
+    monkeypatch.setattr(reconcile_transaction.fcntl, "flock", fail_acquisition)
+
+    with pytest.raises(ReconcilePersistenceError) as caught, reconcile_lock(tmp_path):
+        pytest.fail("lock unexpectedly acquired")
+
+    message = str(caught.value)
+    assert "acquiring reconcile lock" in message
+    assert str(tmp_path) in message
+    assert "flock device failure" in message
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_lock_fstat_failure_is_typed_and_names_operation(tmp_path: Path, monkeypatch):
+    before = _tree_snapshot(tmp_path)
+
+    def fail_fstat(_fd: int):
+        raise OSError("fstat failed")
+
+    monkeypatch.setattr(reconcile_transaction.os, "fstat", fail_fstat)
+
+    with pytest.raises(ReconcilePersistenceError) as caught, reconcile_lock(tmp_path):
+        pytest.fail("lock unexpectedly acquired")
+
+    message = str(caught.value)
+    assert "inspecting locked project directory" in message
+    assert str(tmp_path) in message
+    assert "fstat failed" in message
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_lock_setup_failure_preserves_unlock_and_close_cleanup_notes(tmp_path: Path, monkeypatch):
+    fake_fd = 8123
+
+    monkeypatch.setattr(reconcile_transaction.os, "open", lambda _path, _flags: fake_fd)
+
+    def fail_flock(_fd: int, operation: int) -> None:
+        if operation == reconcile_transaction.fcntl.LOCK_UN:
+            raise OSError("unlock cleanup failed")
+
+    def fail_fstat(_fd: int):
+        raise OSError("primary fstat failure")
+
+    def fail_close(_fd: int) -> None:
+        raise OSError("close cleanup failed")
+
+    monkeypatch.setattr(reconcile_transaction.fcntl, "flock", fail_flock)
+    monkeypatch.setattr(reconcile_transaction.os, "fstat", fail_fstat)
+    monkeypatch.setattr(reconcile_transaction.os, "close", fail_close)
+
+    with pytest.raises(ReconcilePersistenceError) as caught, reconcile_lock(tmp_path):
+        pytest.fail("lock unexpectedly acquired")
+
+    assert "primary fstat failure" in str(caught.value)
+    notes = "; ".join(getattr(caught.value, "__notes__", ()))
+    assert "unlock cleanup failed" in notes
+    assert "close cleanup failed" in notes
+
+
 def test_dry_run_refuses_existing_journal_without_mutation(tmp_path: Path):
     document = tmp_path / "doc.md"
     journal = tmp_path / RECONCILE_JOURNAL_NAME
@@ -250,6 +353,73 @@ def test_dry_run_allows_project_without_journal(tmp_path: Path):
     ensure_dry_run_safe(tmp_path)
 
     assert list(tmp_path.iterdir()) == []
+
+
+def _create_journal_namespace_collision(root: Path, kind: str) -> Path:
+    """Create one unsafe object at the canonical reconcile journal path."""
+    journal = root / RECONCILE_JOURNAL_NAME
+    if kind == "dangling symlink":
+        journal.symlink_to("missing-journal-target")
+    elif kind == "live symlink":
+        target = root / "journal-target"
+        target.write_bytes(b"not canonical journal bytes\n")
+        journal.symlink_to(target.name)
+    elif kind == "directory":
+        journal.mkdir()
+    else:
+        os.mkfifo(journal)
+    return journal
+
+
+@pytest.mark.parametrize(
+    ("operation", "kind"),
+    [
+        ("dry-run", "dangling symlink"),
+        ("dry-run", "live symlink"),
+        ("dry-run", "directory"),
+        ("dry-run", "FIFO"),
+        ("recovery", "dangling symlink"),
+        ("recovery", "live symlink"),
+        ("recovery", "directory"),
+    ],
+)
+def test_journal_namespace_collision_is_typed_and_never_followed_or_mutated(
+    tmp_path: Path, operation: str, kind: str
+):
+    journal = _create_journal_namespace_collision(tmp_path, kind)
+    before = _tree_snapshot(tmp_path)
+    operation_fn = ensure_dry_run_safe if operation == "dry-run" else recover_transaction
+
+    with pytest.raises(ReconcilePersistenceError) as caught:
+        operation_fn(tmp_path)
+
+    message = str(caught.value)
+    assert str(journal) in message
+    if "symlink" in kind:
+        assert "symlink" in message
+    else:
+        assert "regular file" in message
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_journal_namespace_inspection_error_is_typed_and_names_path(tmp_path: Path, monkeypatch):
+    journal = tmp_path / RECONCILE_JOURNAL_NAME
+    journal.write_bytes(b"journal evidence\n")
+    real_lstat = Path.lstat
+
+    def fail_journal_lstat(path: Path):
+        if path == journal:
+            raise PermissionError("inspection denied")
+        return real_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", fail_journal_lstat)
+
+    with pytest.raises(ReconcilePersistenceError) as caught:
+        ensure_dry_run_safe(tmp_path)
+
+    assert str(journal) in str(caught.value)
+    assert "cannot inspect" in str(caught.value)
+    assert "inspection denied" in str(caught.value)
 
 
 def test_recovery_requires_a_valid_active_lock_before_mutation(tmp_path: Path):

@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from .. import __version__
 from ..constants import CACHE_FILE_NAME, CACHE_VERSION
+from ..error_types import exception_details
 from ..persistence import atomic_replace_bytes
 from .schema import CacheFile
 
@@ -118,4 +119,6 @@ def _write(path: Path, cache_file: CacheFile) -> None:
             prefix=f"{CACHE_FILE_NAME}.",
         )
     except OSError as exc:
-        sys.stderr.write(f"doc-lattice: could not write load cache at {path}: {exc}\n")
+        sys.stderr.write(
+            f"doc-lattice: could not write load cache at {path}: {exception_details(exc)}\n"
+        )
