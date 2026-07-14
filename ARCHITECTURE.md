@@ -272,13 +272,15 @@ must not weaken default correctness or become part of the project state.
 **Decision:** A validated, safe `cache_key` opts into a cache slot under the user cache
 home, outside checkouts so worktrees can share it. By default, cache hits re-read and hash
 document bytes. `cache_trust_stat` explicitly permits read-only commands to trust unchanged
-size and modification time with its documented stale-read caveat. Reconcile always verifies
-bytes. Cache contents are disposable, and cache write failure may report a diagnostic but
-cannot change command output or exit status.
-**Consequences:** Default cached and uncached runs have identical results under any cache
-state. The stat tier trades that guarantee for speed only when a user opts in, and it cannot
-influence writes. Cache corruption, version drift, deletion, or persistence failure reduces
-performance rather than correctness.
+size and modification time, accepting stale content or masked unreadability when both remain
+unchanged. Reconcile always verifies bytes. Cache contents are disposable, and cache write
+failure may report a diagnostic but cannot change command output or exit status.
+**Consequences:** The default tier matches uncached results for caches produced by doc-lattice
+and for missing, unreadable, schema-invalid, or version-stale cache files. The same-user cache
+is trusted; schema-valid manual tampering is outside the integrity guarantee. The stat tier's
+staleness and readability tradeoff applies only when explicitly enabled for read-only commands,
+and it cannot influence reconcile writes. Normal cache deletion, read failure, or write failure
+affects acceleration rather than command results.
 
 ### AD-13: Section identity uses a pinned compatibility adapter
 
@@ -307,8 +309,9 @@ and completed implementation documents creates conflicting sources of truth.
 module boundaries; CLAUDE.md routes contributors and agents and lists enforced repository
 rules without restating behavior; CHANGELOG.md owns release history and migrations; and
 roadmap.md owns future direction. Maintained documents link to the owner instead of copying
-its content. Completed implementation specs and plans are deleted after their durable
-decisions are recorded, rather than maintained or archived in the repository.
+its content. Completed implementation specs and plans, duplicate convention guides, and
+incomplete history logs are deleted after durable content reaches its owner, rather than
+maintained or archived in the repository.
 **Consequences:** Each fact has one maintained owner, so changes update one source and its
 incoming links. Historical implementation detail remains available through version control,
 while the maintained documentation stays smaller and current.

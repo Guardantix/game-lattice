@@ -50,8 +50,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Internal: removed the singular `section_span` helper in favor of the existing `section_spans`
   API.
 - Deleted completed design specs and implementation plans after recording their durable Linear,
-  load-cache, and Markdown compatibility decisions in ARCHITECTURE.md. Version control retains
-  the implementation history.
+  load-cache, and Markdown compatibility decisions in ARCHITECTURE.md. Also deleted the duplicate
+  code-conventions guide and incomplete build log; their owners are CLAUDE.md and CHANGELOG.md.
+  Version control retains the implementation history.
 
 ## [1.0.1] - 2026-07-13
 
