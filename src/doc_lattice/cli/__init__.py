@@ -69,7 +69,7 @@ def main() -> None:
         print_internal_error,
         print_project_error,
     )
-    from .runtime import default_runtime  # noqa: PLC0415
+    from .runtime import diagnostic_runtime  # noqa: PLC0415
 
     application = _load_app()
     if not _is_application(application):
@@ -79,8 +79,8 @@ def main() -> None:
     try:
         application()
     except ProjectError as exc:
-        print_project_error(default_runtime(no_color=no_color), exc)
+        print_project_error(diagnostic_runtime(no_color=no_color), exc)
         raise SystemExit(EXIT_TOOL_ERROR) from exc
     except (OSError, RuntimeError, ValueError) as exc:
-        print_internal_error(default_runtime(no_color=no_color), exc)
+        print_internal_error(diagnostic_runtime(no_color=no_color), exc)
         raise SystemExit(EXIT_TOOL_ERROR) from exc

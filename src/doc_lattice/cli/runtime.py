@@ -94,6 +94,17 @@ class CliRuntime:
         self.stdout.file.flush()
 
 
+def _create_runtime(*, cwd: Path, no_color: bool) -> CliRuntime:
+    disabled = no_color or os.environ.get("NO_COLOR", "") != ""
+    return CliRuntime(
+        stdout=Console(file=sys.stdout, no_color=disabled),
+        stderr=Console(file=sys.stderr, stderr=True, no_color=disabled),
+        cwd=cwd,
+        load_config=load_config,
+        load_lattice=load_lattice,
+    )
+
+
 def default_runtime(*, no_color: bool) -> CliRuntime:
     """Capture process streams, cwd, and default loaders for one invocation.
 
@@ -103,14 +114,19 @@ def default_runtime(*, no_color: bool) -> CliRuntime:
     Returns:
         A new immutable runtime bound to the current process state.
     """
-    disabled = no_color or os.environ.get("NO_COLOR", "") != ""
-    return CliRuntime(
-        stdout=Console(file=sys.stdout, no_color=disabled),
-        stderr=Console(file=sys.stderr, stderr=True, no_color=disabled),
-        cwd=Path.cwd(),
-        load_config=load_config,
-        load_lattice=load_lattice,
-    )
+    return _create_runtime(cwd=Path.cwd(), no_color=no_color)
+
+
+def diagnostic_runtime(*, no_color: bool) -> CliRuntime:
+    """Create cwd-independent state for rendering an entry-point diagnostic.
+
+    Args:
+        no_color: Whether the invocation disabled color.
+
+    Returns:
+        A new runtime bound to the current streams and an inert relative cwd.
+    """
+    return _create_runtime(cwd=Path(), no_color=no_color)
 
 
 def get_runtime(ctx: typer.Context) -> CliRuntime:

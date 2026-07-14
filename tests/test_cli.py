@@ -1415,6 +1415,29 @@ def test_main_maps_errors_to_exit_2(monkeypatch, exc):
     assert info.value.code == 2
 
 
+def test_main_renders_internal_error_when_cwd_capture_fails(monkeypatch, capsys):
+    class FailingCwdPath:
+        def __new__(cls, value: str = ".") -> Path:
+            return Path(value)
+
+        @staticmethod
+        def cwd() -> Path:
+            raise OSError("cwd unavailable")
+
+    def boom() -> None:
+        raise OSError("app failure")
+
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr(cli_mod, "app", boom)
+    monkeypatch.setattr(runtime_module, "Path", FailingCwdPath)
+
+    with pytest.raises(SystemExit) as info:
+        cli_mod.main()
+
+    assert info.value.code == 2
+    assert capsys.readouterr().err == "internal error: OSError: app failure\n"
+
+
 def test_main_passes_systemexit_through_unchanged(monkeypatch):
     def boom():
         raise SystemExit(1)  # typer's own exit must not be remapped to 2
