@@ -21,10 +21,9 @@ DOC_LATTICE_REPO_URL = "https://github.com/Guardantix/doc-lattice"
 PYTHON_PIN = "3.13"
 
 _CONFIG_HEADER = f"# doc-lattice configuration. See {DOC_LATTICE_REPO_URL}\n"
-_COMMENTED_IGNORE = '# ignore_globs:\n#   - "**/superpowers/plans/**"\n'
+_COMMENTED_IGNORE = '# ignore_globs:\n#   - "**/archive/**"\n'
 _COMMENTED_CACHE = "# cache_key: my-project-docs   # opt-in load cache slot under your cache home\n"
 _COMMENTED_LINEAR = "# linear_team: ENG\n"
-_COMMENTED_BINDING = "# binding_layers: null\n"
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +65,6 @@ def render_config(docs_roots: tuple[str, ...], linear_team: str | None) -> str:
     parts = [_CONFIG_HEADER, buf.getvalue(), _COMMENTED_IGNORE, _COMMENTED_CACHE]
     if linear_team is None:
         parts.append(_COMMENTED_LINEAR)
-    parts.append(_COMMENTED_BINDING)
     return "".join(parts)
 
 

@@ -28,7 +28,6 @@ class Config(BaseModel):
     docs_roots: list[str] = Field(default_factory=lambda: ["docs"])
     ignore_globs: list[str] = Field(default_factory=list)
     linear_team: str | None = None
-    binding_layers: list[str] | None = None
     cache_key: str | None = None
     cache_trust_stat: bool = False
 

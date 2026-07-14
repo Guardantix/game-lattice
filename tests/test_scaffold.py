@@ -75,7 +75,7 @@ def test_render_config_default_has_docs_active_and_keys_commented():
     assert "- docs" in text
     assert "# ignore_globs:" in text
     assert "# linear_team: ENG" in text
-    assert "# binding_layers: null" in text
+    assert "binding_layers" not in text
     cfg = _load(text)
     assert cfg.docs_roots == ["docs"]
     assert cfg.linear_team is None
@@ -87,9 +87,8 @@ def test_commented_example_keys_stay_valid_against_config_schema():
     lines = render_config(("docs",), None).splitlines()
     body = [line for line in lines if "configuration. See" not in line]  # drop header
     cfg = _load("\n".join(re.sub(r"^#\s?", "", line) for line in body))
-    assert cfg.ignore_globs == ["**/superpowers/plans/**"]
+    assert cfg.ignore_globs == ["**/archive/**"]
     assert cfg.linear_team == "ENG"
-    assert cfg.binding_layers is None
 
 
 def test_render_config_lists_multiple_roots():
