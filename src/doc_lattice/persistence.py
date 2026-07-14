@@ -138,7 +138,14 @@ def atomic_create_bytes(path: Path, data: bytes, *, prefix: str) -> None:
     except OSError as primary:
         _durable_unlink_preserving_error(staged, primary)
         raise
-    durable_unlink(staged)
+    try:
+        durable_unlink(staged)
+    except OSError as cleanup_error:
+        cleanup_error.add_note(
+            f"atomic-create stage {staged} could not be durably cleaned; inspect and remove "
+            f"it manually after confirming destination {path} is in its intended state"
+        )
+        raise
 
 
 def durable_unlink(path: Path) -> None:

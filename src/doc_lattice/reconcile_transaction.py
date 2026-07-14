@@ -88,6 +88,15 @@ class _PreparedTransaction:
     journal_bytes: bytes
 
 
+@dataclass(frozen=True, slots=True)
+class _PendingRewrite:
+    """A rewrite whose contained destination passed preflight validation."""
+
+    rewrite: Rewrite
+    destination: Path
+    destination_relative: str
+
+
 def _invalid_journal_error(journal: Path, cause: object) -> ReconcilePersistenceError:
     """Build the deliberate manual-remediation diagnostic for an invalid journal."""
     message = (
@@ -632,6 +641,35 @@ def _cleanup_failed_journal_publication(
         primary.add_note(f"failed preparation cleanup: {cleanup_error}")
 
 
+def _preflight_rewrite_destinations(
+    project_root: Path,
+    journal_path: Path,
+    rewrites: list[Rewrite],
+    write_paths: dict[Path, Path],
+) -> tuple[_PendingRewrite, ...]:
+    """Validate all destination journal invariants knowable before staging."""
+    pending: list[_PendingRewrite] = []
+    destination_indices: dict[Path, int] = {}
+    canonical_root = project_root.resolve()
+    canonical_journal = canonical_root / journal_path.name
+    for index, rewrite in enumerate(rewrites):
+        destination = safe_resolve(write_paths[rewrite.path], canonical_root)
+        destination_relative = destination.relative_to(canonical_root).as_posix()
+        if destination == canonical_journal:
+            message = f"reconcile destination {destination} aliases journal path {journal_path}"
+            raise ValueError(message)
+        if destination in destination_indices:
+            first_index = destination_indices[destination]
+            message = (
+                f"duplicate reconcile destination {destination} for rewrites "
+                f"{first_index} and {index}"
+            )
+            raise ValueError(message)
+        destination_indices[destination] = index
+        pending.append(_PendingRewrite(rewrite, destination, destination_relative))
+    return tuple(pending)
+
+
 def _copy_notes(target: BaseException, source: BaseException) -> None:
     """Copy diagnostic notes from a lower-level failure to its typed wrapper."""
     for note in getattr(source, "__notes__", ()):
@@ -647,12 +685,20 @@ def _prepare_transaction(
     journal_path = _journal_path(project_root)
     staged_paths: list[Path] = []
     journal_entries: list[JournalEntry] = []
-    operation = "staging transaction image"
+    operation = "validating transaction destinations"
     operation_path = project_root
     prepared_bytes = b""
     try:
-        for rewrite in rewrites:
-            destination = write_paths[rewrite.path]
+        pending_rewrites = _preflight_rewrite_destinations(
+            project_root,
+            journal_path,
+            rewrites,
+            write_paths,
+        )
+        operation = "staging transaction image"
+        for pending in pending_rewrites:
+            rewrite = pending.rewrite
+            destination = pending.destination
             operation_path = destination
             before_path = stage_bytes(
                 destination,
@@ -668,7 +714,7 @@ def _prepare_transaction(
             staged_paths.append(after_path)
             journal_entries.append(
                 JournalEntry(
-                    destination=destination.relative_to(project_root).as_posix(),
+                    destination=pending.destination_relative,
                     before_path=before_path.relative_to(project_root).as_posix(),
                     before_sha256=sha256_bytes(rewrite.before),
                     after_path=after_path.relative_to(project_root).as_posix(),
@@ -688,7 +734,7 @@ def _prepare_transaction(
             prepared_bytes,
             prefix=f"{RECONCILE_JOURNAL_NAME}.",
         )
-    except (KeyError, OSError, ValueError) as primary:
+    except (KeyError, OSError, RuntimeError, ValueError) as primary:
         if operation == "publishing prepared journal" and isinstance(primary, OSError):
             _cleanup_failed_journal_publication(
                 project_root,

@@ -44,6 +44,114 @@ def test_commit_rewrites_durably_replaces_batch_and_cleans_artifacts(tmp_path: P
     assert not list(tmp_path.rglob("*.tmp"))
 
 
+def test_duplicate_resolved_destinations_fail_before_creating_artifacts(tmp_path: Path):
+    destination = tmp_path / "doc.md"
+    destination.write_bytes(b"old bytes")
+    first_identity = tmp_path / "first-identity.md"
+    second_identity = tmp_path / "second-identity.md"
+    rewrites = [
+        _rewrite(first_identity, b"old bytes", b"first replacement", "up#a"),
+        _rewrite(second_identity, b"old bytes", b"second replacement", "up#b"),
+    ]
+
+    with pytest.raises(
+        ReconcilePersistenceError,
+        match=r"duplicate reconcile destination.*doc\.md",
+    ):
+        reconcile_transaction.commit_rewrites(
+            tmp_path,
+            rewrites,
+            {first_identity: destination, second_identity: destination},
+        )
+
+    assert destination.read_bytes() == b"old bytes"
+    assert list(tmp_path.iterdir()) == [destination]
+
+
+def test_canonical_duplicate_destinations_fail_before_staging(tmp_path: Path, monkeypatch):
+    destination = tmp_path / "doc.md"
+    destination.write_bytes(b"old bytes")
+    subdirectory = tmp_path / "subdirectory"
+    subdirectory.mkdir()
+    alias = subdirectory / ".." / destination.name
+    first_identity = tmp_path / "first-identity.md"
+    second_identity = tmp_path / "second-identity.md"
+    rewrites = [
+        _rewrite(first_identity, b"old bytes", b"first replacement", "up#a"),
+        _rewrite(second_identity, b"old bytes", b"second replacement", "up#b"),
+    ]
+    real_stage = reconcile_transaction.stage_bytes
+    stage_calls = 0
+
+    def _observe_stage(destination_path: Path, data: bytes, *, prefix: str) -> Path:
+        nonlocal stage_calls
+        stage_calls += 1
+        return real_stage(destination_path, data, prefix=prefix)
+
+    monkeypatch.setattr(reconcile_transaction, "stage_bytes", _observe_stage)
+
+    with pytest.raises(ReconcilePersistenceError) as caught:
+        reconcile_transaction.commit_rewrites(
+            tmp_path,
+            rewrites,
+            {first_identity: destination, second_identity: alias},
+        )
+
+    assert "duplicate reconcile destination" in str(caught.value)
+    assert stage_calls == 0
+    assert destination.read_bytes() == b"old bytes"
+    assert not list(tmp_path.rglob("*.tmp"))
+    assert not (tmp_path / RECONCILE_JOURNAL_NAME).exists()
+
+
+def test_journal_destination_alias_fails_before_creating_artifacts(tmp_path: Path):
+    identity = tmp_path / "doc-identity.md"
+    journal = tmp_path / RECONCILE_JOURNAL_NAME
+    rewrite = _rewrite(identity, b"", b"replacement", "up#x")
+
+    with pytest.raises(
+        ReconcilePersistenceError,
+        match=r"reconcile destination.*aliases journal path",
+    ):
+        reconcile_transaction.commit_rewrites(
+            tmp_path,
+            [rewrite],
+            {identity: journal},
+        )
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_canonical_journal_alias_fails_before_staging(tmp_path: Path, monkeypatch):
+    subdirectory = tmp_path / "subdirectory"
+    subdirectory.mkdir()
+    identity = tmp_path / "doc-identity.md"
+    journal_alias = subdirectory / ".." / RECONCILE_JOURNAL_NAME
+    rewrite = _rewrite(identity, b"", b"replacement", "up#x")
+    real_stage = reconcile_transaction.stage_bytes
+    stage_calls = 0
+
+    def _observe_stage(destination_path: Path, data: bytes, *, prefix: str) -> Path:
+        nonlocal stage_calls
+        stage_calls += 1
+        return real_stage(destination_path, data, prefix=prefix)
+
+    monkeypatch.setattr(reconcile_transaction, "stage_bytes", _observe_stage)
+
+    with pytest.raises(ReconcilePersistenceError) as caught:
+        reconcile_transaction.commit_rewrites(
+            tmp_path,
+            [rewrite],
+            {identity: journal_alias},
+        )
+
+    assert "reconcile destination" in str(caught.value)
+    assert "aliases journal path" in str(caught.value)
+    assert stage_calls == 0
+    assert not list(tmp_path.rglob("*.tmp"))
+    assert not (tmp_path / RECONCILE_JOURNAL_NAME).exists()
+
+
 def test_commit_journal_order_and_artifact_lifecycle(  # noqa: PLR0915
     tmp_path: Path, monkeypatch
 ):
@@ -478,6 +586,41 @@ def test_journal_publish_sync_failure_cleans_visible_journal_and_stages(
     assert "prepared journal directory fsync failed" in str(caught.value)
     assert destination.read_bytes() == b"old bytes"
     _assert_no_transaction_artifacts(tmp_path)
+
+
+def test_journal_post_publication_stage_cleanup_failure_names_orphan(tmp_path: Path, monkeypatch):
+    destination = tmp_path / "doc.md"
+    destination.write_bytes(b"old bytes")
+    rewrite = _rewrite(destination, b"old bytes", b"new bytes", "up#x")
+    journal = tmp_path / RECONCILE_JOURNAL_NAME
+    real_unlink = persistence.durable_unlink
+    helper_stages: list[Path] = []
+
+    def _fail_helper_stage_cleanup(path: Path) -> None:
+        if path != journal and path.name.startswith(f"{RECONCILE_JOURNAL_NAME}."):
+            assert json.loads(journal.read_bytes())["state"] == "prepared"
+            helper_stages.append(path)
+            raise OSError("atomic-create staging cleanup failed")
+        real_unlink(path)
+
+    monkeypatch.setattr(persistence, "durable_unlink", _fail_helper_stage_cleanup)
+
+    with pytest.raises(ReconcilePersistenceError) as caught:
+        reconcile_transaction.commit_rewrites(
+            tmp_path,
+            [rewrite],
+            {destination: destination},
+        )
+
+    assert destination.read_bytes() == b"old bytes"
+    assert not journal.exists()
+    assert len(helper_stages) == 1
+    assert helper_stages[0].exists()
+    assert list(tmp_path.rglob("*.tmp")) == helper_stages
+    message = str(caught.value)
+    assert "atomic-create staging cleanup failed" in message
+    assert str(helper_stages[0]) in message
+    assert "inspect and remove it manually" in message
 
 
 def test_existing_journal_is_preserved_and_requires_recovery(tmp_path: Path):
