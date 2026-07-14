@@ -100,7 +100,8 @@ the loaded snapshot, then re-reads each downstream file and retains exact before
 bytes while rewriting only targeted `seen` scalars through round-trip YAML. The reconcile adapter
 resolves identity paths against the project root before fresh reads and orchestrates lock
 acquisition and lifetime across recovery, load, plan, fresh reads, and the commit call. It delays
-reporting until clean lock release and does not own direct per-file atomic writes.
+final outcome and success reporting until clean lock release; an automatic-recovery notice may be
+emitted on stderr while the lock is held. The adapter does not own direct per-file atomic writes.
 `reconcile_transaction.py` independently contains live commit destinations before staging, stages
 and syncs exact before/after images, publishes the `prepared` journal, fingerprints each destination
 immediately before replacement, and rolls the batch back in reverse on conflict or pre-commit

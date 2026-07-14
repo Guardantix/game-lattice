@@ -54,11 +54,13 @@ rollback, journal and artifact recovery containment and validation, and cleanup.
 `doc_lattice.cli` package owns the application boundary. Its
 `cli/commands/reconcile.py` adapter resolves document identity paths before fresh
 reads and orchestrates lock acquisition and lifetime, recovery, loading, planning,
-the transaction commit call, and reporting only after clean lock release. Within the
-cache package, `cache/schema.py` and `cache/state.py` are filesystem-free,
-`cache/store.py` owns cache-file I/O, and `cache/lookup.py` reads and stats documents
-to select the verify or stat tier. `linear_fetch` is impure wiring and `linear_client`
-is the only module that touches the network.
+and the transaction commit call. Final outcome reporting, including success output,
+occurs only after clean lock release; an automatic-recovery notice may be emitted on
+stderr while the lock is held. Within the cache package, `cache/schema.py` and
+`cache/state.py` are filesystem-free, `cache/store.py` owns cache-file I/O, and
+`cache/lookup.py` reads and stats documents to select the verify or stat tier.
+`linear_fetch` is impure wiring and `linear_client` is the only module that touches
+the network.
 **Consequences:** Every command's logic is unit-tested with no I/O; the network slice
 is quarantined to one module.
 
@@ -204,9 +206,10 @@ to exit 2, while intended `SystemExit` values propagate unchanged.
 
 `cli/commands/reconcile.py` resolves selected document identity paths before fresh
 reads and orchestrates lock acquisition and lifetime, recovery, lattice loading,
-planning, the transaction commit call, and delayed reporting. Lock capability and
-mechanics, independent live commit destination preflight, durable mutation and
-rollback, recovery containment and validation, and cleanup remain in
+planning, the transaction commit call, and final outcome reporting after lock release.
+An automatic-recovery notice may be emitted on stderr while the lock is held. Lock
+capability and mechanics, independent live commit destination preflight, durable
+mutation and rollback, recovery containment and validation, and cleanup remain in
 `reconcile_transaction.py`.
 **Consequences:** Invocation state and diagnostics can be tested without shared
 console state. Tests under `tests/cli/` mirror the command adapters and add focused
