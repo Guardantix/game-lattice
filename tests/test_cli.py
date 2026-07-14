@@ -16,13 +16,16 @@ from rich.text import Text
 from typer.testing import CliRunner
 
 import doc_lattice.cli as cli_mod
+import doc_lattice.cli.commands.init as init_command
+import doc_lattice.cli.commands.linear as linear_command
+import doc_lattice.cli.commands.reconcile as reconcile_command
+import doc_lattice.cli.runtime as runtime_module
 import doc_lattice.reconcile_transaction as transaction
 from doc_lattice import __version__, persistence
-from doc_lattice.cli import (
-    _escape_github_message,
-    _escape_github_property,
-    app,
-)
+from doc_lattice.cli import app
+from doc_lattice.cli.application import create_app
+from doc_lattice.cli.output import escape_github_message, escape_github_property
+from doc_lattice.cli.runtime import CliRuntime
 from doc_lattice.constants import RECONCILE_JOURNAL_NAME, RECONCILE_JOURNAL_VERSION
 from doc_lattice.error_types import ConfigError, ReconcilePersistenceError
 from doc_lattice.reconcile_transaction import Journal, JournalEntry, JournalState, reconcile_lock
@@ -121,11 +124,11 @@ def _run(args: list[str], cwd: Path, env: dict[str, str]):
 
 
 def test_escape_github_message_encodes_workflow_command_metacharacters():
-    assert _escape_github_message("100%\rfirst\nsecond: a,b") == ("100%25%0Dfirst%0Asecond: a,b")
+    assert escape_github_message("100%\rfirst\nsecond: a,b") == ("100%25%0Dfirst%0Asecond: a,b")
 
 
 def test_escape_github_property_encodes_message_and_property_metacharacters():
-    assert _escape_github_property("100%\rfirst\nsecond: a,b") == (
+    assert escape_github_property("100%\rfirst\nsecond: a,b") == (
         "100%25%0Dfirst%0Asecond%3A a%2Cb"
     )
 
@@ -138,35 +141,42 @@ def test_version_flag():
 
 def test_no_color_suppresses_forced_ansi(lattice_dir: Path, monkeypatch):
     monkeypatch.chdir(lattice_dir)
-    original_out = cli_mod._out
-    original_err = cli_mod._err
-    with monkeypatch.context() as patch:
-        patch.delenv("NO_COLOR", raising=False)
-        patch.setenv("FORCE_COLOR", "1")
-        patch.setenv("TERM", "xterm-256color")
-        patch.setattr(cli_mod, "_err", original_err)
-        patch.setattr(
-            cli_mod,
-            "_out",
-            Console(force_terminal=True, color_system="standard", no_color=False),
-        )
-        colored = runner.invoke(app, ["check"])
-        assert colored.exit_code == 1
-        assert "\x1b[" in colored.stdout
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    created: list[CliRuntime] = []
 
-        patch.setattr(
-            cli_mod,
-            "_out",
-            Console(force_terminal=True, color_system="standard", no_color=False),
+    def factory(*, no_color: bool) -> CliRuntime:
+        runtime = CliRuntime(
+            stdout=Console(
+                force_terminal=True,
+                color_system="standard",
+                no_color=no_color,
+            ),
+            stderr=Console(
+                stderr=True,
+                force_terminal=True,
+                color_system="standard",
+                no_color=no_color,
+            ),
+            cwd=lattice_dir,
+            load_config=runtime_module.load_config,
+            load_lattice=runtime_module.load_lattice,
         )
-        plain = runner.invoke(app, ["--no-color", "check"])
-        assert plain.exit_code == 1
-        assert cli_mod._out.is_terminal
-        assert cli_mod._out.color_system is not None
-        assert "\x1b[" not in plain.stdout
+        created.append(runtime)
+        return runtime
 
-    assert cli_mod._out is original_out
-    assert cli_mod._err is original_err
+    isolated_app = create_app(runtime_factory=factory)
+    colored = runner.invoke(isolated_app, ["check"])
+    plain = runner.invoke(isolated_app, ["--no-color", "check"])
+
+    assert colored.exit_code == plain.exit_code == 1
+    assert "\x1b[" in colored.stdout
+    assert "\x1b[" not in plain.stdout
+    assert len(created) == 2
+    assert created[0] is not created[1]
+    assert created[0].stdout.no_color is False
+    assert created[1].stdout.no_color is True
 
 
 def _run_cli_subprocess(argv: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -293,7 +303,7 @@ def test_check_github_escapes_complete_annotation(tmp_path: Path, monkeypatch):
     result = runner.invoke(app, ["check", "--format", "github"])
 
     assert result.exit_code == 1
-    expected_path = _escape_github_property("docs/sub%:,\nline/down.md")
+    expected_path = escape_github_property("docs/sub%:,\nline/down.md")
     assert result.stdout == (
         f"::error file={expected_path},"
         "title=doc-lattice BROKEN::"
@@ -799,7 +809,7 @@ def test_reconcile_recover_rolls_back_prepared_without_planning(tmp_path: Path, 
     def fail_if_loaded(*_args, **_kwargs):
         pytest.fail("recovery-only mode loaded or planned a lattice")
 
-    monkeypatch.setattr(cli_mod, "load_lattice", fail_if_loaded)
+    monkeypatch.setattr(runtime_module, "load_lattice", fail_if_loaded)
     result = runner.invoke(app, ["reconcile", "--recover"])
 
     assert result.exit_code == 0
@@ -830,7 +840,7 @@ def test_reconcile_recover_cleans_committed_without_planning(tmp_path: Path, mon
     def fail_if_loaded(*_args, **_kwargs):
         pytest.fail("recovery-only mode loaded or planned a lattice")
 
-    monkeypatch.setattr(cli_mod, "load_lattice", fail_if_loaded)
+    monkeypatch.setattr(runtime_module, "load_lattice", fail_if_loaded)
     result = runner.invoke(app, ["reconcile", "--recover", "--json"])
 
     assert result.exit_code == 0
@@ -875,7 +885,7 @@ def test_reconcile_dry_run_refuses_journal_without_mutating_or_loading(
     def fail_if_loaded(*_args, **_kwargs):
         pytest.fail("dry-run loaded the lattice before refusing recovery")
 
-    monkeypatch.setattr(cli_mod, "load_lattice", fail_if_loaded)
+    monkeypatch.setattr(runtime_module, "load_lattice", fail_if_loaded)
     result = runner.invoke(app, ["reconcile", "--all", "--dry-run"])
 
     assert result.exit_code == 2
@@ -1054,7 +1064,7 @@ def test_reconcile_concurrent_edit_is_preserved_without_success_report(
         edited_path.write_bytes(editor_bytes)
         return real_commit(project_root, rewrites, write_paths, lock=lock)
 
-    monkeypatch.setattr(cli_mod, "commit_rewrites", edit_then_commit, raising=False)
+    monkeypatch.setattr(reconcile_command, "commit_rewrites", edit_then_commit)
     args = ["reconcile", "pc-design"]
     if json_out:
         args.append("--json")
@@ -1130,7 +1140,7 @@ def test_reconcile_success_cleans_transaction_artifacts(lattice_dir: Path, monke
 def test_reconcile_lock_exit_failure_publishes_no_success(
     lattice_dir: Path, monkeypatch, mode: str
 ):
-    real_lock = cli_mod.reconcile_lock
+    real_lock = reconcile_command.reconcile_lock
 
     @contextmanager
     def fail_after_lock_body(project_root: Path):
@@ -1138,7 +1148,7 @@ def test_reconcile_lock_exit_failure_publishes_no_success(
             yield lock
         raise ReconcilePersistenceError("injected reconcile lock release failure")
 
-    monkeypatch.setattr(cli_mod, "reconcile_lock", fail_after_lock_body)
+    monkeypatch.setattr(reconcile_command, "reconcile_lock", fail_after_lock_body)
     monkeypatch.chdir(lattice_dir)
     args = ["reconcile", "--recover", "--json"]
     if mode == "reconcile":
@@ -1464,7 +1474,7 @@ def _ticket(state: TicketState) -> Ticket:
 
 def test_linear_audit_json_reports_danger(lattice_dir, monkeypatch):
     ticket = _ticket(TicketState(name="Done", type="completed"))
-    monkeypatch.setattr(cli_mod, "fetch_tickets", _fake_fetch({"PC-228": ticket}))
+    monkeypatch.setattr(linear_command, "fetch_tickets", _fake_fetch({"PC-228": ticket}))
     monkeypatch.chdir(lattice_dir)
     result = runner.invoke(app, ["linear", "--json"])
     assert result.exit_code == 0
@@ -1476,7 +1486,7 @@ def test_linear_audit_json_reports_danger(lattice_dir, monkeypatch):
 
 def test_linear_json_indent_round_trips(lattice_dir: Path, monkeypatch):
     ticket = _ticket(TicketState(name="Done", type="completed"))
-    monkeypatch.setattr(cli_mod, "fetch_tickets", _fake_fetch({"PC-228": ticket}))
+    monkeypatch.setattr(linear_command, "fetch_tickets", _fake_fetch({"PC-228": ticket}))
     monkeypatch.chdir(lattice_dir)
     compact = runner.invoke(app, ["linear", "--json"])
     pretty = runner.invoke(app, ["linear", "--json", "--indent", "2"])
@@ -1487,7 +1497,7 @@ def test_linear_json_indent_round_trips(lattice_dir: Path, monkeypatch):
 
 def test_linear_positional_target_scopes_audit(lattice_dir, monkeypatch):
     ticket = _ticket(TicketState(name="Done", type="completed"))
-    monkeypatch.setattr(cli_mod, "fetch_tickets", _fake_fetch({"PC-228": ticket}))
+    monkeypatch.setattr(linear_command, "fetch_tickets", _fake_fetch({"PC-228": ticket}))
     monkeypatch.chdir(lattice_dir)
     result = runner.invoke(app, ["linear", "pc-design", "--json"])
     assert result.exit_code == 0
@@ -1498,7 +1508,7 @@ def test_linear_positional_target_scopes_audit(lattice_dir, monkeypatch):
 
 def test_linear_from_grades_downstream(lattice_dir, monkeypatch):
     ticket = _ticket(TicketState(name="Done", type="completed"))
-    monkeypatch.setattr(cli_mod, "fetch_tickets", _fake_fetch({"PC-228": ticket}))
+    monkeypatch.setattr(linear_command, "fetch_tickets", _fake_fetch({"PC-228": ticket}))
     monkeypatch.chdir(lattice_dir)
     result = runner.invoke(app, ["linear", "--from", "art-direction#accent", "--json"])
     assert result.exit_code == 0
@@ -1508,7 +1518,7 @@ def test_linear_from_grades_downstream(lattice_dir, monkeypatch):
 
 def test_linear_exit_code_gates_on_danger(lattice_dir, monkeypatch):
     ticket = _ticket(TicketState(name="Done", type="completed"))
-    monkeypatch.setattr(cli_mod, "fetch_tickets", _fake_fetch({"PC-228": ticket}))
+    monkeypatch.setattr(linear_command, "fetch_tickets", _fake_fetch({"PC-228": ticket}))
     monkeypatch.chdir(lattice_dir)
     assert runner.invoke(app, ["linear"]).exit_code == 0
     assert runner.invoke(app, ["linear", "--exit-code"]).exit_code == 1
@@ -1516,7 +1526,7 @@ def test_linear_exit_code_gates_on_danger(lattice_dir, monkeypatch):
 
 def test_linear_warn_exit_gates_on_warning(lattice_dir, monkeypatch):
     ticket = _ticket(TicketState(name="In Progress", type="started"))
-    monkeypatch.setattr(cli_mod, "fetch_tickets", _fake_fetch({"PC-228": ticket}))
+    monkeypatch.setattr(linear_command, "fetch_tickets", _fake_fetch({"PC-228": ticket}))
     monkeypatch.chdir(lattice_dir)
     assert runner.invoke(app, ["linear", "--exit-code"]).exit_code == 0
     assert runner.invoke(app, ["linear", "--exit-code", "--warn-exit"]).exit_code == 1
@@ -1524,7 +1534,7 @@ def test_linear_warn_exit_gates_on_warning(lattice_dir, monkeypatch):
 
 def test_linear_blocked_ticket_fails_gate(lattice_dir, monkeypatch):
     # The completed ticket is replaced by a typo: gate must still fail (fail-closed).
-    monkeypatch.setattr(cli_mod, "fetch_tickets", _fake_fetch({}))
+    monkeypatch.setattr(linear_command, "fetch_tickets", _fake_fetch({}))
     monkeypatch.chdir(lattice_dir)
     result = runner.invoke(app, ["linear", "--exit-code", "--json"])
     assert result.exit_code == 1
@@ -1555,7 +1565,7 @@ def test_linear_from_and_target_conflict_exits_2(lattice_dir, monkeypatch):
 
 
 def test_linear_unknown_from_exits_2(lattice_dir, monkeypatch):
-    monkeypatch.setattr(cli_mod, "fetch_tickets", _fake_fetch({}))
+    monkeypatch.setattr(linear_command, "fetch_tickets", _fake_fetch({}))
     monkeypatch.chdir(lattice_dir)
     result = runner.invoke(app, ["linear", "--from", "nonexistent"])
     assert result.exit_code == 2
@@ -1567,7 +1577,7 @@ def test_init_delegates_create_only_write_to_shared_persistence(tmp_path: Path, 
     def capture(path: Path, data: bytes, *, prefix: str) -> None:
         calls.append((path, data, prefix))
 
-    monkeypatch.setattr(cli_mod, "atomic_create_bytes", capture, raising=False)
+    monkeypatch.setattr(init_command, "atomic_create_bytes", capture)
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["init"])
 
@@ -1675,7 +1685,7 @@ def test_init_other_persistence_error_flattens_exception_notes(tmp_path: Path, m
     def fail_create(*_args, **_kwargs) -> None:
         raise error
 
-    monkeypatch.setattr(cli_mod, "atomic_create_bytes", fail_create)
+    monkeypatch.setattr(init_command, "atomic_create_bytes", fail_create)
     monkeypatch.chdir(tmp_path)
 
     result = runner.invoke(app, ["init"])
@@ -1802,7 +1812,7 @@ def test_lint_github_escapes_complete_annotation(tmp_path: Path, monkeypatch):
     result = runner.invoke(app, ["lint", "--format", "github"])
 
     assert result.exit_code == 1
-    expected_path = _escape_github_property("docs/sub%:,\nline/down.md")
+    expected_path = escape_github_property("docs/sub%:,\nline/down.md")
     assert result.stdout == (
         f"::error file={expected_path},"
         "title=doc-lattice ladder violation::"
@@ -1937,7 +1947,7 @@ def test_cli_forces_require_verified_only_for_reconcile(
     # wrapping the real function so the real command still runs, and record the
     # require_verified kwarg. reconcile must force the verify tier; check must not.
     seen: dict[str, bool] = {}
-    real = cli_mod.load_lattice
+    real = runtime_module.load_lattice
 
     def spy(project, *, require_verified=False, persist_cache=True):
         seen["require_verified"] = require_verified
@@ -1948,7 +1958,7 @@ def test_cli_forces_require_verified_only_for_reconcile(
             persist_cache=persist_cache,
         )
 
-    monkeypatch.setattr(cli_mod, "load_lattice", spy)
+    monkeypatch.setattr(runtime_module, "load_lattice", spy)
     env = {"XDG_CACHE_HOME": str(tmp_path / "xdg"), "NO_COLOR": "1"}
     _run(args, lattice_dir, env)
     assert (seen["require_verified"], seen["persist_cache"]) == expected
