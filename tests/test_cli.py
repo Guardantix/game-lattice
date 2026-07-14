@@ -31,6 +31,36 @@ from doc_lattice.tickets import Ticket, TicketState
 runner = CliRunner()
 
 
+def test_cli_imports_when_fcntl_is_unavailable():
+    project_root = Path(__file__).resolve().parents[1]
+    code = """
+import builtins
+
+real_import = builtins.__import__
+
+def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == "fcntl":
+        raise ModuleNotFoundError("fcntl blocked for portability test")
+    return real_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = guarded_import
+import doc_lattice.cli
+"""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(project_root / "src")
+
+    completed = subprocess.run(  # noqa: S603 (fixed interpreter and static test program)
+        [sys.executable, "-c", code],
+        cwd=project_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def _tree_snapshot(root: Path) -> dict[str, tuple[str, bytes]]:
     """Capture every namespace entry without following symlinks or reading special files."""
     snapshot: dict[str, tuple[str, bytes]] = {}
@@ -948,7 +978,7 @@ def test_reconcile_lock_setup_failure_is_typed_without_internal_error_or_mutatio
 ):
     before = _tree_snapshot(lattice_dir)
     real_open = transaction.os.open
-    real_flock = transaction.fcntl.flock
+    real_flock = transaction._flock
 
     if failure == "open":
 
@@ -960,12 +990,12 @@ def test_reconcile_lock_setup_failure_is_typed_without_internal_error_or_mutatio
         monkeypatch.setattr(transaction.os, "open", fail_open)
     elif failure == "flock":
 
-        def fail_flock(fd: int, operation: int) -> None:
-            if operation == transaction.fcntl.LOCK_EX | transaction.fcntl.LOCK_NB:
+        def fail_flock(fd: int, *, release: bool) -> None:
+            if not release:
                 raise OSError("injected flock failure")
-            real_flock(fd, operation)
+            real_flock(fd, release=release)
 
-        monkeypatch.setattr(transaction.fcntl, "flock", fail_flock)
+        monkeypatch.setattr(transaction, "_flock", fail_flock)
     else:
         monkeypatch.setattr(
             transaction.os,

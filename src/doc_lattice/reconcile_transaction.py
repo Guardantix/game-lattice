@@ -1,6 +1,5 @@
 """Serialize reconcile processes and recover durable transaction journals."""
 
-import fcntl
 import os
 import stat
 import sys
@@ -44,6 +43,7 @@ JournalState = Literal["prepared", "committed"]
 RecoveryAction = Literal["none", "rolled_back", "cleaned_committed"]
 Sha256Digest = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 _LOCK_FACTORY_TOKEN = object()
+_LOCKING_SUPPORTED = os.name != "nt"
 
 
 class JournalEntry(BaseModel):
@@ -1130,12 +1130,22 @@ def _open_reconcile_lock_directory(project_root: Path) -> int:
 def _claim_reconcile_lock(fd: int, project_root: Path) -> None:
     """Acquire the nonblocking advisory lock or raise its typed domain error."""
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _flock(fd, release=False)
     except BlockingIOError:
         message = "another reconcile is in progress; retry after it exits"
         raise ReconcileInProgressError(message) from None
     except OSError as cause:
         raise _lock_setup_error("acquiring reconcile lock", project_root, cause) from cause
+
+
+def _flock(fd: int, *, release: bool) -> None:
+    """Apply the platform advisory lock operation to a directory descriptor."""
+    try:
+        import fcntl  # noqa: PLC0415 (deferred so non-reconcile commands work without fcntl)
+    except ImportError as cause:
+        raise _unsupported_lock_error() from cause
+    operation = fcntl.LOCK_UN if release else fcntl.LOCK_EX | fcntl.LOCK_NB
+    fcntl.flock(fd, operation)
 
 
 def _inspect_reconcile_lock_directory(fd: int, project_root: Path) -> os.stat_result:
@@ -1173,6 +1183,8 @@ def reconcile_lock(project_root: Path) -> Iterator[ReconcileLock]:
         ReconcileInProgressError: If another reconcile process holds the lock.
         ReconcilePersistenceError: If lock setup, release, or close fails.
     """
+    if not _LOCKING_SUPPORTED:
+        raise _unsupported_lock_error()
     fd = _open_reconcile_lock_directory(project_root)
     acquired = False
     capability: ReconcileLock | None = None
@@ -1189,7 +1201,7 @@ def reconcile_lock(project_root: Path) -> Iterator[ReconcileLock]:
             capability._deactivate()
         try:
             if acquired:
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                _flock(fd, release=True)
         except OSError as cause:
             cleanup_errors.append(("lock release", cause))
         try:
@@ -1204,6 +1216,13 @@ def reconcile_lock(project_root: Path) -> Iterator[ReconcileLock]:
                 message = f"reconcile {details} for project directory {project_root}"
                 error = ReconcilePersistenceError(message)
                 raise error from cleanup_errors[0][1]
+
+
+def _unsupported_lock_error() -> ReconcilePersistenceError:
+    """Return the typed error for platforms without POSIX advisory locking."""
+    return ReconcilePersistenceError(
+        f"reconcile locking is not supported on this platform ({sys.platform})"
+    )
 
 
 def _lock_setup_error(

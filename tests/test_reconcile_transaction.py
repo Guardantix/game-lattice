@@ -150,20 +150,38 @@ def test_second_live_reconcile_holder_is_refused(tmp_path: Path):
         assert journal.read_bytes() == journal_bytes
 
 
+def test_reconcile_lock_rejects_unsupported_platform_before_opening_directory(
+    tmp_path: Path, monkeypatch
+):
+    before = _tree_snapshot(tmp_path)
+    monkeypatch.setattr(reconcile_transaction, "_LOCKING_SUPPORTED", False)
+    monkeypatch.setattr(
+        reconcile_transaction,
+        "_open_reconcile_lock_directory",
+        lambda _root: pytest.fail("unsupported platform opened the project directory"),
+    )
+
+    with pytest.raises(ReconcilePersistenceError) as caught, reconcile_lock(tmp_path):
+        pytest.fail("unsupported platform acquired the reconcile lock")
+
+    assert "reconcile locking is not supported on this platform" in str(caught.value)
+    assert _tree_snapshot(tmp_path) == before
+
+
 def test_lock_unlock_failure_does_not_mask_body_exception(tmp_path: Path, monkeypatch):
     body_error = ReconcilePersistenceError("body recovery failure")
     real_close = os.close
     close_calls: list[int] = []
 
-    def _fail_unlock(fd: int, operation: int) -> None:  # noqa: ARG001
-        if operation == reconcile_transaction.fcntl.LOCK_UN:
+    def _fail_unlock(fd: int, *, release: bool) -> None:  # noqa: ARG001
+        if release:
             raise OSError("injected lock release failure")
 
     def _observe_close(fd: int) -> None:
         close_calls.append(fd)
         real_close(fd)
 
-    monkeypatch.setattr(reconcile_transaction.fcntl, "flock", _fail_unlock)
+    monkeypatch.setattr(reconcile_transaction, "_flock", _fail_unlock)
     monkeypatch.setattr(reconcile_transaction.os, "close", _observe_close)
 
     with (
@@ -207,15 +225,15 @@ def test_lock_unlock_failure_after_success_is_typed_and_still_closes(tmp_path: P
     real_close = os.close
     close_calls: list[int] = []
 
-    def _fail_unlock(fd: int, operation: int) -> None:  # noqa: ARG001
-        if operation == reconcile_transaction.fcntl.LOCK_UN:
+    def _fail_unlock(fd: int, *, release: bool) -> None:  # noqa: ARG001
+        if release:
             raise OSError("injected lock release failure")
 
     def _observe_close(fd: int) -> None:
         close_calls.append(fd)
         real_close(fd)
 
-    monkeypatch.setattr(reconcile_transaction.fcntl, "flock", _fail_unlock)
+    monkeypatch.setattr(reconcile_transaction, "_flock", _fail_unlock)
     monkeypatch.setattr(reconcile_transaction.os, "close", _observe_close)
 
     with (
@@ -268,14 +286,14 @@ def test_lock_open_failure_is_typed_and_names_operation_and_root(tmp_path: Path,
 
 def test_lock_noncontention_flock_failure_is_typed_and_names_operation(tmp_path: Path, monkeypatch):
     before = _tree_snapshot(tmp_path)
-    real_flock = reconcile_transaction.fcntl.flock
+    real_flock = reconcile_transaction._flock
 
-    def fail_acquisition(fd: int, operation: int) -> None:
-        if operation == reconcile_transaction.fcntl.LOCK_EX | reconcile_transaction.fcntl.LOCK_NB:
+    def fail_acquisition(fd: int, *, release: bool) -> None:
+        if not release:
             raise OSError("flock device failure")
-        real_flock(fd, operation)
+        real_flock(fd, release=release)
 
-    monkeypatch.setattr(reconcile_transaction.fcntl, "flock", fail_acquisition)
+    monkeypatch.setattr(reconcile_transaction, "_flock", fail_acquisition)
 
     with pytest.raises(ReconcilePersistenceError) as caught, reconcile_lock(tmp_path):
         pytest.fail("lock unexpectedly acquired")
@@ -310,8 +328,8 @@ def test_lock_setup_failure_preserves_unlock_and_close_cleanup_notes(tmp_path: P
 
     monkeypatch.setattr(reconcile_transaction.os, "open", lambda _path, _flags: fake_fd)
 
-    def fail_flock(_fd: int, operation: int) -> None:
-        if operation == reconcile_transaction.fcntl.LOCK_UN:
+    def fail_flock(_fd: int, *, release: bool) -> None:
+        if release:
             raise OSError("unlock cleanup failed")
 
     def fail_fstat(_fd: int):
@@ -320,7 +338,7 @@ def test_lock_setup_failure_preserves_unlock_and_close_cleanup_notes(tmp_path: P
     def fail_close(_fd: int) -> None:
         raise OSError("close cleanup failed")
 
-    monkeypatch.setattr(reconcile_transaction.fcntl, "flock", fail_flock)
+    monkeypatch.setattr(reconcile_transaction, "_flock", fail_flock)
     monkeypatch.setattr(reconcile_transaction.os, "fstat", fail_fstat)
     monkeypatch.setattr(reconcile_transaction.os, "close", fail_close)
 

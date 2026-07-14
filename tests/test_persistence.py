@@ -15,6 +15,7 @@ from doc_lattice.persistence import (
     replace_staged,
     sha256_bytes,
     stage_bytes,
+    sync_directory,
 )
 
 
@@ -30,6 +31,17 @@ def test_file_sha256_hashes_exact_file_bytes(tmp_path: Path):
     path.write_bytes(data)
 
     assert file_sha256(path) == hashlib.sha256(data).hexdigest()
+
+
+def test_sync_directory_is_noop_on_windows(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(persistence, "_IS_WINDOWS", True)
+    monkeypatch.setattr(
+        persistence.os,
+        "open",
+        lambda *_args, **_kwargs: pytest.fail("Windows directory sync opened a directory"),
+    )
+
+    sync_directory(tmp_path)
 
 
 def test_stage_bytes_creates_unique_prefixed_temp_files_beside_destination(tmp_path: Path):
@@ -53,6 +65,26 @@ def test_stage_bytes_creates_unique_prefixed_temp_files_beside_destination(tmp_p
     finally:
         first.unlink(missing_ok=True)
         second.unlink(missing_ok=True)
+
+
+def test_stage_bytes_skips_fchmod_on_windows(tmp_path: Path, monkeypatch):
+    destination = tmp_path / "doc.md"
+    destination.write_bytes(b"old")
+    destination.chmod(0o754)
+    monkeypatch.setattr(persistence, "_IS_WINDOWS", True)
+    monkeypatch.setattr(
+        persistence.os,
+        "fchmod",
+        lambda *_args: pytest.fail("Windows staging called os.fchmod"),
+    )
+    monkeypatch.setattr(persistence, "sync_directory", lambda _path: None)
+
+    staged = stage_bytes(destination, b"new", prefix=".doc.md.windows.")
+
+    try:
+        assert staged.read_bytes() == b"new"
+    finally:
+        staged.unlink(missing_ok=True)
 
 
 def test_stage_bytes_cleans_temp_when_file_fsync_fails(tmp_path: Path, monkeypatch):

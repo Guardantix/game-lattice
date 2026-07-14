@@ -8,6 +8,8 @@ from pathlib import Path
 
 from .constants import PERSISTENCE_TEMP_SUFFIX
 
+_IS_WINDOWS = os.name == "nt"
+
 
 def sha256_bytes(data: bytes) -> str:
     """Return the full SHA-256 hexadecimal digest of bytes.
@@ -42,6 +44,8 @@ def sync_directory(path: Path) -> None:
     Raises:
         OSError: If the directory cannot be opened or synchronized.
     """
+    if _IS_WINDOWS:
+        return
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         os.fsync(fd)
@@ -104,7 +108,7 @@ def stage_bytes(destination: Path, data: bytes, *, prefix: str) -> Path:
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
             handle.flush()
-            if destination_mode is not None:
+            if destination_mode is not None and not _IS_WINDOWS:
                 os.fchmod(handle.fileno(), destination_mode)
             os.fsync(handle.fileno())
         sync_directory(destination.parent)
