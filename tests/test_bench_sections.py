@@ -36,3 +36,9 @@ def test_benchmark_reports_samples_and_derived_heading_count() -> None:
     assert result.heading_count == 1
     assert len(result.samples_ms) == 2
     assert result.median_ms > 0
+
+
+def test_benchmark_counts_only_lf_as_line_break() -> None:
+    result = benchmark("## One\nbody\vmore\n", runs=1, warmups=0)
+
+    assert result.line_count == 2

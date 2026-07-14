@@ -3,6 +3,8 @@
 from pathlib import Path
 from runpy import run_path
 
+import pytest
+
 from doc_lattice._github_slugger_data import (
     CHECKED_SLUG_OPERATIONS,
     CHECKED_UNICODE_SCALARS,
@@ -85,3 +87,19 @@ def test_generated_provenance_matches_runtime_version_pins() -> None:
     assert len(LOWERCASE_PATCH_TRANSLATION) == LOWERCASE_PATCH_MAPPINGS
     assert UPSTREAM_LOWERCASE_MAPPINGS > LOWERCASE_PATCH_MAPPINGS
     assert CHECKED_SLUG_OPERATIONS > CHECKED_UNICODE_SCALARS
+
+
+def test_install_package_reports_missing_npm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    generator = run_path(
+        str(Path(__file__).parents[1] / "scripts" / "generate_github_slugger_data.py")
+    )
+
+    def missing_npm(*_args: object, **_kwargs: object) -> None:
+        raise FileNotFoundError("npm")
+
+    monkeypatch.setattr(generator["subprocess"], "run", missing_npm)
+
+    with pytest.raises(RuntimeError, match="npm executable not found"):
+        generator["_install_package"](tmp_path)

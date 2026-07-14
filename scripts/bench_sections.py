@@ -123,7 +123,7 @@ def benchmark(body: str, *, runs: int, warmups: int) -> BenchmarkResult:
     sample_tuple = tuple(samples)
     return BenchmarkResult(
         byte_count=len(body.encode()),
-        line_count=len(body.splitlines()),
+        line_count=len(body.split("\n")) - (1 if body.endswith("\n") else 0),
         heading_count=heading_count,
         samples_ms=sample_tuple,
         median_ms=statistics.median(sample_tuple),

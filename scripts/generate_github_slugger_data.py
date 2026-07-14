@@ -396,20 +396,24 @@ def _render_from_package(
 
 
 def _install_package(working_dir: Path) -> Path:
-    subprocess.run(
-        [
-            "npm",
-            "install",
-            "--ignore-scripts",
-            "--no-package-lock",
-            "--no-save",
-            f"github-slugger@{UPSTREAM_VERSION}",
-        ],
-        cwd=working_dir,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        subprocess.run(
+            [
+                "npm",
+                "install",
+                "--ignore-scripts",
+                "--no-package-lock",
+                "--no-save",
+                f"github-slugger@{UPSTREAM_VERSION}",
+            ],
+            cwd=working_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        msg = "npm executable not found; install Node.js and npm to generate slug data"
+        raise RuntimeError(msg) from exc
     return working_dir / "node_modules" / "github-slugger"
 
 
