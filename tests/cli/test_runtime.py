@@ -8,10 +8,13 @@ import typer
 from rich.console import Console
 from typer.testing import CliRunner
 
+import doc_lattice.cli.runtime as runtime_module
 from doc_lattice.cli.application import create_app
 from doc_lattice.cli.runtime import CliRuntime, default_runtime, get_runtime
 from doc_lattice.config import Config, ProjectConfig
 from doc_lattice.model import Lattice
+
+from .helpers import runner
 
 
 def _runtime(stdout: StringIO, stderr: StringIO, cwd: Path, *, no_color: bool) -> CliRuntime:
@@ -134,3 +137,43 @@ def test_lattice_forwards_loader_keywords(tmp_path: Path):
 
     assert runtime.lattice(project, require_verified=True, persist_cache=False) is lattice
     assert calls == [(project, True, False)]
+
+
+def test_no_color_suppresses_forced_ansi(lattice_dir: Path, monkeypatch):
+    monkeypatch.chdir(lattice_dir)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    created: list[CliRuntime] = []
+
+    def factory(*, no_color: bool) -> CliRuntime:
+        runtime = CliRuntime(
+            stdout=Console(
+                force_terminal=True,
+                color_system="standard",
+                no_color=no_color,
+            ),
+            stderr=Console(
+                stderr=True,
+                force_terminal=True,
+                color_system="standard",
+                no_color=no_color,
+            ),
+            cwd=lattice_dir,
+            load_config=runtime_module.load_config,
+            load_lattice=runtime_module.load_lattice,
+        )
+        created.append(runtime)
+        return runtime
+
+    isolated_app = create_app(runtime_factory=factory)
+    colored = runner.invoke(isolated_app, ["check"])
+    plain = runner.invoke(isolated_app, ["--no-color", "check"])
+
+    assert colored.exit_code == plain.exit_code == 1
+    assert "\x1b[" in colored.stdout
+    assert "\x1b[" not in plain.stdout
+    assert len(created) == 2
+    assert created[0] is not created[1]
+    assert created[0].stdout.no_color is False
+    assert created[1].stdout.no_color is True

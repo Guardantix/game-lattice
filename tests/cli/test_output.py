@@ -143,3 +143,13 @@ def test_github_annotation_escapes_all_workflow_metacharacters(tmp_path: Path):
     assert result == (
         "::error file=sub%25%3A%2C%0Aline.md,title=title%25%3A%2C%0D%0Aline::message%25:,%0D%0Aline"
     )
+
+
+def test_escape_github_message_encodes_workflow_command_metacharacters():
+    assert escape_github_message("100%\rfirst\nsecond: a,b") == ("100%25%0Dfirst%0Asecond: a,b")
+
+
+def test_escape_github_property_encodes_message_and_property_metacharacters():
+    assert escape_github_property("100%\rfirst\nsecond: a,b") == (
+        "100%25%0Dfirst%0Asecond%3A a%2Cb"
+    )
