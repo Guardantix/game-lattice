@@ -1,8 +1,11 @@
 """CLI integration tests for the reconcile command."""
 
 import json
+import os
 import shutil
+import stat
 from contextlib import contextmanager
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -11,18 +14,77 @@ import doc_lattice.cli.commands.reconcile as reconcile_command
 import doc_lattice.cli.runtime as runtime_module
 import doc_lattice.reconcile_transaction as transaction
 from doc_lattice.cli import app
-from doc_lattice.constants import RECONCILE_JOURNAL_NAME
+from doc_lattice.constants import RECONCILE_JOURNAL_NAME, RECONCILE_JOURNAL_VERSION
 from doc_lattice.error_types import ReconcilePersistenceError
-from doc_lattice.reconcile_transaction import reconcile_lock
-
-from .helpers import (
-    _clean_docs,
-    _run,
-    _tree_snapshot,
-    _two_downstream_project,
-    _write_cli_transaction,
-    runner,
+from doc_lattice.reconcile_transaction import (
+    Journal,
+    JournalEntry,
+    JournalState,
+    reconcile_lock,
 )
+
+from .helpers import _clean_docs, _run, runner
+
+
+def _tree_snapshot(root: Path) -> dict[str, tuple[str, bytes]]:
+    """Capture every namespace entry without following symlinks or reading special files."""
+    snapshot: dict[str, tuple[str, bytes]] = {}
+    for path in sorted(root.rglob("*")):
+        mode = path.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            entry = ("symlink", os.fsencode(path.readlink()))
+        elif stat.S_ISREG(mode):
+            entry = ("file", path.read_bytes())
+        elif stat.S_ISDIR(mode):
+            entry = ("directory", b"")
+        else:
+            entry = ("special", b"")
+        snapshot[path.relative_to(root).as_posix()] = entry
+    return snapshot
+
+
+def _write_cli_transaction(
+    root: Path,
+    destination: Path,
+    before_bytes: bytes,
+    after_bytes: bytes,
+    *,
+    state: JournalState = "prepared",
+) -> tuple[Path, Path, Path]:
+    """Write a valid single-entry recovery transaction for CLI integration tests."""
+    before = destination.with_name(f".{destination.name}.doc-lattice-before.test.tmp")
+    after = destination.with_name(f".{destination.name}.doc-lattice-after.test.tmp")
+    journal = root / RECONCILE_JOURNAL_NAME
+    before.write_bytes(before_bytes)
+    after.write_bytes(after_bytes)
+    entry = JournalEntry(
+        destination=destination.relative_to(root).as_posix(),
+        before_path=before.relative_to(root).as_posix(),
+        before_sha256=sha256(before_bytes).hexdigest(),
+        after_path=after.relative_to(root).as_posix(),
+        after_sha256=sha256(after_bytes).hexdigest(),
+    )
+    journal.write_text(
+        Journal(
+            version=RECONCILE_JOURNAL_VERSION,
+            state=state,
+            entries=(entry,),
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    return journal, before, after
+
+
+def _two_downstream_project(tmp_path: Path) -> Path:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "up.md").write_text("---\nid: up\n---\n# Up {#s}\nupstream body\n", encoding="utf-8")
+    for name in ("down-a", "down-b"):
+        (docs / f"{name}.md").write_text(
+            f"---\nid: {name}\nderives_from:\n  - ref: up#s\n---\n# {name}\nbody\n",
+            encoding="utf-8",
+        )
+    return tmp_path
 
 
 def test_reconcile_unknown_id_exits_2(lattice_dir: Path, monkeypatch):
@@ -185,6 +247,7 @@ def test_reconcile_recover_cleans_committed_without_planning(tmp_path: Path, mon
         ["--recover", "--ref", "upstream"],
         ["--recover", "--dry-run"],
     ],
+    ids=["positional", "all", "ref", "dry-run"],
 )
 def test_reconcile_recover_rejects_selection_and_dry_run_flags(
     tmp_path: Path, monkeypatch, args: list[str]
@@ -225,6 +288,7 @@ def test_reconcile_dry_run_refuses_journal_without_mutating_or_loading(
         ["reconcile", "--all"],
         ["reconcile", "--all", "--dry-run"],
     ],
+    ids=["recover-json", "real-run", "dry-run"],
 )
 def test_reconcile_dangling_journal_symlink_never_reports_success_or_mutates_empty_project(
     tmp_path: Path, monkeypatch, args: list[str]
@@ -372,7 +436,7 @@ def test_reconcile_real_run_recovers_before_loading_and_plans_recovered_bytes(
     assert not after.exists()
 
 
-@pytest.mark.parametrize("json_out", [False, True])
+@pytest.mark.parametrize("json_out", [False, True], ids=["human", "json"])
 def test_reconcile_concurrent_edit_is_preserved_without_success_report(
     lattice_dir: Path, monkeypatch, json_out: bool
 ):
@@ -405,6 +469,7 @@ def test_reconcile_concurrent_edit_is_preserved_without_success_report(
 @pytest.mark.parametrize(
     ("failure", "message"),
     [("replace", "disk full"), ("fsync", "directory fsync failed")],
+    ids=["replace-failure", "fsync-failure"],
 )
 def test_reconcile_midbatch_persistence_failure_rolls_back_without_success(
     tmp_path: Path, monkeypatch, failure: str, message: str
@@ -647,6 +712,7 @@ def test_reconcile_all_cached_matches_uncached_bytes(lattice_dir: Path, tmp_path
         (["reconcile", "--all", "--dry-run"], (True, False)),
         (["check"], (False, True)),
     ],
+    ids=["reconcile-real", "reconcile-dry-run", "check-default"],
 )
 def test_cli_forces_require_verified_only_for_reconcile(
     lattice_dir: Path,

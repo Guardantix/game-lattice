@@ -72,6 +72,7 @@ def _run_cli_subprocess(argv: list[str], env: dict[str, str]) -> subprocess.Comp
         ["doc-lattice", "--no-color", "--help"],
         ["doc-lattice", "--no-color", "check", "--json", "--indent", "-1"],
     ],
+    ids=["help", "invalid-indent"],
 )
 def test_no_color_suppresses_typer_rendered_colors(argv):
     # These two invocations never reach _out/_err: --help and a --indent range failure
@@ -94,6 +95,7 @@ def test_no_color_suppresses_typer_rendered_colors(argv):
         ["doc-lattice", "--help"],
         ["doc-lattice", "check", "--json", "--indent", "-1"],
     ],
+    ids=["help", "invalid-indent"],
 )
 def test_no_color_env_var_suppresses_typer_rendered_colors(argv):
     # The documented NO_COLOR environment variable, not just the --no-color flag, must reach
@@ -174,6 +176,7 @@ def test_report_commands_reject_unknown_format_even_with_json(
         ["graph"],
         ["linear"],
     ],
+    ids=["check", "lint", "impact", "reconcile", "graph", "linear"],
 )
 @pytest.mark.parametrize("cache_enabled", [False, True], ids=["uncached", "cached"])
 def test_lattice_loading_commands_exit_2_on_unclosed_frontmatter(
@@ -203,6 +206,7 @@ def test_lattice_loading_commands_exit_2_on_unclosed_frontmatter(
         ["impact", "art-direction#accent"],
         ["linear"],
     ],
+    ids=["lint", "impact", "linear"],
 )
 def test_indent_without_json_exits_2_before_project_loading(tmp_path: Path, monkeypatch, args):
     monkeypatch.chdir(tmp_path)
@@ -217,6 +221,7 @@ def test_indent_without_json_exits_2_before_project_loading(tmp_path: Path, monk
         (["lint"], 0),
         (["impact", "art-direction#accent"], 0),
     ],
+    ids=["lint", "impact"],
 )
 def test_offline_json_indent_round_trips(lattice_dir: Path, monkeypatch, args, expected_exit):
     monkeypatch.chdir(lattice_dir)
@@ -228,7 +233,9 @@ def test_offline_json_indent_round_trips(lattice_dir: Path, monkeypatch, args, e
 
 
 @pytest.mark.parametrize(
-    "exc", [OSError("io"), RuntimeError("loop"), ValueError("bad"), ConfigError("cfg")]
+    "exc",
+    [OSError("io"), RuntimeError("loop"), ValueError("bad"), ConfigError("cfg")],
+    ids=["os-error", "runtime-error", "value-error", "config-error"],
 )
 def test_main_maps_errors_to_exit_2(monkeypatch, exc):
     # An unexpected (non-ProjectError) failure or a ProjectError must not exit 1 and
@@ -307,6 +314,7 @@ def test_main_leaves_no_color_env_unset_without_flag(monkeypatch):
 @pytest.mark.parametrize(
     "args",
     [["check"], ["lint"], ["impact", "art-direction"], ["graph", "--format", "json"]],
+    ids=["check", "lint", "impact", "graph-json"],
 )
 def test_cached_cli_output_matches_uncached(lattice_dir: Path, tmp_path: Path, args):
     # Cold (cache miss, writes the cache) and warm (cache hit) runs must reproduce the

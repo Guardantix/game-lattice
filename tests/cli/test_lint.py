@@ -6,7 +6,20 @@ from pathlib import Path
 from doc_lattice.cli import app
 from doc_lattice.cli.output import escape_github_property
 
-from .helpers import _write_lint_docs, runner
+from .helpers import runner
+
+
+def _write_lint_docs(root: Path) -> None:
+    docs = root / "docs"
+    docs.mkdir()
+    # "down" is binding but derives from "up" (derived): a ladder inversion.
+    (docs / "up.md").write_text(
+        "---\nid: up\nauthority: derived\n---\n# Up\nbody\n", encoding="utf-8"
+    )
+    (docs / "down.md").write_text(
+        "---\nid: down\nauthority: binding\nderives_from:\n  - ref: up\n---\n# Down\nbody\n",
+        encoding="utf-8",
+    )
 
 
 def test_lint_format_json_accepts_indent(lattice_dir: Path, monkeypatch):

@@ -5,7 +5,21 @@ from pathlib import Path
 
 from doc_lattice.cli import app
 
-from .helpers import _chain_docs, runner
+from .helpers import runner
+
+
+def _chain_docs(tmp_path: Path) -> Path:
+    # a <- b <- c: c derives from b, b derives from a.
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.md").write_text("---\nid: a\n---\n# A {#a}\nx\n", encoding="utf-8")
+    (docs / "b.md").write_text(
+        "---\nid: b\nderives_from:\n  - ref: a\n---\n# B {#b}\nx\n", encoding="utf-8"
+    )
+    (docs / "c.md").write_text(
+        "---\nid: c\nderives_from:\n  - ref: b\n---\n# C {#c}\nx\n", encoding="utf-8"
+    )
+    return tmp_path
 
 
 def test_impact_lists_dependents(lattice_dir: Path, monkeypatch):

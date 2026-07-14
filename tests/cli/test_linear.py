@@ -5,9 +5,27 @@ from pathlib import Path
 
 import doc_lattice.cli.commands.linear as linear_command
 from doc_lattice.cli import app
-from doc_lattice.tickets import TicketState
+from doc_lattice.tickets import Ticket, TicketState
 
-from .helpers import _fake_fetch, _ticket, runner
+from .helpers import runner
+
+
+def _fake_fetch(tickets):
+    def fetch(_identifiers, _team, _client=None):
+        return tickets, {}
+
+    return fetch
+
+
+def _ticket(state: TicketState) -> Ticket:
+    return Ticket(
+        identifier="PC-228",
+        title="t",
+        url="https://x/PC-228",
+        state=state,
+        parent=None,
+        children=(),
+    )
 
 
 def test_linear_audit_json_reports_danger(lattice_dir, monkeypatch):

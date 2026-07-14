@@ -125,11 +125,12 @@ def test_write_json_uses_exact_injected_stdout(runtime: CliRuntime):
     assert json.loads(_contents(runtime.stdout)) == {"a": [1]}
 
 
-def test_github_message_and_property_escaping_match_existing_bytes():
-    value = "100%\rfirst\nsecond: a,b"
+def test_github_annotation_uses_escaped_absolute_path_outside_root(tmp_path: Path):
+    outside = tmp_path.parent / "outside%:,\nfile.md"
 
-    assert escape_github_message(value) == "100%25%0Dfirst%0Asecond: a,b"
-    assert escape_github_property(value) == "100%25%0Dfirst%0Asecond%3A a%2Cb"
+    result = github_annotation(outside, tmp_path, "title", "message")
+
+    assert result == (f"::error file={escape_github_property(str(outside))},title=title::message")
 
 
 def test_github_annotation_escapes_all_workflow_metacharacters(tmp_path: Path):

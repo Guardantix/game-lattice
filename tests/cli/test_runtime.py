@@ -14,8 +14,6 @@ from doc_lattice.cli.runtime import CliRuntime, default_runtime, get_runtime
 from doc_lattice.config import Config, ProjectConfig
 from doc_lattice.model import Lattice
 
-from .helpers import runner
-
 
 def _runtime(stdout: StringIO, stderr: StringIO, cwd: Path, *, no_color: bool) -> CliRuntime:
     def load_config(_config: Path | None, seen_cwd: Path) -> ProjectConfig:
@@ -140,6 +138,7 @@ def test_lattice_forwards_loader_keywords(tmp_path: Path):
 
 
 def test_no_color_suppresses_forced_ansi(lattice_dir: Path, monkeypatch):
+    runner = CliRunner()
     monkeypatch.chdir(lattice_dir)
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "1")
