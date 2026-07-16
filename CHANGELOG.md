@@ -22,6 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Existing installations with a repository-scoped `LINEAR_API_KEY` must rotate or replace the key,
   move it to the protected environment, remove the old workflow, and delete broader repository
   secrets under both the legacy and dedicated names.
+- Existing adopters must review and remove or replace unmarked canonical workflow files before
+  `init --github`; managed refresh intentionally refuses to adopt or overwrite unmarked files.
 
 ## [2.0.0] - 2026-07-14
 

@@ -231,6 +231,9 @@ def test_supported_docs_describe_conflict_safe_reconcile():
 
 def test_supported_docs_order_github_linear_secret_after_verified_policy():
     readme = (_ROOT / "README.md").read_text(encoding="utf-8")
+    changelog = (_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    readme_words = " ".join(readme.split())
+    changelog_words = " ".join(changelog.split())
     assert readme.count("gh secret set DOC_LATTICE_LINEAR_API_KEY") == 1
     assert "1. Generate and review" in readme
     assert "6. Verify both" in readme
@@ -253,6 +256,28 @@ def test_supported_docs_order_github_linear_secret_after_verified_policy():
     assert "`release/*`" in readme
     assert "Older GitHub Enterprise Server" in readme
     assert "separate compatibility review" in readme
+    assert "repository owner or administrator" in readme_words
+    assert "organization-plan metadata" in readme_words
+    assert "unmarked `.github/workflows/doc-lattice.yml`" in readme_words
+    assert "before running `init --github`" in readme_words
+    assert "`ci refresh` cannot adopt an unmarked file" in readme_words
+    assert "every later `plan`, `apply`, or `verify` execution" in readme_words
+    assert "remote environment policy and secret-name metadata" in readme_words
+    assert "valid ownership marker, version, and repository identity" in readme_words
+    assert "does not compare the bootstrap script byte for byte" in readme_words
+    assert "byte-level managed-artifact diff" in readme_words
+    assert "persistent cross-run setup-uv and Actions caching" in readme_words
+    assert "ephemeral job-local cache" in readme_words
+    assert (
+        "https://docs.github.com/en/actions/reference/workflows-and-actions/"
+        "deployments-and-environments"
+    ) in readme
+    assert (
+        "https://github.blog/changelog/2025-11-07-actions-pull_request_target-and-"
+        "environment-branch-protections-changes/"
+    ) in readme
+    assert "unmarked canonical workflow files" in changelog_words
+    assert "before `init --github`" in changelog_words
 
 
 def test_architecture_records_external_github_administration_boundary():
@@ -261,3 +286,6 @@ def test_architecture_records_external_github_administration_boundary():
     assert "GitHub environment" in architecture
     assert "linear_client" in architecture
     assert "doc_lattice.github_ci" in architecture
+    assert "remote environment and secret-name metadata" in architecture
+    assert "ownership metadata rather than byte equality" in architecture
+    assert "byte-level comparison" in architecture

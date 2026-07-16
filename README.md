@@ -478,10 +478,26 @@ create-only artifacts:
 - `.github/doc-lattice-bootstrap.sh` configures and verifies the GitHub environment.
 
 The bootstrap script is a durable managed artifact, not a disposable installer. Keep it committed
-so `verify`, `ci audit`, and `ci refresh` can detect drift or recreate it after a reviewed deletion.
+after installation. Bootstrap `verify` checks remote environment policy and secret-name metadata.
+`ci audit` checks that the script is present and carries a valid ownership marker, version, and
+repository identity, but it does not compare the bootstrap script byte for byte. `ci refresh`
+performs the byte-level managed-artifact diff and can recreate a missing script after confirmation.
+
 The initial script supports GitHub.com repositories whose default branch is exactly `main`. It
-requires Bash 3.2 or later and an authenticated GitHub CLI. Run it on macOS or Linux, or on Windows
-through Git Bash or WSL. Native PowerShell is not supported.
+requires Bash 3.2 or later and an authenticated GitHub CLI. The authenticated maintainer must be a
+repository owner or administrator with authority to manage environments and inspect repository
+secret names. Reading organization-plan metadata can require organization-owner or equivalent
+`admin:org` authority; unavailable authority fails closed. Run the script on macOS or Linux, or on
+Windows through Git Bash or WSL. Native PowerShell is not supported.
+
+Existing adopters need one local preparation before running `init --github`. Earlier ordinary
+`init` guidance produced an unmarked `.github/workflows/doc-lattice.yml` when its printed workflow
+was installed. In the same reviewed change, inspect that canonical offline target, then remove it
+so `init --github` can install the managed replacement, and inspect and remove any old Linear
+workflow occupying
+`.github/workflows/doc-lattice-linear.yml`. Run `init --github` only after both canonical targets
+are absent so the final diff shows the new managed replacements. `ci refresh` cannot adopt an
+unmarked file and will fail closed instead of overwriting it.
 
 Run this human-maintainer sequence from reviewed, trusted project state:
 
@@ -515,9 +531,8 @@ Run this human-maintainer sequence from reviewed, trusted project state:
      --env doc-lattice-linear --repo OWNER/REPO
    ```
 
-5. Complete legacy migration in the same reviewed change. Remove the old hand-written Linear
-   workflow, and run either deletion only when `plan` or `apply` reported that repository-scoped
-   name.
+5. Complete secret migration in the same reviewed change. Run either deletion only when `plan` or
+   `apply` reported that repository-scoped name.
 
    ```bash
    gh secret delete LINEAR_API_KEY --repo OWNER/REPO
@@ -531,6 +546,10 @@ Run this human-maintainer sequence from reviewed, trusted project state:
    uvx --python 3.13 --from doc-lattice==2.0.0 doc-lattice ci audit \
      --repository OWNER/REPO
    ```
+
+Every initial and every later `plan`, `apply`, or `verify` execution must use a bootstrap script
+from reviewed trusted project state. Its ownership marker is useful installation metadata, not a
+substitute for reviewing the executable shell content before running it.
 
 The secret-setting command is not ready before `apply` re-reads and proves the exact `main`-only
 environment policy. `apply` never receives the Linear key. `gh secret set` prompts for the value or
@@ -552,11 +571,13 @@ partial setup can be resumed with a fresh `plan` and `apply`. The script does no
 delete preexisting remote state. If an existing environment has broader or ambiguous rules, it
 refuses to narrow or claim ownership of that environment and requires manual remediation.
 
-Public repositories are eligible on current GitHub plans. Private repositories owned by a user
-require GitHub Pro; private or internal organization repositories require GitHub Team or
-Enterprise. The script fails closed if visibility, plan eligibility, canonical repository casing,
-the exact `main` default branch, repository secret metadata, or environment policy cannot be
-verified. A repository name, transfer, or casing change requires:
+GitHub's [deployment and environment documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)
+defines environment availability and protection behavior. Public repositories are eligible on
+current GitHub plans. Private repositories owned by a user require GitHub Pro; private or internal
+organization repositories require GitHub Team or Enterprise. The script fails closed if
+visibility, plan eligibility, canonical repository casing, the exact `main` default branch,
+repository secret metadata, or environment policy cannot be verified. A repository name, transfer,
+or casing change requires:
 
 ```bash
 doc-lattice ci refresh --repository CANONICAL/NAME
@@ -579,8 +600,8 @@ case-insensitive, but the offline audit cannot establish GitHub's canonical disp
 Bootstrap `plan` and `verify` read the API `full_name` and require its spelling and case to match the
 generated literal exactly.
 
-For an existing installation, rotate or obtain a Linear key out of band. In the same reviewed
-change, remove the old hand-written Linear workflow, set the replacement only as
+For an existing installation, rotate or obtain a Linear key out of band. After the pre-generation
+workflow replacement described above, set the replacement key only as
 `DOC_LATTICE_LINEAR_API_KEY` on the `doc-lattice-linear` environment, and delete every reported
 repository-scoped secret under both the legacy `LINEAR_API_KEY` and dedicated names. Rotation is
 preferred because the broader key may already have been exposed. Repository administrators cannot
@@ -599,9 +620,10 @@ two canonical managed workflow paths, so an unrelated release workflow may legit
 Audit recognizes direct shell invocations, including supported `uv run` and `uvx` forms. It cannot
 prove that an arbitrary script, local action, reusable workflow, renamed wrapper, or dynamic shell
 construction does not eventually invoke a sensitive command. Malformed, oversized, or otherwise
-unreliably inspectable workflows exit 2 instead of being treated as safe. Local audit also cannot
-see remote environment or organization-policy drift, so rerun bootstrap `verify` after relevant
-policy, visibility, plan, rename, or transfer changes.
+unreliably inspectable workflows exit 2 instead of being treated as safe. For the bootstrap script,
+audit validates only presence and ownership metadata rather than content equality. Local audit also
+cannot see remote environment or organization-policy drift, so rerun bootstrap `verify` from
+reviewed trusted state after relevant policy, visibility, plan, rename, or transfer changes.
 
 The generated environment is the authoritative secret boundary. It allows only the exact `main`
 branch, and the dedicated environment-only secret is mapped to `LINEAR_API_KEY` only on the final
@@ -610,7 +632,9 @@ ordinary `pull_request`, `pull_request_review`, and `pull_request_review_comment
 `refs/pull/N/merge`, which the environment policy rejects. `pull_request_target` is different: it
 uses the default branch ref, so the environment can authorize it while it handles untrusted input.
 For that reason audit bans `pull_request_target` repository-wide, and trusted default-branch review
-remains a load-bearing control.
+remains a load-bearing control. GitHub's
+[December 2025 ref-semantics changelog](https://github.blog/changelog/2025-11-07-actions-pull_request_target-and-environment-branch-protections-changes/)
+records this behavior change.
 
 Before December 8, 2025, GitHub evaluated environment branch policy for pull-request-family runs
 against the attacker-controlled pull-request head branch. The exact `main`, with no pattern, rule
@@ -622,8 +646,9 @@ Older GitHub Enterprise Server versions are unsupported pending a separate compa
 
 No generated workflow runs real `reconcile`; the offline workflow does not run even
 `reconcile --dry-run` in this release. The exact managed triggers also omit `merge_group`, so merge
-queues are unsupported until a generator release adds that event. Dependency and Actions caching
-are disabled in both managed workflows; introducing caching requires a separate security review.
+queues are unsupported until a generator release adds that event. Both managed workflows disable
+persistent cross-run setup-uv and Actions caching; `uv` may still use its ephemeral job-local cache
+while one runner job is active. Introducing persistent caching requires a separate security review.
 Optional required environment reviewers and disabled administrator bypass can add manual approval
 to each Linear run, but they are administered manually outside the initial generated script and
 depend on repository visibility and plan support.

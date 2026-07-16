@@ -344,6 +344,9 @@ exactly the `main` branch. The dedicated `DOC_LATTICE_LINEAR_API_KEY` exists onl
 environment and is mapped to `LINEAR_API_KEY` only on the final Linear step. Repository-global
 audit policy bans `pull_request_target`, and generated workflows never run real `reconcile`.
 **Consequences:** `linear_client` remains the only Python network module. Remote setup is explicit,
-reviewable, resumable, and separate from the Linear secret entry. Local audit cannot observe
-GitHub environment or organization-policy drift, so the bootstrap verifier remains necessary.
-Workflow and branch governance for trusted `main` remains the residual authorization boundary.
+reviewable, resumable, and separate from the Linear secret entry. Bootstrap verification covers
+remote environment and secret-name metadata. Local audit covers workflow policy and bootstrap
+ownership metadata rather than byte equality, while managed refresh owns byte-level comparison and
+replacement. None of the local checks can observe GitHub environment or organization-policy drift,
+so the bootstrap verifier remains necessary. Workflow and branch governance for trusted `main`
+remains the residual authorization boundary.
