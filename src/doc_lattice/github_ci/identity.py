@@ -66,8 +66,8 @@ def parse_origin_repository(url: str) -> RepositoryIdentity:
         parsed = urlsplit(url)
         hostname = parsed.hostname
         port = parsed.port
-    except ValueError as exc:
-        raise ConfigError(_origin_error()) from exc
+    except ValueError:
+        raise ConfigError(_origin_error()) from None
 
     if hostname is None or hostname.lower() != "github.com":
         raise ConfigError(_origin_error())
@@ -93,8 +93,8 @@ def _parse_origin_identity(value: str) -> RepositoryIdentity:
     """Validate an origin identity without exposing its raw value in errors."""
     try:
         return parse_repository(value)
-    except ConfigError as exc:
-        raise ConfigError(_origin_error()) from exc
+    except ConfigError:
+        raise ConfigError(_origin_error()) from None
 
 
 def validate_final_release_version(version: str) -> tuple[int, int, int]:

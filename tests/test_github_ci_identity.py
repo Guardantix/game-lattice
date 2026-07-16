@@ -1,5 +1,7 @@
 """Tests for GitHub repository identity and generator-version validation."""
 
+import traceback
+
 import pytest
 
 from doc_lattice.error_types import ConfigError
@@ -76,6 +78,26 @@ def test_parse_origin_repository_does_not_echo_sensitive_input(url):
         parse_origin_repository(url)
 
     assert "DO-NOT-ECHO" not in str(exc_info.value)
+
+
+def test_parse_origin_repository_traceback_hides_invalid_scp_identity():
+    url = "git@github.com:Guardantix/doc-lattice/DO-NOT-TRACE"
+
+    with pytest.raises(ConfigError) as exc_info:
+        parse_origin_repository(url)
+
+    formatted = "".join(traceback.format_exception(exc_info.type, exc_info.value, exc_info.tb))
+    assert "DO-NOT-TRACE" not in formatted
+
+
+def test_parse_origin_repository_traceback_hides_malformed_port_origin():
+    url = "https://github.com:not-a-port/Guardantix/DO-NOT-TRACE"
+
+    with pytest.raises(ConfigError) as exc_info:
+        parse_origin_repository(url)
+
+    formatted = "".join(traceback.format_exception(exc_info.type, exc_info.value, exc_info.tb))
+    assert "DO-NOT-TRACE" not in formatted
 
 
 @pytest.mark.parametrize(
