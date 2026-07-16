@@ -127,6 +127,18 @@ EOF
   return 1
 }
 
+contains_ascii_case_line() {
+  [ -n "$1" ] || return 1
+  line_target_key=$(lower_ascii "$2") || return 2
+  while IFS= read -r candidate; do
+    line_candidate_key=$(lower_ascii "$candidate") || return 2
+    [ "$line_candidate_key" = "$line_target_key" ] && return 0
+  done <<EOF
+$1
+EOF
+  return 1
+}
+
 append_fingerprint() { STATE_FINGERPRINT="${STATE_FINGERPRINT}${#1}:$1"; }
 
 load_repository() {
@@ -201,7 +213,11 @@ load_state() {
   PROTECTED_BRANCHES=""
   POLICY_ROWS=""
   ENVIRONMENT_SECRET_NAMES=""
-  if contains_line "$ENVIRONMENT_NAMES" "$ENVIRONMENT"; then
+  contains_ascii_case_line "$ENVIRONMENT_NAMES" "$ENVIRONMENT"
+  environment_name_status=$?
+  [ "$environment_name_status" -le 1 ] || \
+    inspection_die "environment-name comparison failed; state is unreliable"
+  if [ "$environment_name_status" -eq 0 ]; then
     ENVIRONMENT_EXISTS=1
     environment_fields=$(api "repos/$OWNER/$REPOSITORY/environments/$ENVIRONMENT" --jq \
       '[.deployment_branch_policy.custom_branch_policies, \
@@ -292,10 +308,13 @@ print_state() {
 }
 
 observable_status() {
-  [ "$POLICY_EXACT" -eq 1 ] && \
+  if [ "$POLICY_EXACT" -eq 1 ] && \
     [ "$ENVIRONMENT_SECRET_PRESENT" -eq 1 ] && \
     [ "$LEGACY_REPO_SECRET_PRESENT" -eq 0 ] && \
-    [ "$DEDICATED_REPO_SECRET_PRESENT" -eq 0 ]
+    [ "$DEDICATED_REPO_SECRET_PRESENT" -eq 0 ]; then
+    return 0
+  fi
+  return "$EXIT_FINDING"
 }
 
 create_main_policy() {
@@ -335,15 +354,16 @@ apply_policy() {
   printf '%s\n' 'environment policy verified'
   if [ "$ENVIRONMENT_SECRET_PRESENT" -eq 0 ]; then
     printf '%s%s\n' \
-      'gh secret set DOC_LATTICE_LINEAR_API_KEY --env doc-lattice-linear ' \
-      '--repo "$CANONICAL_REPOSITORY"'
+      'gh secret set DOC_LATTICE_LINEAR_API_KEY --env doc-lattice-linear --repo ' \
+      "$CANONICAL_REPOSITORY"
   fi
   if [ "$LEGACY_REPO_SECRET_PRESENT" -eq 1 ]; then
-    printf '%s\n' 'gh secret delete LINEAR_API_KEY --repo "$CANONICAL_REPOSITORY"'
+    printf '%s%s\n' \
+      'gh secret delete LINEAR_API_KEY --repo ' "$CANONICAL_REPOSITORY"
   fi
   if [ "$DEDICATED_REPO_SECRET_PRESENT" -eq 1 ]; then
-    printf '%s\n' \
-      'gh secret delete DOC_LATTICE_LINEAR_API_KEY --repo "$CANONICAL_REPOSITORY"'
+    printf '%s%s\n' \
+      'gh secret delete DOC_LATTICE_LINEAR_API_KEY --repo ' "$CANONICAL_REPOSITORY"
   fi
 }
 

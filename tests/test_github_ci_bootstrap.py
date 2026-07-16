@@ -114,13 +114,21 @@ if arguments == [
     "--jq",
     os.environ["FAKE_ENVIRONMENTS_JQ"],
 ]:
-    names = ["doc-lattice-linear"] if state.get("environment") is not None else []
+    names = (
+        [state.get("environment_name", "doc-lattice-linear")]
+        if state.get("environment") is not None
+        else []
+    )
     names.extend(state.get("other_environments", []))
     print("\n".join(names))
     raise SystemExit(0)
 
 environment = state.get("environment")
-if arguments == [environment_endpoint, "--jq", os.environ["FAKE_ENVIRONMENT_JQ"]]:
+if (
+    len(arguments) == 3
+    and arguments[0].lower() == environment_endpoint.lower()
+    and arguments[1:] == ["--jq", os.environ["FAKE_ENVIRONMENT_JQ"]]
+):
     if environment is None:
         fail("environment missing")
     print(
@@ -129,23 +137,32 @@ if arguments == [environment_endpoint, "--jq", os.environ["FAKE_ENVIRONMENT_JQ"]
     )
     raise SystemExit(0)
 
-if arguments == [
-    f"{environment_endpoint}/deployment-branch-policies",
-    "--paginate",
-    "--jq",
-    os.environ["FAKE_POLICIES_JQ"],
-]:
+if (
+    len(arguments) == 4
+    and arguments[0].lower()
+    == f"{environment_endpoint}/deployment-branch-policies".lower()
+    and arguments[1:]
+    == [
+        "--paginate",
+        "--jq",
+        os.environ["FAKE_POLICIES_JQ"],
+    ]
+):
     if environment is None:
         fail("environment missing")
     print("\n".join(f'{row["name"]}\t{row["type"]}' for row in environment["policies"]))
     raise SystemExit(0)
 
-if arguments == [
-    f"{environment_endpoint}/secrets",
-    "--paginate",
-    "--jq",
-    os.environ["FAKE_ENVIRONMENT_SECRETS_JQ"],
-]:
+if (
+    len(arguments) == 4
+    and arguments[0].lower() == f"{environment_endpoint}/secrets".lower()
+    and arguments[1:]
+    == [
+        "--paginate",
+        "--jq",
+        os.environ["FAKE_ENVIRONMENT_SECRETS_JQ"],
+    ]
+):
     if environment is None:
         fail("environment missing")
     if state.get("environment_secret_error_after_mutation", False) and state.get(
@@ -155,15 +172,18 @@ if arguments == [
     print("\n".join(environment["secrets"]))
     raise SystemExit(0)
 
-if arguments == [
-    "--method",
-    "PUT",
-    environment_endpoint,
-    "--field",
-    "deployment_branch_policy[protected_branches]=false",
-    "--field",
-    "deployment_branch_policy[custom_branch_policies]=true",
-]:
+if (
+    len(arguments) == 7
+    and arguments[:2] == ["--method", "PUT"]
+    and arguments[2].lower() == environment_endpoint.lower()
+    and arguments[3:]
+    == [
+        "--field",
+        "deployment_branch_policy[protected_branches]=false",
+        "--field",
+        "deployment_branch_policy[custom_branch_policies]=true",
+    ]
+):
     if state.get("put_error", False):
         fail("configured PUT failure")
     state["environment"] = {
@@ -177,15 +197,19 @@ if arguments == [
     print("{}")
     raise SystemExit(0)
 
-if arguments == [
-    "--method",
-    "POST",
-    f"{environment_endpoint}/deployment-branch-policies",
-    "--field",
-    "name=main",
-    "--field",
-    "type=branch",
-]:
+if (
+    len(arguments) == 7
+    and arguments[:2] == ["--method", "POST"]
+    and arguments[2].lower()
+    == f"{environment_endpoint}/deployment-branch-policies".lower()
+    and arguments[3:]
+    == [
+        "--field",
+        "name=main",
+        "--field",
+        "type=branch",
+    ]
+):
     if state.get("post_error", False):
         fail("configured POST failure")
     if environment is None:
@@ -280,6 +304,7 @@ def _state(**overrides):
             "owner_type": "Organization",
         },
         "environment": _exact_environment(),
+        "environment_name": "doc-lattice-linear",
         "repo_secrets": [],
     }
     state.update(overrides)
@@ -421,6 +446,7 @@ def test_render_managed_artifacts_includes_bash_32_bootstrap(tmp_path: Path):
     assert "--force" not in bootstrap.text
     assert "--yes" not in bootstrap.text
     assert " -y" not in bootstrap.text
+    assert 'return "$EXIT_FINDING"' in bootstrap.text
 
 
 @pytest.mark.parametrize(
@@ -515,9 +541,10 @@ def test_apply_creates_absent_environment_after_tty_confirmation(tmp_path: Path)
     verified = result.stdout.index("environment policy verified")
     secret_command = result.stdout.index(
         "gh secret set DOC_LATTICE_LINEAR_API_KEY --env doc-lattice-linear "
-        '--repo "$CANONICAL_REPOSITORY"'
+        "--repo Guardantix/doc-lattice"
     )
     assert verified < secret_command
+    assert "$CANONICAL_REPOSITORY" not in result.stdout
     mutation_indices = [index for index, call in enumerate(calls) if "--method" in call]
     first_mutation = mutation_indices[0]
     last_mutation = mutation_indices[-1]
@@ -760,6 +787,57 @@ def test_apply_sort_failure_cannot_erase_mismatched_environment(tmp_path: Path):
     assert final_state["environment"] == mismatched
 
 
+def test_case_variant_environment_with_exact_policy_is_existing(tmp_path: Path):
+    """Recognize GitHub's case-insensitive environment identity during planning."""
+    result, _, calls = _run_bootstrap(
+        tmp_path,
+        _state(environment_name="Doc-Lattice-Linear"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "policy: exact" in result.stdout
+    assert _mutation_calls(calls) == []
+
+
+def test_apply_refuses_case_variant_mismatched_environment(tmp_path: Path):
+    """Never create over a case-variant environment with unreviewed policy."""
+    mismatched = {
+        "custom": True,
+        "protected": False,
+        "policies": [{"name": "release/*", "type": "branch"}],
+        "secrets": [],
+    }
+    result, final_state, calls = _run_bootstrap(
+        tmp_path,
+        _state(
+            environment=mismatched,
+            environment_name="Doc-Lattice-Linear",
+        ),
+        "apply",
+        confirmation="Guardantix/doc-lattice",
+    )
+
+    assert result.returncode == 2
+    assert "refusing to narrow or take ownership" in result.stderr
+    assert _mutation_calls(calls) == []
+    assert final_state["environment"] == mismatched
+    assert final_state["environment_name"] == "Doc-Lattice-Linear"
+
+
+def test_environment_name_translation_failure_is_tool_error(tmp_path: Path):
+    """Fail closed if case-insensitive environment-name comparison cannot run."""
+    result, _, calls = _run_bootstrap(
+        tmp_path,
+        _state(),
+        tr_fail_calls=(3,),
+    )
+
+    assert result.returncode == 2
+    assert "environment-name comparison failed" in result.stderr
+    assert "state is unreliable" in result.stderr
+    assert _mutation_calls(calls) == []
+
+
 def test_exact_apply_rerun_confirms_without_mutation(tmp_path: Path):
     """Require confirmation even when the current observable state is exact."""
     result, _, calls = _run_bootstrap(
@@ -988,9 +1066,13 @@ def test_safe_incomplete_post_failure_reports_preserved_state(tmp_path: Path):
     assert final_state["environment"] == safe_incomplete
 
 
-def test_apply_prints_broader_secret_deletions_only_after_verification(tmp_path: Path):
-    """Print, but never execute, both repository-scope migration commands."""
-    state = _state(repo_secrets=["LINEAR_API_KEY", "DOC_LATTICE_LINEAR_API_KEY"])
+@pytest.mark.parametrize("secret_name", ["LINEAR_API_KEY", "DOC_LATTICE_LINEAR_API_KEY"])
+def test_apply_prints_broader_secret_deletion_only_after_verification(
+    tmp_path: Path,
+    secret_name: str,
+):
+    """Print, but never execute, each repository-scope migration command."""
+    state = _state(repo_secrets=[secret_name])
 
     refused, _, refused_calls = _run_bootstrap(tmp_path / "refused", state, "apply")
     assert refused.returncode == 2
@@ -1006,11 +1088,11 @@ def test_apply_prints_broader_secret_deletions_only_after_verification(tmp_path:
 
     assert result.returncode == 1, result.stderr
     verified = result.stdout.index("environment policy verified")
-    legacy = result.stdout.index('gh secret delete LINEAR_API_KEY --repo "$CANONICAL_REPOSITORY"')
-    dedicated = result.stdout.index(
-        'gh secret delete DOC_LATTICE_LINEAR_API_KEY --repo "$CANONICAL_REPOSITORY"'
+    delete_command = result.stdout.index(
+        f"gh secret delete {secret_name} --repo Guardantix/doc-lattice"
     )
-    assert verified < legacy < dedicated
+    assert verified < delete_command
+    assert "$CANONICAL_REPOSITORY" not in result.stdout
     assert all(call[:1] != ["secret"] for call in calls)
 
 
@@ -1119,7 +1201,11 @@ def test_secret_set_command_is_printed_but_never_invoked(tmp_path: Path):
 
     assert result.returncode == 1, result.stderr
     assert "environment policy verified" in result.stdout
-    assert "gh secret set DOC_LATTICE_LINEAR_API_KEY" in result.stdout
+    assert (
+        "gh secret set DOC_LATTICE_LINEAR_API_KEY --env doc-lattice-linear "
+        "--repo Guardantix/doc-lattice"
+    ) in result.stdout
+    assert "$CANONICAL_REPOSITORY" not in result.stdout
     assert all(call[:1] != ["secret"] for call in calls)
 
 
