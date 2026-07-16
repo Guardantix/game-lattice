@@ -6,13 +6,15 @@ import pytest
 
 from doc_lattice.error_types import ConfigError
 from doc_lattice.github_ci.audit import (
-    PR_EVENTS,
     SECRET_NAMES,
     audit_global_workflows,
     audit_managed_installation,
     direct_doc_lattice_invocations,
 )
 from doc_lattice.github_ci.filesystem import (
+    MAX_CUMULATIVE_WORKFLOW_BYTES,
+    MAX_WORKFLOW_BYTES,
+    MAX_WORKFLOW_FILES,
     discover_workflows,
     inspect_installed_artifacts,
 )
@@ -152,6 +154,90 @@ def test_direct_doc_lattice_invocations_discards_only_malformed_fragment():
     assert direct_doc_lattice_invocations(script) == (("check", False),)
 
 
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("uvx --with requests doc-lattice linear", (("linear", False),)),
+        (
+            "uvx --index https://packages.example/simple doc-lattice linear",
+            (("linear", False),),
+        ),
+        (
+            "uvx --index=https://packages.example/simple -w requests doc-lattice check",
+            (("check", False),),
+        ),
+        (
+            "uv run --group dev doc-lattice reconcile --all",
+            (("reconcile", False),),
+        ),
+        (
+            "uv run --group=dev --with requests doc-lattice reconcile --dry-run",
+            (("reconcile", True),),
+        ),
+        ("command -p doc-lattice linear", (("linear", False),)),
+        ("command -- doc-lattice check", (("check", False),)),
+        ("exec -a lattice doc-lattice reconcile --all", (("reconcile", False),)),
+        ("exec -c doc-lattice lint", (("lint", False),)),
+        ("2>/dev/null doc-lattice linear", (("linear", False),)),
+        ("</dev/null 3>&1 command doc-lattice check", (("check", False),)),
+    ],
+)
+def test_direct_doc_lattice_invocations_handles_supported_wrappers_and_redirections(
+    script,
+    expected,
+):
+    assert direct_doc_lattice_invocations(script) == expected
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "command -v doc-lattice linear",
+        "command -V doc-lattice linear",
+        "command -pv doc-lattice linear",
+        "uv run --module doc-lattice linear",
+        "uv run --module=doc-lattice linear",
+        "uv run -m doc-lattice linear",
+        "uv run -mdoc-lattice linear",
+        "uv run --script doc-lattice linear",
+        "uv run -s doc-lattice linear",
+        "uv run --gui-script doc-lattice linear",
+    ],
+)
+def test_direct_doc_lattice_invocations_ignores_nonexecuting_command_forms(script):
+    assert direct_doc_lattice_invocations(script) == ()
+
+
+def test_direct_doc_lattice_invocations_ignores_heredoc_bodies():
+    script = """\
+doc-lattice check
+cat <<'POLICY'
+doc-lattice linear
+uv run doc-lattice reconcile --all
+POLICY
+doc-lattice lint
+"""
+
+    assert direct_doc_lattice_invocations(script) == (
+        ("check", False),
+        ("lint", False),
+    )
+
+
+def test_direct_doc_lattice_invocations_keeps_command_with_and_after_heredoc():
+    script = """\
+doc-lattice check <<-EOF
+	doc-lattice linear
+	EOF
+doc-lattice lint
+"""
+
+    assert direct_doc_lattice_invocations(script) == (
+        ("check", False),
+        ("lint", False),
+    )
+
+
 def test_global_audit_reports_target_secret_linear_and_mutating_reconcile():
     document = _workflow(
         """\
@@ -207,7 +293,14 @@ jobs:
     assert audit_global_workflows((document,)) == ()
 
 
-@pytest.mark.parametrize("event", sorted(PR_EVENTS))
+@pytest.mark.parametrize(
+    "event",
+    [
+        "pull_request",
+        "pull_request_review",
+        "pull_request_review_comment",
+    ],
+)
 def test_global_audit_applies_command_rules_to_every_pr_event(event: str):
     document = _workflow(
         f"""\
@@ -359,6 +452,99 @@ jobs:
     assert _finding_codes(audit_global_workflows((duplicate,))) == {"LINEAR_SECRET_REFERENCE"}
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "${{ secrets.linear_api_key }}",
+        "${{ secrets['Doc_Lattice_Linear_Api_Key'] }}",
+        "${{ toJSON(SeCrEtS.LINEAR_API_KEY) }}",
+        "${{ secrets[env.linear_api_key] }}",
+    ],
+)
+def test_global_audit_detects_case_insensitive_secret_references(value: str):
+    document = _workflow(
+        f"""\
+on: push
+env:
+  TOKEN: {value}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+"""
+    )
+
+    assert _finding_codes(audit_global_workflows((document,))) == {"LINEAR_SECRET_REFERENCE"}
+
+
+@pytest.mark.parametrize("key", ["LINEAR_API_KEY", "doc_lattice_linear_api_key"])
+def test_global_audit_detects_root_environment_secret_keys(key: str):
+    document = _workflow(
+        f"""\
+on: push
+env:
+  {key}: ordinary
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+"""
+    )
+
+    assert _finding_codes(audit_global_workflows((document,))) == {"LINEAR_SECRET_REFERENCE"}
+
+
+def test_global_audit_rejects_case_variation_in_canonical_secret_slot():
+    document = _workflow(
+        """\
+on: push
+jobs:
+  linear:
+    runs-on: ubuntu-latest
+    steps:
+      - run: install
+      - env:
+          linear_api_key: ${{ secrets.doc_lattice_linear_api_key }}
+        run: doc-lattice linear --exit-code
+""",
+        ".github/workflows/doc-lattice-linear.yml",
+    )
+
+    assert _finding_codes(audit_global_workflows((document,))) == {"LINEAR_SECRET_REFERENCE"}
+
+
+def test_global_audit_deduplicates_identical_findings_with_stable_details():
+    document = _workflow(
+        """\
+on: [pull_request, pull_request_target]
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: doc-lattice linear
+""",
+        ".github/workflows/duplicate.yml",
+    )
+
+    findings = audit_global_workflows((document, document))
+
+    assert len(findings) == 2
+    assert [(finding.path, finding.code, finding.message) for finding in findings] == [
+        (
+            ".github/workflows/duplicate.yml",
+            "PR_LINEAR_INVOCATION",
+            "pull-request workflows must not invoke doc-lattice linear",
+        ),
+        (
+            ".github/workflows/duplicate.yml",
+            "PULL_REQUEST_TARGET",
+            "pull_request_target is prohibited for repository workflows",
+        ),
+    ]
+
+
 def test_global_audit_documents_arbitrary_script_indirection_as_undetected():
     document = _workflow(
         """\
@@ -493,6 +679,91 @@ def test_discover_workflows_rejects_non_utf8_or_malformed_yaml(tmp_path: Path):
         discover_workflows(tmp_path)
 
 
+def test_discover_workflows_rejects_more_than_maximum_direct_files(tmp_path: Path):
+    workflows = tmp_path / ".github/workflows"
+    workflows.mkdir(parents=True)
+    for index in range(MAX_WORKFLOW_FILES + 1):
+        (workflows / f"{index:03}.yml").write_text("jobs: {}\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=r"more than 256.*\.github/workflows"):
+        discover_workflows(tmp_path)
+
+
+def test_discover_workflows_stops_enumerating_at_file_count_limit(
+    tmp_path: Path,
+    monkeypatch,
+):
+    workflows = tmp_path / ".github/workflows"
+    workflows.mkdir(parents=True)
+    real_iterdir = Path.iterdir
+
+    def _bounded_entries(path: Path):
+        if path != workflows:
+            yield from real_iterdir(path)
+            return
+        for index in range(MAX_WORKFLOW_FILES + 1):
+            yield path / f"{index:03}.yml"
+        raise AssertionError("workflow discovery consumed past its declared file limit")
+
+    monkeypatch.setattr(Path, "iterdir", _bounded_entries)
+
+    with pytest.raises(ConfigError, match=r"more than 256.*\.github/workflows"):
+        discover_workflows(tmp_path)
+
+
+def test_discover_workflows_rejects_per_file_byte_limit_plus_one(tmp_path: Path):
+    workflows = tmp_path / ".github/workflows"
+    workflows.mkdir(parents=True)
+    target = workflows / "large.yml"
+    target.write_bytes(b"jobs: {}\n#" + b"x" * (MAX_WORKFLOW_BYTES - 9))
+    assert target.stat().st_size == MAX_WORKFLOW_BYTES + 1
+
+    with pytest.raises(ConfigError, match=r"byte limit.*\.github/workflows/large\.yml"):
+        discover_workflows(tmp_path)
+
+
+def test_discover_workflows_rejects_cumulative_byte_limit_plus_one(tmp_path: Path):
+    workflows = tmp_path / ".github/workflows"
+    workflows.mkdir(parents=True)
+    for index in range(8):
+        target = workflows / f"{index}.yml"
+        target.write_bytes(b"jobs: {}\n#" + b"x" * (MAX_WORKFLOW_BYTES - 10))
+        assert target.stat().st_size == MAX_WORKFLOW_BYTES
+    (workflows / "overflow.yml").write_bytes(b"x")
+    assert sum(path.stat().st_size for path in workflows.iterdir()) == (
+        MAX_CUMULATIVE_WORKFLOW_BYTES + 1
+    )
+
+    with pytest.raises(ConfigError, match=r"cumulative byte limit.*\.github/workflows"):
+        discover_workflows(tmp_path)
+
+
+def test_discover_workflows_rejects_file_growth_between_stat_and_read(
+    tmp_path: Path,
+    monkeypatch,
+):
+    workflows = tmp_path / ".github/workflows"
+    workflows.mkdir(parents=True)
+    target = workflows / "growing.yml"
+    target.write_text("jobs: {}\n", encoding="utf-8")
+    real_open = Path.open
+    grew = False
+
+    def _grow_after_open(path: Path, *args, **kwargs):
+        nonlocal grew
+        handle = real_open(path, *args, **kwargs)
+        if path == target and not grew and "r" in args[0]:
+            grew = True
+            with real_open(path, "ab") as writer:
+                writer.write(b"# grew\n")
+        return handle
+
+    monkeypatch.setattr(Path, "open", _grow_after_open)
+
+    with pytest.raises(ConfigError, match=r"changed during discovery.*growing\.yml"):
+        discover_workflows(tmp_path)
+
+
 def test_inspect_installed_artifacts_returns_exact_text_and_parsed_markers(tmp_path: Path):
     expected = render_managed_artifacts("Guardantix/doc-lattice", "2.1.0")
     _write_managed_artifacts(tmp_path)
@@ -566,6 +837,17 @@ def test_inspect_installed_artifacts_rejects_non_utf8_and_symlinks(tmp_path: Pat
     destination.symlink_to(real)
 
     with pytest.raises(ConfigError, match=r"symlink.*doc-lattice\.yml"):
+        inspect_installed_artifacts(tmp_path, expected)
+
+
+def test_inspect_installed_artifacts_rejects_oversized_managed_file(tmp_path: Path):
+    expected = render_managed_artifacts("Guardantix/doc-lattice", "2.1.0")
+    offline = expected[0]
+    destination = tmp_path / offline.relative_path
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(b"x" * (MAX_WORKFLOW_BYTES + 1))
+
+    with pytest.raises(ConfigError, match=r"byte limit.*doc-lattice\.yml"):
         inspect_installed_artifacts(tmp_path, expected)
 
 
@@ -798,7 +1080,7 @@ def test_managed_audit_detects_action_moved_after_command_step(tmp_path: Path):
         (
             "github.repository == 'Guardantix/doc-lattice'",
             "github.repository == 'other/repository'",
-            "MANAGED_JOB",
+            "MANAGED_COMMAND",
         ),
         (
             "environment: doc-lattice-linear",
@@ -912,3 +1194,110 @@ def test_managed_audit_findings_are_sorted_and_unique(tmp_path: Path):
     findings = _audit_installed(tmp_path)
 
     assert findings == tuple(sorted(set(findings)))
+
+
+@pytest.mark.parametrize(
+    ("role", "old", "new", "code"),
+    [
+        (
+            "offline",
+            "  pull_request:\n    branches: [main]",
+            "  pull_request:\n    branches: [main]\n    paths: [docs/**]",
+            "MANAGED_TRIGGERS",
+        ),
+        (
+            "offline",
+            "  pull_request:\n    branches: [main]",
+            "  pull_request:\n    branches: [main]\n    paths-ignore: [generated/**]",
+            "MANAGED_TRIGGERS",
+        ),
+        (
+            "offline",
+            "permissions:\n  contents: read",
+            "env:\n"
+            "  UV_DEFAULT_INDEX: https://example.invalid/simple\n"
+            "permissions:\n"
+            "  contents: read",
+            "MANAGED_COMMAND",
+        ),
+        (
+            "offline",
+            "permissions:\n  contents: read",
+            "defaults:\n"
+            "  run:\n"
+            "    shell: bash\n"
+            "    working-directory: docs\n"
+            "permissions:\n"
+            "  contents: read",
+            "MANAGED_COMMAND",
+        ),
+        (
+            "offline",
+            "      - name: Audit, check, and lint\n        run:",
+            "      - name: Audit, check, and lint\n        if: false\n"
+            "        continue-on-error: true\n        shell: bash\n"
+            "        working-directory: docs\n        run:",
+            "MANAGED_COMMAND",
+        ),
+        (
+            "offline",
+            "    runs-on: ubuntu-latest",
+            "    if: false\n    continue-on-error: true\n    runs-on: ubuntu-latest",
+            "MANAGED_COMMAND",
+        ),
+        (
+            "offline",
+            "      - name: Audit, check, and lint",
+            "      - uses: owner/extra-action@main\n      - name: Audit, check, and lint",
+            "MANAGED_ACTION",
+        ),
+        (
+            "offline",
+            "      - name: Audit, check, and lint",
+            "      - run: echo extra\n      - name: Audit, check, and lint",
+            "MANAGED_COMMAND",
+        ),
+        (
+            "linear",
+            "      - name: Run trusted Linear gate\n"
+            "        env:\n"
+            "          LINEAR_API_KEY: ${{ secrets.DOC_LATTICE_LINEAR_API_KEY }}\n"
+            '        run: \'"$RUNNER_TEMP/doc-lattice-venv/bin/doc-lattice" '
+            "linear --exit-code'\n",
+            "",
+            "MANAGED_COMMAND",
+        ),
+    ],
+)
+def test_managed_audit_detects_residual_behavioral_structure(
+    tmp_path: Path,
+    role: str,
+    old: str,
+    new: str,
+    code: str,
+):
+    _write_managed_artifacts(tmp_path)
+    _mutate_artifact(tmp_path, role, old, new)
+
+    findings = _audit_installed(tmp_path)
+
+    assert _finding_codes(findings) == {code}
+
+
+def test_managed_audit_allows_display_name_changes(tmp_path: Path):
+    _write_managed_artifacts(tmp_path)
+    _mutate_artifact(tmp_path, "offline", "name: doc-lattice", "name: Friendly workflow")
+    _mutate_artifact(
+        tmp_path,
+        "offline",
+        "name: Offline doc-lattice gates",
+        "name: Friendly job",
+    )
+    _mutate_artifact(
+        tmp_path,
+        "offline",
+        "name: Audit, check, and lint",
+        "name: Friendly step",
+    )
+
+    assert _audit_installed(tmp_path) == ()

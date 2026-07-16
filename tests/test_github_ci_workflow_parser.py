@@ -6,6 +6,7 @@ import pytest
 
 import doc_lattice.github_ci.workflow_parser as workflow_parser_module
 from doc_lattice.error_types import ConfigError
+from doc_lattice.github_ci.model import WorkflowStructureEntry
 from doc_lattice.github_ci.workflow_parser import parse_workflow
 
 MAX_UTF8_INPUT_BYTES = 1_048_576
@@ -98,6 +99,77 @@ jobs:
         and scalar.value == "uv run doc-lattice audit --linear"
         for scalar in workflow.scalars
     )
+
+
+def test_parse_workflow_emits_deterministic_typed_structure():
+    first = parse_workflow(
+        Path(".github/workflows/structure.yml"),
+        """\
+jobs:
+  check:
+    steps:
+      - run: echo ok
+    empty: {}
+on:
+  push:
+    paths: [docs/**]
+env:
+  FLAG: true
+  COUNT: 2
+  RATIO: 1.5
+  EMPTY:
+""",
+    )
+    second = parse_workflow(
+        Path(".github/workflows/structure.yml"),
+        """\
+env:
+  RATIO: 1.5
+  EMPTY:
+  COUNT: 2
+  FLAG: true
+on:
+  push:
+    paths:
+      - docs/**
+jobs:
+  check:
+    empty: {}
+    steps:
+      - run: echo ok
+""",
+    )
+
+    assert first.structure == second.structure
+    assert WorkflowStructureEntry((), "mapping", None) in first.structure
+    assert WorkflowStructureEntry(("jobs", "check", "empty"), "mapping", None) in first.structure
+    assert WorkflowStructureEntry(("on", "push", "paths"), "sequence", None) in first.structure
+    assert (
+        WorkflowStructureEntry(("on", "push", "paths", "0"), "string", "docs/**") in first.structure
+    )
+    assert WorkflowStructureEntry(("env", "FLAG"), "boolean", "true") in first.structure
+    assert WorkflowStructureEntry(("env", "COUNT"), "integer", "2") in first.structure
+    assert WorkflowStructureEntry(("env", "RATIO"), "float", "1.5") in first.structure
+    assert WorkflowStructureEntry(("env", "EMPTY"), "null", None) in first.structure
+
+
+def test_parse_workflow_structure_distinguishes_missing_empty_and_sequence_order():
+    missing = parse_workflow(Path("base.yml"), "on: push\njobs:\n  check:\n    steps: []\n")
+    empty = parse_workflow(
+        Path("base.yml"),
+        "on: push\njobs:\n  check:\n    env: {}\n    steps: []\n",
+    )
+    ordered = parse_workflow(
+        Path("base.yml"),
+        "on: push\njobs:\n  check:\n    steps:\n      - run: one\n      - run: two\n",
+    )
+    reversed_order = parse_workflow(
+        Path("base.yml"),
+        "on: push\njobs:\n  check:\n    steps:\n      - run: two\n      - run: one\n",
+    )
+
+    assert missing.structure != empty.structure
+    assert ordered.structure != reversed_order.structure
 
 
 @pytest.mark.parametrize(

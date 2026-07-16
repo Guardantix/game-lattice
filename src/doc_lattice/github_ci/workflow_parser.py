@@ -18,6 +18,7 @@ from .model import (
     WorkflowJob,
     WorkflowScalar,
     WorkflowStep,
+    WorkflowStructureEntry,
     WorkflowTrigger,
 )
 
@@ -84,7 +85,7 @@ def parse_workflow(path: Path, text: str) -> WorkflowDocument:
             _validate_syntax_tree(syntax_tree, path, budget)
             raw: Any = _load_yaml(yaml, text, path)
         root = _require_mapping(raw, path, ())
-        scalars = tuple(_collect_scalars(root, path, budget))
+        scalars, structure = _collect_structure(root, path, budget)
         triggers = _parse_triggers(root["on"], path) if "on" in root else ()
         permissions = _parse_permissions(root.get("permissions"), path, ("permissions",))
         if "jobs" not in root:
@@ -95,7 +96,8 @@ def parse_workflow(path: Path, text: str) -> WorkflowDocument:
             triggers=triggers,
             permissions=permissions,
             jobs=jobs,
-            scalars=scalars,
+            scalars=tuple(scalars),
+            structure=tuple(structure),
         )
     except DuplicateKeyError as exc:
         raise _parse_error(path, "duplicate YAML mapping key") from exc
@@ -369,10 +371,11 @@ def _require_mapping(raw: Any, workflow_path: Path, yaml_path: tuple[str, ...]) 
     return raw
 
 
-def _collect_scalars(
+def _collect_structure(
     raw: Any, workflow_path: Path, budget: _TraversalBudget
-) -> list[WorkflowScalar]:
+) -> tuple[list[WorkflowScalar], list[WorkflowStructureEntry]]:
     scalars: list[WorkflowScalar] = []
+    structure: list[WorkflowStructureEntry] = []
     active_containers: set[int] = set()
     budget.reserve_visits(1, depth=1)
     stack: list[tuple[Any, tuple[str, ...], int, bool]] = [(raw, (), 1, False)]
@@ -383,25 +386,54 @@ def _collect_scalars(
             active_containers.remove(current_id)
             continue
 
-        if isinstance(current, str):
-            budget.collect_string()
-            scalars.append(WorkflowScalar(path=yaml_path, value=current))
-            continue
         if isinstance(current, dict):
+            structure.append(WorkflowStructureEntry(yaml_path, "mapping", None))
             if current_id in active_containers:
                 _invalid(workflow_path, yaml_path, "recursive YAML aliases are not supported")
             active_containers.add(current_id)
             stack.append((current, yaml_path, depth, True))
             _schedule_mapping_values(current, yaml_path, depth, budget, stack)
         elif isinstance(current, list):
+            structure.append(WorkflowStructureEntry(yaml_path, "sequence", None))
             if current_id in active_containers:
                 _invalid(workflow_path, yaml_path, "recursive YAML aliases are not supported")
             active_containers.add(current_id)
             stack.append((current, yaml_path, depth, True))
             _schedule_sequence_values(current, yaml_path, depth, budget, stack)
-        elif isinstance(current, (set, tuple)):
-            _invalid(workflow_path, yaml_path, "unsupported YAML container")
-    return scalars
+        else:
+            _collect_scalar_structure(
+                current,
+                yaml_path,
+                budget,
+                (scalars, structure),
+            )
+    return scalars, structure
+
+
+def _collect_scalar_structure(
+    current: Any,
+    yaml_path: tuple[str, ...],
+    budget: _TraversalBudget,
+    output: tuple[list[WorkflowScalar], list[WorkflowStructureEntry]],
+) -> None:
+    scalars, structure = output
+    if isinstance(current, str):
+        budget.collect_string()
+        scalars.append(WorkflowScalar(path=yaml_path, value=current))
+        structure.append(WorkflowStructureEntry(yaml_path, "string", current))
+    elif current is None:
+        structure.append(WorkflowStructureEntry(yaml_path, "null", None))
+    elif isinstance(current, bool):
+        value = "true" if current else "false"
+        structure.append(WorkflowStructureEntry(yaml_path, "boolean", value))
+    elif isinstance(current, int):
+        structure.append(WorkflowStructureEntry(yaml_path, "integer", str(current)))
+    elif isinstance(current, float):
+        structure.append(WorkflowStructureEntry(yaml_path, "float", str(current)))
+    elif isinstance(current, (set, tuple)):
+        _invalid(budget.workflow_path, yaml_path, "unsupported YAML container")
+    else:
+        _invalid(budget.workflow_path, yaml_path, "unsupported YAML scalar")
 
 
 def _schedule_mapping_values(
@@ -415,7 +447,7 @@ def _schedule_mapping_values(
     for key in mapping:
         if not isinstance(key, str):
             _invalid(budget.workflow_path, yaml_path, "mapping keys must be strings")
-    for key in reversed(mapping):
+    for key in sorted(mapping, reverse=True):
         if not isinstance(key, str):
             _invalid(budget.workflow_path, yaml_path, "mapping keys must be strings")
         stack.append((mapping[key], (*yaml_path, key), depth + 1, False))

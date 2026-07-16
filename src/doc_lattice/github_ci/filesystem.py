@@ -2,6 +2,7 @@
 
 import difflib
 import stat
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from doc_lattice.error_types import ConfigError, copy_exception_notes
@@ -28,6 +29,9 @@ _CANONICAL_PATHS: dict[ArtifactRole, PurePosixPath] = {
 }
 _WORKFLOWS_DIRECTORY = PurePosixPath(".github/workflows")
 _WORKFLOW_SUFFIXES = frozenset({".yml", ".yaml"})
+MAX_WORKFLOW_FILES = 256
+MAX_WORKFLOW_BYTES = 1_048_576
+MAX_CUMULATIVE_WORKFLOW_BYTES = 8_388_608
 _MARKER_PREFIXES = (
     "# doc-lattice-managed:",
     "# doc-lattice-artifact:",
@@ -41,6 +45,14 @@ _PARTIAL_STATE_NOTE = (
     "managed artifacts are applied in input order without rollback; earlier changes, "
     "if any, remain in place, so inspect the reported path and rerun to converge"
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkflowCandidate:
+    relative_path: Path
+    logical_path: Path
+    resolved_path: Path
+    size: int
 
 
 def discover_workflows(root: Path) -> WorkflowDiscovery:
@@ -98,17 +110,48 @@ def discover_workflows(root: Path) -> WorkflowDiscovery:
         "GitHub workflow directory",
     )
     try:
-        names = sorted(
-            entry.name for entry in directory.iterdir() if entry.suffix in _WORKFLOW_SUFFIXES
-        )
+        names = _bounded_workflow_names(directory, display_directory)
     except OSError as exc:
         raise _filesystem_error(
             f"cannot list GitHub workflow directory {display_directory}",
             exc,
         ) from exc
+    candidates = tuple(_inspect_workflow_candidate(root, name) for name in names)
+    declared_total = sum(candidate.size for candidate in candidates)
+    if declared_total > MAX_CUMULATIVE_WORKFLOW_BYTES:
+        raise ConfigError(
+            f"GitHub workflows exceed the cumulative byte limit in {display_directory}"
+        )
 
-    documents = tuple(_read_workflow(root, name) for name in names)
-    return WorkflowDiscovery(directory_exists=True, documents=documents)
+    documents: list[WorkflowDocument] = []
+    actual_total = 0
+    for candidate in candidates:
+        data = _read_workflow_candidate(root, candidate)
+        actual_total += len(data)
+        if actual_total > MAX_CUMULATIVE_WORKFLOW_BYTES:
+            raise ConfigError(
+                f"GitHub workflows exceed the cumulative byte limit in {display_directory}"
+            )
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            path = candidate.relative_path.as_posix()
+            raise ConfigError(f"UTF-8 text is required for GitHub workflow {path}") from exc
+        documents.append(parse_workflow(candidate.relative_path, text))
+    return WorkflowDiscovery(directory_exists=True, documents=tuple(documents))
+
+
+def _bounded_workflow_names(directory: Path, display_directory: str) -> tuple[str, ...]:
+    names: list[str] = []
+    for entry in directory.iterdir():
+        if entry.suffix not in _WORKFLOW_SUFFIXES:
+            continue
+        names.append(entry.name)
+        if len(names) > MAX_WORKFLOW_FILES:
+            raise ConfigError(
+                f"more than {MAX_WORKFLOW_FILES} direct workflow files in {display_directory}"
+            )
+    return tuple(sorted(names))
 
 
 def inspect_installed_artifacts(
@@ -133,7 +176,7 @@ def inspect_installed_artifacts(
         _validate_artifact_path(artifact)
         logical_destination = root / artifact.relative_path
         destination = _resolve_destination(logical_destination, root, artifact, "inspect")
-        data = _read_preflight_bytes(
+        data = _read_installed_bytes(
             logical_destination,
             destination,
             root,
@@ -281,17 +324,11 @@ def apply_changes(changes: tuple[ArtifactChange, ...]) -> None:
             raise
 
 
-def _read_workflow(root: Path, name: str) -> WorkflowDocument:
-    """Read and parse one direct workflow file with stable repository-relative context."""
+def _inspect_workflow_candidate(root: Path, name: str) -> _WorkflowCandidate:
+    """Validate and size one direct workflow before any YAML parsing."""
     relative_path = _WORKFLOWS_DIRECTORY / name
     display_path = relative_path.as_posix()
     logical_path = root / relative_path
-    resolved_path = _resolve_repository_path(
-        logical_path,
-        root,
-        display_path,
-        "GitHub workflow",
-    )
     try:
         target_stat = logical_path.stat(follow_symlinks=False)
     except FileNotFoundError as exc:
@@ -302,20 +339,42 @@ def _read_workflow(root: Path, name: str) -> WorkflowDocument:
         raise ConfigError(f"symlink is not allowed for GitHub workflow {display_path}")
     if not stat.S_ISREG(target_stat.st_mode):
         raise ConfigError(f"GitHub workflow must be a regular file: {display_path}")
-    try:
-        data = resolved_path.read_bytes()
-    except OSError as exc:
-        raise _filesystem_error(f"cannot read GitHub workflow {display_path}", exc) from exc
-    resolved_after_read = _resolve_repository_path(
+    if target_stat.st_size > MAX_WORKFLOW_BYTES:
+        raise ConfigError(f"GitHub workflow exceeds the byte limit: {display_path}")
+    resolved_path = _resolve_repository_path(
         logical_path,
         root,
         display_path,
         "GitHub workflow",
     )
-    if resolved_after_read != resolved_path:
+    return _WorkflowCandidate(
+        relative_path=Path(display_path),
+        logical_path=logical_path,
+        resolved_path=resolved_path,
+        size=target_stat.st_size,
+    )
+
+
+def _read_workflow_candidate(root: Path, candidate: _WorkflowCandidate) -> bytes:
+    """Bound one workflow read and reject containment, type, or size changes."""
+    display_path = candidate.relative_path.as_posix()
+    try:
+        with candidate.resolved_path.open("rb") as handle:
+            data = handle.read(MAX_WORKFLOW_BYTES + 1)
+    except OSError as exc:
+        raise _filesystem_error(f"cannot read GitHub workflow {display_path}", exc) from exc
+    if len(data) > MAX_WORKFLOW_BYTES:
+        raise ConfigError(f"GitHub workflow exceeds the byte limit: {display_path}")
+    resolved_after_read = _resolve_repository_path(
+        candidate.logical_path,
+        root,
+        display_path,
+        "GitHub workflow",
+    )
+    if resolved_after_read != candidate.resolved_path:
         raise ConfigError(f"GitHub workflow changed during discovery: {display_path}")
     try:
-        target_stat = logical_path.stat(follow_symlinks=False)
+        target_stat = candidate.logical_path.stat(follow_symlinks=False)
     except FileNotFoundError as exc:
         raise ConfigError(f"GitHub workflow changed during discovery: {display_path}") from exc
     except OSError as exc:
@@ -324,11 +383,9 @@ def _read_workflow(root: Path, name: str) -> WorkflowDocument:
         raise ConfigError(f"symlink is not allowed for GitHub workflow {display_path}")
     if not stat.S_ISREG(target_stat.st_mode):
         raise ConfigError(f"GitHub workflow must be a regular file: {display_path}")
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ConfigError(f"UTF-8 text is required for GitHub workflow {display_path}") from exc
-    return parse_workflow(Path(display_path), text)
+    if target_stat.st_size != candidate.size or len(data) != candidate.size:
+        raise ConfigError(f"GitHub workflow changed during discovery: {display_path}")
+    return data
 
 
 def _workflow_parent_exists(root: Path, display_path: str) -> bool:
@@ -510,6 +567,61 @@ def _read_preflight_bytes(
         raise error from exc
     _require_regular_not_symlink(target_stat.st_mode, path)
     return before
+
+
+def _read_installed_bytes(
+    logical_destination: Path,
+    destination: Path,
+    root: Path,
+    artifact: ManagedArtifact,
+) -> bytes | None:
+    """Read one installed artifact with the per-file workflow byte bound."""
+    path = artifact.relative_path.as_posix()
+    try:
+        target_stat = logical_destination.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        detail = _stable_error_detail(exc)
+        error = ConfigError(f"cannot inspect managed artifact: {detail}; path {path}")
+        copy_exception_notes(error, exc)
+        raise error from exc
+    _require_regular_not_symlink(target_stat.st_mode, path)
+    if target_stat.st_size > MAX_WORKFLOW_BYTES:
+        raise ConfigError(f"managed artifact exceeds the byte limit: {path}")
+    initial_size = target_stat.st_size
+    try:
+        with destination.open("rb") as handle:
+            data = handle.read(MAX_WORKFLOW_BYTES + 1)
+    except OSError as exc:
+        detail = _stable_error_detail(exc)
+        error = ConfigError(f"cannot read managed artifact: {detail}; path {path}")
+        copy_exception_notes(error, exc)
+        raise error from exc
+    if len(data) > MAX_WORKFLOW_BYTES:
+        raise ConfigError(f"managed artifact exceeds the byte limit: {path}")
+
+    resolved_after_read = _resolve_destination(
+        logical_destination,
+        root,
+        artifact,
+        "recheck",
+    )
+    if resolved_after_read != destination:
+        raise ConfigError(f"managed artifact path changed during inspection: {path}")
+    try:
+        target_stat = logical_destination.stat(follow_symlinks=False)
+    except FileNotFoundError as exc:
+        raise ConfigError(f"managed artifact path changed during inspection: {path}") from exc
+    except OSError as exc:
+        detail = _stable_error_detail(exc)
+        error = ConfigError(f"cannot recheck managed artifact: {detail}; path {path}")
+        copy_exception_notes(error, exc)
+        raise error from exc
+    _require_regular_not_symlink(target_stat.st_mode, path)
+    if target_stat.st_size != initial_size or len(data) != initial_size:
+        raise ConfigError(f"managed artifact changed during inspection: {path}")
+    return data
 
 
 def _require_regular_not_symlink(mode: int, path: str) -> None:

@@ -15,6 +15,7 @@ from .model import (
     WorkflowDocument,
     WorkflowJob,
     WorkflowStep,
+    WorkflowStructureEntry,
 )
 from .render import render_managed_artifacts, render_workflows
 from .workflow_parser import parse_workflow
@@ -28,17 +29,95 @@ PR_EVENTS = frozenset(
 )
 SECRET_NAMES = frozenset({"LINEAR_API_KEY", "DOC_LATTICE_LINEAR_API_KEY"})
 
-_PUNCTUATION = frozenset(";&|()")
+_COMMAND_SEPARATORS = frozenset(";&|()")
 _SHELL_PREFIXES = frozenset({"if", "then", "do", "!"})
-_UVX_OPTIONS_WITH_ARGUMENTS = frozenset({"--from", "--python"})
-_UV_RUN_OPTIONS_WITH_ARGUMENTS = frozenset(
+_UV_SHARED_OPTIONS_WITH_ARGUMENTS = frozenset(
     {
+        "--allow-insecure-host",
+        "--cache-dir",
+        "--color",
+        "--config-file",
+        "--config-setting",
+        "--config-settings-package",
+        "--default-index",
         "--directory",
-        "--env-file",
+        "--exclude-newer",
+        "--exclude-newer-package",
+        "--extra-index-url",
+        "--find-links",
+        "--fork-strategy",
+        "--index",
+        "--index-strategy",
+        "--index-url",
+        "--keyring-provider",
+        "--link-mode",
+        "--no-binary-package",
+        "--no-build-isolation-package",
+        "--no-build-package",
+        "--no-sources-package",
+        "--prerelease",
         "--project",
         "--python",
+        "--python-platform",
+        "--refresh-package",
+        "--reinstall-package",
+        "--resolution",
+        "--upgrade-group",
+        "--upgrade-package",
+        "-C",
+        "-P",
+        "-f",
+        "-i",
+        "-p",
+    }
+)
+_UVX_OPTIONS_WITH_ARGUMENTS = _UV_SHARED_OPTIONS_WITH_ARGUMENTS | frozenset(
+    {
+        "--build-constraints",
+        "--constraints",
+        "--env-file",
+        "--from",
+        "--overrides",
+        "--torch-backend",
         "--with",
         "--with-editable",
+        "--with-requirements",
+        "-b",
+        "-c",
+        "-w",
+    }
+)
+_UV_RUN_OPTIONS_WITH_ARGUMENTS = (
+    frozenset(
+        {
+            "--env-file",
+            "--extra",
+            "--group",
+            "--no-editable-package",
+            "--no-extra",
+            "--no-group",
+            "--only-group",
+            "--package",
+            "--with-requirements",
+        }
+    )
+    | _UV_SHARED_OPTIONS_WITH_ARGUMENTS
+    | frozenset(
+        {
+            "--env-file",
+            "--with",
+            "--with-editable",
+            "-w",
+        }
+    )
+)
+_UV_RUN_NON_COMMAND_OPTIONS = frozenset(
+    {
+        "--gui-script",
+        "--module",
+        "--script",
+        "-m",
+        "-s",
     }
 )
 _SHELL_ASSIGNMENT_RE = re.compile(
@@ -47,12 +126,18 @@ _SHELL_ASSIGNMENT_RE = re.compile(
 )
 _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
 _SECRET_NAME_RE = re.compile(
-    r"(?<![A-Za-z0-9_])(?:LINEAR_API_KEY|DOC_LATTICE_LINEAR_API_KEY)(?![A-Za-z0-9_])"
+    r"(?<![A-Za-z0-9_])(?:LINEAR_API_KEY|DOC_LATTICE_LINEAR_API_KEY)(?![A-Za-z0-9_])",
+    re.IGNORECASE,
 )
 _CANONICAL_LINEAR_PATH = ".github/workflows/doc-lattice-linear.yml"
 _CANONICAL_LINEAR_ENV_VALUE = (
     "${{ secrets.DOC_LATTICE_LINEAR_API_KEY }}"  # pragma: allowlist secret
 )
+_ROOT_ENV_PATH_LENGTH = 2
+_JOB_FIELD_PATH_LENGTH = 3
+_JOB_ENV_PATH_LENGTH = 4
+_STEP_FIELD_PATH_LENGTH = 5
+_STEP_ENV_PATH_LENGTH = 6
 _MANAGED_MESSAGES = {
     "MANAGED_TRIGGERS": "managed workflow triggers differ from the canonical installation",
     "MANAGED_PERMISSIONS": "managed workflow permissions differ from the canonical installation",
@@ -277,15 +362,16 @@ def direct_doc_lattice_invocations(script: str) -> tuple[tuple[str, bool], ...]:
         One ``(subcommand, has_dry_run)`` pair per recognized simple command in source order.
     """
     normalized = script.replace("\\\r\n", "").replace("\\\n", "")
+    normalized = _strip_heredoc_bodies(normalized)
     normalized = normalized.replace("\r\n", "\n").replace("\r", "\n").replace("\n", ";")
-    lexer = shlex.shlex(normalized, posix=True, punctuation_chars=";&|()")
+    lexer = shlex.shlex(normalized, posix=True, punctuation_chars=";&|()<>")
     lexer.whitespace_split = True
 
     invocations: list[tuple[str, bool]] = []
     command: list[str] = []
     try:
         for token in lexer:
-            if token and all(character in _PUNCTUATION for character in token):
+            if token and all(character in _COMMAND_SEPARATORS for character in token):
                 invocations.extend(_invocations_in_simple_command(command))
                 command = []
             else:
@@ -316,8 +402,76 @@ def _skip_shell_prefixes(command: list[str], start: int) -> int:
             index += 1
             continue
         if word != "env":
+            redirection_end = _skip_redirection(command, index)
+            if redirection_end != index:
+                index = redirection_end
+                continue
+            wrapper_end = _skip_command_wrapper(command, index)
+            if wrapper_end != index:
+                index = wrapper_end
+                continue
             break
         index = _skip_env_prefix(command, index + 1)
+    return index
+
+
+def _skip_redirection(command: list[str], start: int) -> int:
+    index = start
+    if (
+        index + 1 < len(command)
+        and command[index].isdigit()
+        and _is_redirection_token(command[index + 1])
+    ):
+        index += 1
+    if index >= len(command) or not _is_redirection_token(command[index]):
+        return start
+    index += 1
+    return min(index + 1, len(command))
+
+
+def _is_redirection_token(word: str) -> bool:
+    return (
+        bool(word)
+        and all(character in "<>&|" for character in word)
+        and ("<" in word or ">" in word)
+    )
+
+
+def _skip_command_wrapper(command: list[str], start: int) -> int:
+    wrapper = command[start]
+    if wrapper == "command":
+        return _skip_command_builtin(command, start + 1)
+    if wrapper == "exec":
+        return _skip_exec_wrapper(command, start + 1)
+    return start
+
+
+def _skip_command_builtin(command: list[str], start: int) -> int:
+    index = start
+    while index < len(command):
+        word = command[index]
+        if word == "--":
+            return index + 1
+        if not word.startswith("-"):
+            break
+        if "v" in word[1:] or "V" in word[1:]:
+            return len(command)
+        index += 1
+    return index
+
+
+def _skip_exec_wrapper(command: list[str], start: int) -> int:
+    index = start
+    while index < len(command):
+        word = command[index]
+        if word == "--":
+            return index + 1
+        if word == "-a":
+            index += 2
+        elif word.startswith("-"):
+            index += 1
+        else:
+            break
     return index
 
 
@@ -354,6 +508,7 @@ def _doc_lattice_payload_index(command: list[str], executable_index: int) -> int
                 command,
                 run_index + 1,
                 _UV_RUN_OPTIONS_WITH_ARGUMENTS,
+                non_command_options=_UV_RUN_NON_COMMAND_OPTIONS,
             )
     if (
         payload_index is not None
@@ -368,16 +523,30 @@ def _skip_options(
     command: list[str],
     start: int,
     options_with_arguments: frozenset[str],
-) -> int:
+    *,
+    non_command_options: frozenset[str] = frozenset(),
+) -> int | None:
     index = start
     while index < len(command):
         word = command[index]
         if word == "--":
             return index + 1
         option_name = word.split("=", 1)[0]
+        non_command_short_value = any(
+            word.startswith(option) and word != option
+            for option in non_command_options
+            if option.startswith("-") and not option.startswith("--")
+        )
+        if option_name in non_command_options or non_command_short_value:
+            return None
+        attached_short_value = any(
+            word.startswith(option) and word != option
+            for option in options_with_arguments
+            if option.startswith("-") and not option.startswith("--")
+        )
         if option_name in options_with_arguments:
             index += 1 if "=" in word else 2
-        elif word.startswith("-"):
+        elif attached_short_value or word.startswith("-"):
             index += 1
         else:
             return index
@@ -386,6 +555,78 @@ def _skip_options(
 
 def _basename(token: str) -> str:
     return token.rsplit("/", 1)[-1]
+
+
+def _strip_heredoc_bodies(script: str) -> str:
+    lines = script.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    retained: list[str] = []
+    pending: list[tuple[str, bool]] = []
+    for line in lines:
+        if pending:
+            delimiter, strip_tabs = pending[0]
+            candidate = line.lstrip("\t") if strip_tabs else line
+            if candidate == delimiter:
+                pending.pop(0)
+            continue
+        retained.append(line)
+        pending.extend(_heredoc_delimiters(line))
+    return "\n".join(retained)
+
+
+def _heredoc_delimiters(line: str) -> list[tuple[str, bool]]:
+    delimiters: list[tuple[str, bool]] = []
+    index = 0
+    quote: str | None = None
+    while index < len(line):
+        character = line[index]
+        if quote is not None:
+            if character == quote:
+                quote = None
+            elif character == "\\" and quote == '"' and index + 1 < len(line):
+                index += 1
+            index += 1
+            continue
+        if character in {"'", '"'}:
+            quote = character
+            index += 1
+            continue
+        if character == "\\":
+            index += 2
+            continue
+        if not line.startswith("<<", index) or line.startswith("<<<", index):
+            index += 1
+            continue
+        index += 2
+        strip_tabs = index < len(line) and line[index] == "-"
+        if strip_tabs:
+            index += 1
+        while index < len(line) and line[index] in {" ", "\t"}:
+            index += 1
+        delimiter, index = _read_heredoc_delimiter(line, index)
+        if delimiter:
+            delimiters.append((delimiter, strip_tabs))
+    return delimiters
+
+
+def _read_heredoc_delimiter(line: str, start: int) -> tuple[str, int]:
+    if start >= len(line):
+        return "", start
+    quote = line[start] if line[start] in {"'", '"'} else None
+    index = start + 1 if quote is not None else start
+    characters: list[str] = []
+    while index < len(line):
+        character = line[index]
+        if quote is not None:
+            if character == quote:
+                return "".join(characters), index + 1
+        elif character.isspace() or character in ";&|()<>":
+            break
+        elif character == "\\" and index + 1 < len(line):
+            index += 1
+            character = line[index]
+        characters.append(character)
+        index += 1
+    return "".join(characters), index
 
 
 def _expected_workflow_document(
@@ -420,18 +661,17 @@ def _managed_semantic_codes(
     for job, expected_job in zip(document.jobs, expected.jobs, strict=True):
         if job.permissions != expected_job.permissions:
             codes.add("MANAGED_PERMISSIONS")
-        if (
-            job.if_condition != expected_job.if_condition
-            or job.environment != expected_job.environment
-            or job.runs_on != expected_job.runs_on
-        ):
+        if job.if_condition != expected_job.if_condition:
+            codes.add("MANAGED_COMMAND")
+        if job.environment != expected_job.environment or job.runs_on != expected_job.runs_on:
             codes.add("MANAGED_JOB")
         if job.env != expected_job.env:
-            codes.add("MANAGED_SECRET")
+            codes.add("MANAGED_COMMAND")
         codes.update(_managed_step_codes(job, expected_job))
 
     if _has_linear_secret_reference(document):
         codes.add("MANAGED_SECRET")
+    codes.update(_managed_structure_codes(document, expected))
     return frozenset(codes)
 
 
@@ -483,8 +723,6 @@ def _managed_step_codes(job: WorkflowJob, expected: WorkflowJob) -> set[str]:
     ):
         codes.add("MANAGED_CACHE")
 
-    if _step_env_layout(job.steps) != _step_env_layout(expected.steps):
-        codes.add("MANAGED_SECRET")
     return codes
 
 
@@ -509,10 +747,167 @@ def _step_kind(step: WorkflowStep) -> str:
     return "other"
 
 
-def _step_env_layout(
-    steps: tuple[WorkflowStep, ...],
-) -> tuple[tuple[bool, tuple[tuple[str, str], ...]], ...]:
-    return tuple((step.index == len(steps) - 1, step.env) for step in steps if step.env)
+def _managed_structure_codes(
+    document: WorkflowDocument,
+    expected: WorkflowDocument,
+) -> set[str]:
+    codes: set[str] = set()
+    current = _structure_map(document.structure, include_steps=False)
+    desired = _structure_map(expected.structure, include_steps=False)
+    all_current = _structure_map(document.structure, include_steps=True)
+    all_desired = _structure_map(expected.structure, include_steps=True)
+    for path in current.keys() | desired.keys():
+        if current.get(path) != desired.get(path):
+            codes.add(_structure_code(path, current, desired))
+
+    for job, expected_job in zip(document.jobs, expected.jobs, strict=True):
+        if len(job.steps) != len(expected_job.steps):
+            step_code_added = False
+            if tuple(step.uses for step in job.steps if step.uses is not None) != tuple(
+                step.uses for step in expected_job.steps if step.uses is not None
+            ):
+                code = (
+                    "MANAGED_CACHE"
+                    if any(_action_name(step.uses) == "actions/cache" for step in job.steps)
+                    else "MANAGED_ACTION"
+                )
+                codes.add(code)
+                step_code_added = True
+            if tuple(step.run for step in job.steps if step.run is not None) != tuple(
+                step.run for step in expected_job.steps if step.run is not None
+            ):
+                codes.add("MANAGED_COMMAND")
+                step_code_added = True
+            if not step_code_added:
+                codes.add("MANAGED_JOB")
+            continue
+        if tuple(_step_kind(step) for step in job.steps) != tuple(
+            _step_kind(step) for step in expected_job.steps
+        ):
+            continue
+        for step in job.steps:
+            base = ("jobs", job.job_id, "steps", str(step.index))
+            step_current = _subtree_map(document.structure, base)
+            step_desired = _subtree_map(expected.structure, base)
+            for relative_path in step_current.keys() | step_desired.keys():
+                if step_current.get(relative_path) != step_desired.get(relative_path):
+                    full_path = (*base, *relative_path)
+                    codes.add(_structure_code(full_path, all_current, all_desired))
+    return codes
+
+
+def _structure_map(
+    structure: tuple[WorkflowStructureEntry, ...],
+    *,
+    include_steps: bool,
+) -> dict[tuple[str, ...], tuple[str, str | None]]:
+    return {
+        entry.path: (entry.kind, entry.value)
+        for entry in structure
+        if not _is_display_name_path(entry.path)
+        and (include_steps or not _is_step_path(entry.path))
+    }
+
+
+def _subtree_map(
+    structure: tuple[WorkflowStructureEntry, ...],
+    base: tuple[str, ...],
+) -> dict[tuple[str, ...], tuple[str, str | None]]:
+    return {
+        entry.path[len(base) :]: (entry.kind, entry.value)
+        for entry in structure
+        if entry.path[: len(base)] == base and not _is_display_name_path(entry.path)
+    }
+
+
+def _is_step_path(path: tuple[str, ...]) -> bool:
+    return len(path) >= _JOB_ENV_PATH_LENGTH and path[0] == "jobs" and path[2] == "steps"
+
+
+def _is_display_name_path(path: tuple[str, ...]) -> bool:
+    return (
+        path == ("name",)
+        or (len(path) == _JOB_FIELD_PATH_LENGTH and path[0] == "jobs" and path[2] == "name")
+        or (
+            len(path) == _STEP_FIELD_PATH_LENGTH
+            and path[0] == "jobs"
+            and path[2] == "steps"
+            and path[4] == "name"
+        )
+    )
+
+
+def _structure_code(
+    path: tuple[str, ...],
+    current: dict[tuple[str, ...], tuple[str, str | None]],
+    desired: dict[tuple[str, ...], tuple[str, str | None]],
+) -> str:
+    if path and path[0] == "on":
+        code = "MANAGED_TRIGGERS"
+    elif "permissions" in path:
+        code = "MANAGED_PERMISSIONS"
+    elif path and path[-1] == "uses":
+        values = (current.get(path), desired.get(path))
+        if any(value is not None and _action_name(value[1]) == "actions/cache" for value in values):
+            code = "MANAGED_CACHE"
+        else:
+            code = "MANAGED_ACTION"
+    elif "env" in path and _structure_values_reference_secret(path, current, desired):
+        code = "MANAGED_SECRET"
+    elif _is_command_behavior_path(path):
+        code = "MANAGED_COMMAND"
+    elif "with" in path:
+        code = _with_structure_code(path, current, desired)
+    else:
+        code = "MANAGED_JOB"
+    return code
+
+
+def _is_command_behavior_path(path: tuple[str, ...]) -> bool:
+    command_fields = {
+        "run",
+        "if",
+        "continue-on-error",
+        "shell",
+        "working-directory",
+        "defaults",
+        "env",
+        "strategy",
+        "timeout-minutes",
+    }
+    return any(component in command_fields for component in path)
+
+
+def _with_structure_code(
+    path: tuple[str, ...],
+    current: dict[tuple[str, ...], tuple[str, str | None]],
+    desired: dict[tuple[str, ...], tuple[str, str | None]],
+) -> str:
+    uses_path = (*path[: path.index("with")], "uses")
+    uses_values = (current.get(uses_path), desired.get(uses_path))
+    actions = {
+        _action_name(value[1])
+        for value in uses_values
+        if value is not None and value[1] is not None
+    }
+    if "actions/checkout" in actions:
+        return "MANAGED_CHECKOUT"
+    if actions & {"actions/cache", "astral-sh/setup-uv"}:
+        return "MANAGED_CACHE"
+    return "MANAGED_ACTION"
+
+
+def _structure_values_reference_secret(
+    path: tuple[str, ...],
+    current: dict[tuple[str, ...], tuple[str, str | None]],
+    desired: dict[tuple[str, ...], tuple[str, str | None]],
+) -> bool:
+    if path and path[-1].casefold() in {name.casefold() for name in SECRET_NAMES}:
+        return True
+    return any(
+        value is not None and value[1] is not None and _SECRET_NAME_RE.search(value[1]) is not None
+        for value in (current.get(path), desired.get(path))
+    )
 
 
 def _has_linear_secret_reference(document: WorkflowDocument) -> bool:
@@ -523,23 +918,28 @@ def _has_linear_secret_reference(document: WorkflowDocument) -> bool:
         if _SECRET_NAME_RE.search(scalar.value) is not None:
             return True
 
-    for job in document.jobs:
-        for key, _value in job.env:
-            if key in SECRET_NAMES:
-                return True
-        for step in job.steps:
-            for key, value in step.env:
-                if (
-                    exempt_path is not None
-                    and job.job_id == "linear"
-                    and step.index == len(job.steps) - 1
-                    and key == "LINEAR_API_KEY"
-                    and value == _CANONICAL_LINEAR_ENV_VALUE
-                ):
-                    continue
-                if key in SECRET_NAMES:
-                    return True
+    secret_keys = {name.casefold() for name in SECRET_NAMES}
+    for entry in document.structure:
+        if not _is_environment_key_path(entry.path):
+            continue
+        if entry.path == exempt_path and entry.value == _CANONICAL_LINEAR_ENV_VALUE:
+            continue
+        if entry.path[-1].casefold() in secret_keys:
+            return True
     return False
+
+
+def _is_environment_key_path(path: tuple[str, ...]) -> bool:
+    return (
+        (len(path) == _ROOT_ENV_PATH_LENGTH and path[0] == "env")
+        or (len(path) == _JOB_ENV_PATH_LENGTH and path[0] == "jobs" and path[2] == "env")
+        or (
+            len(path) == _STEP_ENV_PATH_LENGTH
+            and path[0] == "jobs"
+            and path[2] == "steps"
+            and path[4] == "env"
+        )
+    )
 
 
 def _canonical_linear_secret_path(document: WorkflowDocument) -> tuple[str, ...] | None:

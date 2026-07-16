@@ -7,6 +7,15 @@ from typing import Literal
 ArtifactRole = Literal["offline", "linear", "bootstrap"]
 ArtifactAction = Literal["current", "create", "replace"]
 TriggerShape = Literal["null", "mapping", "sequence"]
+WorkflowStructureKind = Literal[
+    "mapping",
+    "sequence",
+    "null",
+    "string",
+    "boolean",
+    "integer",
+    "float",
+]
 PermissionValue = str | tuple[tuple[str, str], ...] | None
 
 
@@ -75,6 +84,15 @@ class WorkflowScalar:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkflowStructureEntry:
+    """One deterministic typed YAML value at a workflow path."""
+
+    path: tuple[str, ...]
+    kind: WorkflowStructureKind
+    value: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class WorkflowStep:
     """A normalized GitHub Actions workflow step."""
 
@@ -109,6 +127,7 @@ class WorkflowDocument:
     permissions: PermissionValue
     jobs: tuple[WorkflowJob, ...]
     scalars: tuple[WorkflowScalar, ...]
+    structure: tuple[WorkflowStructureEntry, ...]
 
 
 @dataclass(frozen=True, slots=True)
