@@ -1,6 +1,7 @@
 """Tests for deterministic managed GitHub Actions workflow rendering."""
 
 import re
+from collections.abc import Mapping, Sequence
 
 import pytest
 from ruamel.yaml import YAML
@@ -14,10 +15,44 @@ from doc_lattice.github_ci.render import (
     render_workflows,
 )
 
+_SECRET_CONTEXT_RE = re.compile(
+    r"\bsecrets\s*(?:\.\s*[A-Za-z_][A-Za-z0-9_]*|\[\s*([\"'])[^\"']+\1\s*\])"
+)
+
 
 def _load_workflow(text):
     """Parse one rendered workflow as safe YAML."""
     return YAML(typ="safe").load(text)
+
+
+def _collect_secret_context_scalars(value, path=()):
+    """Yield paths and string values that dereference the GitHub secrets context."""
+    if isinstance(value, str):
+        if _SECRET_CONTEXT_RE.search(value) is not None:
+            yield path, value
+    elif isinstance(value, Mapping):
+        for key, nested in value.items():
+            yield from _collect_secret_context_scalars(nested, (*path, str(key)))
+    elif isinstance(value, Sequence):
+        for index, nested in enumerate(value):
+            yield from _collect_secret_context_scalars(nested, (*path, str(index)))
+
+
+def test_collect_secret_context_scalars_detects_dereference_variants():
+    document = {
+        "dot": "${{ secrets . DOT_NAME }}",
+        "items": [
+            "${{ secrets['BRACKET_NAME'] }}",
+            {"spaced": "${{ secrets [ 'SPACED_NAME' ] }}"},
+        ],
+        "ordinary": ["secrets stay private", "${{ notsecrets.NAME }}"],
+    }
+
+    assert list(_collect_secret_context_scalars(document)) == [
+        (("dot",), "${{ secrets . DOT_NAME }}"),
+        (("items", "0"), "${{ secrets['BRACKET_NAME'] }}"),
+        (("items", "1", "spaced"), "${{ secrets [ 'SPACED_NAME' ] }}"),
+    ]
 
 
 def test_render_workflows_returns_only_canonical_workflow_artifacts():
@@ -39,12 +74,14 @@ def test_render_offline_workflow_runs_all_gates_without_secrets():
         "pull_request": {"branches": ["main"]},
     }
     assert workflow["permissions"] == {"contents": "read"}
+    assert list(_collect_secret_context_scalars(workflow)) == []
     assert "LINEAR_API_KEY" not in offline.text
     assert "${{ secrets." not in offline.text
     assert "pull_request_target" not in offline.text
     assert "reconcile" not in offline.text
 
     run = workflow["jobs"]["check"]["steps"][-1]["run"]
+    assert run.splitlines()[0] == "set +e"
     assert "doc-lattice ci audit" in run
     assert "doc-lattice check" in run
     assert "doc-lattice lint" in run
@@ -76,6 +113,12 @@ def test_render_linear_workflow_installs_before_mapping_secret():
     )
 
     steps = job["steps"]
+    assert list(_collect_secret_context_scalars(workflow)) == [
+        (
+            ("jobs", "linear", "steps", "3", "env", "LINEAR_API_KEY"),
+            "${{ secrets.DOC_LATTICE_LINEAR_API_KEY }}",
+        )
+    ]
     assert all("env" not in step for step in steps[:-1])
     for step in steps[:-1]:
         for field in ("env", "with", "run"):
