@@ -19,6 +19,15 @@ class RepositoryIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class ManagedMarker:
+    """Validated ownership metadata parsed from one managed GitHub CI artifact."""
+
+    role: ArtifactRole
+    version: str
+    repository: RepositoryIdentity
+
+
+@dataclass(frozen=True, slots=True)
 class ManagedArtifact:
     """A rendered GitHub CI artifact managed by the generator."""
 
