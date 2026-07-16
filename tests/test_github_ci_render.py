@@ -15,7 +15,6 @@ from doc_lattice.github_ci.render import (
     render_workflows,
 )
 
-_GITHUB_EXPRESSION_RE = re.compile(r"\$\{\{(?P<body>.*?)\}\}", flags=re.DOTALL)
 _SECRETS_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])secrets(?![A-Za-z0-9_])")
 
 
@@ -24,11 +23,54 @@ def _load_workflow(text):
     return YAML(typ="safe").load(text)
 
 
+def _iter_unquoted_expression_segments(value):
+    """Yield unquoted segments from complete GitHub expression spans."""
+    cursor = 0
+    while True:
+        start = value.find("${{", cursor)
+        if start < 0:
+            return
+
+        index = start + len("${{")
+        segments = []
+        segment = []
+        in_string = False
+        while index < len(value):
+            character = value[index]
+            if in_string:
+                if character == "'":
+                    if index + 1 < len(value) and value[index + 1] == "'":
+                        index += 2
+                        continue
+                    in_string = False
+                index += 1
+                continue
+
+            if value.startswith("}}", index):
+                segments.append("".join(segment))
+                yield segments
+                cursor = index + len("}}")
+                break
+            if character == "'":
+                segments.append("".join(segment))
+                segment = []
+                in_string = True
+            else:
+                segment.append(character)
+            index += 1
+        else:
+            return
+
+
 def _collect_secret_context_scalars(value, path=()):
     """Yield paths and string values that dereference the GitHub secrets context."""
     if isinstance(value, str):
-        expressions = _GITHUB_EXPRESSION_RE.finditer(value)
-        if any(_SECRETS_TOKEN_RE.search(match["body"]) is not None for match in expressions):
+        expressions = _iter_unquoted_expression_segments(value)
+        if any(
+            _SECRETS_TOKEN_RE.search(segment) is not None
+            for expression in expressions
+            for segment in expression
+        ):
             yield path, value
     elif isinstance(value, Mapping):
         for key, nested in value.items():
@@ -48,6 +90,10 @@ def test_collect_secret_context_scalars_detects_dereference_variants():
         "function": "${{ toJSON(secrets) }}",
         "dynamic": "${{ secrets[env.SECRET_NAME] }}",
         "multiline": "${{\n  secrets\n}}",
+        "format": "${{ format('{{x}}', secrets.TOKEN) }}",
+        "escaped": "${{ format('it''s {{x}}', secrets.TOKEN) }}",
+        "quoted": "${{ 'secrets' }}",
+        "unterminated": "${{ secrets.TOKEN",
         "ordinary": ["secrets.NAME is prose", "${{ notsecrets.NAME }}"],
     }
 
@@ -58,6 +104,8 @@ def test_collect_secret_context_scalars_detects_dereference_variants():
         (("function",), "${{ toJSON(secrets) }}"),
         (("dynamic",), "${{ secrets[env.SECRET_NAME] }}"),
         (("multiline",), "${{\n  secrets\n}}"),
+        (("format",), "${{ format('{{x}}', secrets.TOKEN) }}"),
+        (("escaped",), "${{ format('it''s {{x}}', secrets.TOKEN) }}"),
     ]
 
 
