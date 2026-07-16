@@ -245,6 +245,49 @@ def test_refresh_rejects_duplicate_ownership_marker_after_header(tmp_path: Path)
         preflight_refresh(tmp_path, desired_artifacts)
 
 
+@pytest.mark.parametrize(
+    "separator",
+    [
+        b"\v",
+        b"\f",
+        "\u0085".encode(),
+        "\u2028".encode(),
+        "\u2029".encode(),
+        b"\r",
+    ],
+    ids=["vertical-tab", "form-feed", "nel", "line-separator", "paragraph-separator", "cr"],
+)
+def test_refresh_rejects_non_lf_ownership_line_separators(
+    tmp_path: Path,
+    separator: bytes,
+):
+    old_artifact = render_managed_artifacts("Guardantix/doc-lattice", "2.0.0")[0]
+    desired_artifact = render_managed_artifacts("Guardantix/doc-lattice", "2.1.0")[0]
+    target = tmp_path / old_artifact.relative_path
+    target.parent.mkdir(parents=True)
+    old_bytes = separator.join(old_artifact.text.encode("utf-8").split(b"\n"))
+    target.write_bytes(old_bytes)
+
+    with pytest.raises(ConfigError, match=r"ownership marker.*doc-lattice\.yml"):
+        preflight_refresh(tmp_path, (desired_artifact,))
+
+    assert target.read_bytes() == old_bytes
+
+
+def test_refresh_accepts_crlf_ownership_header_lines(tmp_path: Path):
+    old_artifact = render_managed_artifacts("Guardantix/doc-lattice", "2.0.0")[0]
+    desired_artifact = render_managed_artifacts("Guardantix/doc-lattice", "2.1.0")[0]
+    target = tmp_path / old_artifact.relative_path
+    target.parent.mkdir(parents=True)
+    old_bytes = old_artifact.text.replace("\n", "\r\n").encode("utf-8")
+    target.write_bytes(old_bytes)
+
+    changes = preflight_refresh(tmp_path, (desired_artifact,))
+
+    assert [change.action for change in changes] == ["replace"]
+    assert changes[0].before == old_bytes
+
+
 def test_preflight_rejects_artifact_role_path_mismatch(tmp_path: Path):
     rendered = render_managed_artifacts("Guardantix/doc-lattice", "2.1.0")[0]
     mismatched = ManagedArtifact(
@@ -319,17 +362,129 @@ def test_render_diff_is_stable_for_replace_and_omits_current():
     assert render_diff((changes[1],)) == ""
 
 
-def test_apply_create_refuses_concurrent_collision_without_overwrite(tmp_path: Path):
+def test_render_diff_preserves_crlf_difference_in_replacement_content():
+    artifact = ManagedArtifact(
+        role="offline",
+        relative_path=PurePosixPath(".github/workflows/doc-lattice.yml"),
+        text="managed line\n",
+    )
+    change = ArtifactChange(
+        artifact=artifact,
+        root=Path("/repo"),
+        destination=Path("/repo/.github/workflows/doc-lattice.yml"),
+        action="replace",
+        before=b"managed line\r\n",
+    )
+
+    assert render_diff((change,)) == (
+        "--- a/.github/workflows/doc-lattice.yml\n"
+        "+++ b/.github/workflows/doc-lattice.yml\n"
+        "@@ -1 +1 @@\n"
+        "-managed line\r\n"
+        "+managed line\n"
+    )
+
+
+def test_render_diff_marks_replacement_new_side_without_final_newline():
+    artifact = ManagedArtifact(
+        role="offline",
+        relative_path=PurePosixPath(".github/workflows/doc-lattice.yml"),
+        text="managed line",
+    )
+    change = ArtifactChange(
+        artifact=artifact,
+        root=Path("/repo"),
+        destination=Path("/repo/.github/workflows/doc-lattice.yml"),
+        action="replace",
+        before=b"managed line\n",
+    )
+
+    assert render_diff((change,)) == (
+        "--- a/.github/workflows/doc-lattice.yml\n"
+        "+++ b/.github/workflows/doc-lattice.yml\n"
+        "@@ -1 +1 @@\n"
+        "-managed line\n"
+        "+managed line\n"
+        "\\ No newline at end of file\n"
+    )
+
+
+def test_render_diff_marks_replacement_old_side_without_final_newline():
+    artifact = ManagedArtifact(
+        role="offline",
+        relative_path=PurePosixPath(".github/workflows/doc-lattice.yml"),
+        text="managed line\n",
+    )
+    change = ArtifactChange(
+        artifact=artifact,
+        root=Path("/repo"),
+        destination=Path("/repo/.github/workflows/doc-lattice.yml"),
+        action="replace",
+        before=b"managed line",
+    )
+
+    assert render_diff((change,)) == (
+        "--- a/.github/workflows/doc-lattice.yml\n"
+        "+++ b/.github/workflows/doc-lattice.yml\n"
+        "@@ -1 +1 @@\n"
+        "-managed line\n"
+        "\\ No newline at end of file\n"
+        "+managed line\n"
+    )
+
+
+def test_render_diff_marks_created_file_without_final_newline():
+    artifact = ManagedArtifact(
+        role="offline",
+        relative_path=PurePosixPath(".github/workflows/doc-lattice.yml"),
+        text="managed line",
+    )
+    change = ArtifactChange(
+        artifact=artifact,
+        root=Path("/repo"),
+        destination=Path("/repo/.github/workflows/doc-lattice.yml"),
+        action="create",
+        before=None,
+    )
+
+    assert render_diff((change,)) == (
+        "--- /dev/null\n"
+        "+++ b/.github/workflows/doc-lattice.yml\n"
+        "@@ -0,0 +1 @@\n"
+        "+managed line\n"
+        "\\ No newline at end of file\n"
+    )
+
+
+def test_apply_create_refuses_atomic_publish_collision_without_overwrite(
+    tmp_path: Path,
+    monkeypatch,
+):
     artifacts = render_managed_artifacts("Guardantix/doc-lattice", "2.1.0")
     changes = preflight_create(tmp_path, artifacts)
     collision = tmp_path / artifacts[0].relative_path
-    collision.parent.mkdir(parents=True)
-    collision.write_bytes(b"concurrent user file\n")
+    winner = b"concurrent user file\n"
+    real_create = filesystem.atomic_create_bytes
 
-    with pytest.raises(ConfigError, match=r"appeared after preflight.*doc-lattice\.yml"):
+    def _collide_during_publish(path: Path, data: bytes, *, prefix: str) -> None:
+        path.write_bytes(winner)
+        try:
+            real_create(path, data, prefix=prefix)
+        except FileExistsError as error:
+            error.add_note("concurrent winner must remain untouched")
+            raise
+
+    monkeypatch.setattr(filesystem, "atomic_create_bytes", _collide_during_publish)
+
+    with pytest.raises(
+        ConfigError,
+        match=r"appeared after preflight.*doc-lattice\.yml",
+    ) as caught:
         apply_changes(changes)
 
-    assert collision.read_bytes() == b"concurrent user file\n"
+    assert "concurrent winner must remain untouched" in getattr(caught.value, "__notes__", ())
+    assert collision.read_bytes() == winner
+    assert list(collision.parent.glob(f".{collision.name}.doc-lattice-create.*.tmp")) == []
     assert not (tmp_path / artifacts[1].relative_path).exists()
     assert not (tmp_path / artifacts[2].relative_path).exists()
 
@@ -489,4 +644,42 @@ def test_interrupted_replace_does_not_roll_back_and_rerun_converges(
 
     assert _artifact_bytes(tmp_path, new_artifacts) == [
         artifact.text.encode("utf-8") for artifact in new_artifacts
+    ]
+
+
+def test_interrupted_replace_note_and_prefix_follow_requested_input_order(
+    tmp_path: Path,
+    monkeypatch,
+):
+    old_artifacts = render_managed_artifacts("Guardantix/doc-lattice", "2.0.0")
+    new_artifacts = render_managed_artifacts("Guardantix/doc-lattice", "2.1.0")
+    requested = (new_artifacts[2], new_artifacts[0], new_artifacts[1])
+    _write_artifacts(tmp_path, old_artifacts)
+    changes = preflight_refresh(tmp_path, requested)
+    real_replace = filesystem.atomic_replace_bytes
+    calls = 0
+
+    def _interrupt_second_requested_change(path: Path, data: bytes, *, prefix: str) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("synthetic requested-order interruption")
+        real_replace(path, data, prefix=prefix)
+
+    monkeypatch.setattr(
+        filesystem,
+        "atomic_replace_bytes",
+        _interrupt_second_requested_change,
+    )
+
+    with pytest.raises(ConfigError, match="synthetic requested-order interruption") as caught:
+        apply_changes(changes)
+
+    notes = getattr(caught.value, "__notes__", ())
+    assert any("input order" in note for note in notes)
+    assert all("canonical order" not in note for note in notes)
+    assert _artifact_bytes(tmp_path, new_artifacts) == [
+        old_artifacts[0].text.encode("utf-8"),
+        old_artifacts[1].text.encode("utf-8"),
+        new_artifacts[2].text.encode("utf-8"),
     ]

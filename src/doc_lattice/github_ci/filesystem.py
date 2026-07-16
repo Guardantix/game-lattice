@@ -28,9 +28,11 @@ _MARKER_PREFIXES = (
     "# doc-lattice-version:",
     "# doc-lattice-repository:",
 )
+_NONSTANDARD_LINE_SEPARATORS = ("\v", "\f", "\x85", "\u2028", "\u2029")
 _MANAGED_SCHEMA_LINE = "# doc-lattice-managed: github-ci-v1"
+_UNIFIED_DIFF_HEADER_RECORDS = 2
 _PARTIAL_STATE_NOTE = (
-    "managed artifacts are applied in canonical order without rollback; earlier changes, "
+    "managed artifacts are applied in input order without rollback; earlier changes, "
     "if any, remain in place, so inspect the reported path and rerun to converge"
 )
 
@@ -79,7 +81,7 @@ def render_diff(changes: tuple[ArtifactChange, ...]) -> str:
     """Render stable unified diffs for create and replace changes.
 
     Args:
-        changes: Preflight changes in canonical presentation order.
+        changes: Preflight changes in input presentation order.
 
     Returns:
         Unified diff text with exactly one trailing newline, or an empty string when every
@@ -88,7 +90,7 @@ def render_diff(changes: tuple[ArtifactChange, ...]) -> str:
     Raises:
         ConfigError: If replacement before-bytes are absent or are not UTF-8.
     """
-    rendered_lines: list[str] = []
+    rendered_parts: list[str] = []
     for change in changes:
         if change.action == "current":
             continue
@@ -109,14 +111,16 @@ def render_diff(changes: tuple[ArtifactChange, ...]) -> str:
                 ) from exc
             old_label = f"a/{relative_path}"
         diff = difflib.unified_diff(
-            before_text.splitlines(keepends=True),
-            change.artifact.text.splitlines(keepends=True),
+            _split_lf_records(before_text),
+            _split_lf_records(change.artifact.text),
             fromfile=old_label,
             tofile=f"b/{relative_path}",
             lineterm="",
         )
-        rendered_lines.extend(_strip_diff_line_ending(line) for line in diff)
-    return "\n".join(rendered_lines) + "\n" if rendered_lines else ""
+        rendered_parts.extend(
+            _render_diff_record(index, record) for index, record in enumerate(diff)
+        )
+    return "".join(rendered_parts)
 
 
 def apply_changes(changes: tuple[ArtifactChange, ...]) -> None:
@@ -286,7 +290,11 @@ def _parse_managed_marker(data: bytes, artifact: ManagedArtifact) -> ManagedMark
         raise ConfigError(
             f"UTF-8 ownership marker is required for managed artifact {path}"
         ) from exc
-    lines = text.splitlines()
+    if any(separator in text for separator in _NONSTANDARD_LINE_SEPARATORS):
+        raise _marker_error(path, "ownership lines must use LF or CRLF separators")
+    if "\r" in text.replace("\r\n", ""):
+        raise _marker_error(path, "bare or embedded carriage return is not allowed")
+    lines = [line.removesuffix("\r") for line in text.split("\n")]
     offset = 1 if lines and lines[0] == "#!/usr/bin/env bash" else 0
     if len(lines) < offset + 4:
         raise _marker_error(path, "the four required ownership lines are missing")
@@ -344,13 +352,23 @@ def _marker_error(path: str, detail: str) -> ConfigError:
     return ConfigError(f"invalid ownership marker for managed artifact {path}: {detail}")
 
 
-def _strip_diff_line_ending(line: str) -> str:
-    """Normalize difflib line records for stable joined output."""
-    if line.endswith("\r\n"):
-        return line[:-2]
-    if line.endswith(("\r", "\n")):
-        return line[:-1]
-    return line
+def _split_lf_records(text: str) -> list[str]:
+    """Split text only at LF while retaining every content byte represented by the string."""
+    parts = text.split("\n")
+    records = [f"{part}\n" for part in parts[:-1]]
+    if parts[-1]:
+        records.append(parts[-1])
+    return records
+
+
+def _render_diff_record(index: int, record: str) -> str:
+    """Render one difflib record without hiding content line-ending differences."""
+    is_control = index < _UNIFIED_DIFF_HEADER_RECORDS or record.startswith("@@")
+    if is_control:
+        return f"{record}\n"
+    if record.endswith("\n"):
+        return record
+    return f"{record}\n\\ No newline at end of file\n"
 
 
 def _apply_create(change: ArtifactChange) -> None:
