@@ -499,6 +499,12 @@ workflow occupying
 are absent so the final diff shows the new managed replacements. `ci refresh` cannot adopt an
 unmarked file and will fail closed instead of overwriting it.
 
+Canonical target cleanup is only collision handling. Also inventory the repository's workflows and
+remove every old hand-written Linear workflow, regardless of path or filename, in the same reviewed
+migration change. Do not rely on `ci audit` to discover all legacy workflow indirection: an
+arbitrarily named workflow may call a script, local action, reusable workflow, or wrapper that the
+direct-command heuristic cannot identify.
+
 Run this human-maintainer sequence from reviewed, trusted project state:
 
 1. Generate and review the local managed artifacts.

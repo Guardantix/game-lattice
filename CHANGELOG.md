@@ -24,6 +24,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   secrets under both the legacy and dedicated names.
 - Existing adopters must review and remove or replace unmarked canonical workflow files before
   `init --github`; managed refresh intentionally refuses to adopt or overwrite unmarked files.
+- Migration also requires identifying and removing all old hand-written Linear workflows regardless
+  of filename; local audit cannot prove that indirect legacy wrappers are absent.
 
 ## [2.0.0] - 2026-07-14
 

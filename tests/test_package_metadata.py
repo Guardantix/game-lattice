@@ -261,6 +261,8 @@ def test_supported_docs_order_github_linear_secret_after_verified_policy():
     assert "unmarked `.github/workflows/doc-lattice.yml`" in readme_words
     assert "before running `init --github`" in readme_words
     assert "`ci refresh` cannot adopt an unmarked file" in readme_words
+    assert "every old hand-written Linear workflow, regardless of path or filename" in readme_words
+    assert "Do not rely on `ci audit` to discover all legacy workflow indirection" in readme_words
     assert "every later `plan`, `apply`, or `verify` execution" in readme_words
     assert "remote environment policy and secret-name metadata" in readme_words
     assert "valid ownership marker, version, and repository identity" in readme_words
@@ -278,6 +280,7 @@ def test_supported_docs_order_github_linear_secret_after_verified_policy():
     ) in readme
     assert "unmarked canonical workflow files" in changelog_words
     assert "before `init --github`" in changelog_words
+    assert "all old hand-written Linear workflows regardless of filename" in changelog_words
 
 
 def test_architecture_records_external_github_administration_boundary():
