@@ -252,19 +252,56 @@ def test_parse_workflow_rejects_unreliable_top_level_shapes(text):
             "on: push\njobs:\n  audit:\n    steps:\n"
             "      - env:\n          TOKEN: one\n          TOKEN: two\n"
         ),
-        (
-            "on: push\njobs:\n  audit:\n"
-            "    <<: &defaults\n      runs-on: ubuntu-latest\n"
-            "    steps: []\n    steps:\n      - run: echo unsafe\n"
-        ),
     ],
-    ids=["duplicate-job-key", "duplicate-step-env-key", "duplicate-after-merge-key"],
+    ids=["duplicate-job-key", "duplicate-step-env-key"],
 )
 def test_parse_workflow_rejects_duplicate_nested_keys(text):
     with pytest.raises(ConfigError) as exc:
         parse_workflow(Path(".github/workflows/duplicate.yml"), text)
 
     assert ".github/workflows/duplicate.yml" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        (
+            "on: push\ndefaults: &defaults\n  runs-on: ubuntu-latest\njobs:\n  audit:\n"
+            "    <<: *defaults\n    steps: []\n"
+        ),
+        (
+            "on: push\nleft: &left\n  runs-on: ubuntu-latest\n"
+            "right: &right\n  runs-on: windows-latest\njobs:\n  audit:\n"
+            "    <<: [*left, *right]\n    steps: []\n"
+        ),
+    ],
+    ids=["single-source", "overlapping-multiple-sources"],
+)
+def test_parse_workflow_rejects_yaml_merge_keys(text):
+    path = Path(".github/workflows/merge.yml")
+
+    with pytest.raises(ConfigError) as exc:
+        parse_workflow(path, text)
+
+    assert str(path) in str(exc.value)
+    assert "merge key" in str(exc.value)
+
+
+def test_parse_workflow_accepts_ordinary_anchors_without_merge_keys():
+    parsed = parse_workflow(
+        Path(".github/workflows/anchor.yml"),
+        """\
+on: push
+command: &audit_command uv run doc-lattice audit
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: *audit_command
+""",
+    )
+
+    assert parsed.jobs[0].steps[0].run == "uv run doc-lattice audit"
 
 
 @pytest.mark.parametrize(

@@ -18,6 +18,8 @@ from .model import (
     WorkflowTrigger,
 )
 
+_YAML_MERGE_TAG = "tag:yaml.org,2002:merge"
+
 
 def parse_workflow(path: Path, text: str) -> WorkflowDocument:
     """Validate workflow YAML into the typed subset required by audit.
@@ -36,7 +38,7 @@ def parse_workflow(path: Path, text: str) -> WorkflowDocument:
     yaml.allow_duplicate_keys = False
     try:
         syntax_tree = yaml.compose(text)
-        _reject_duplicate_keys(syntax_tree, path, set())
+        _validate_syntax_tree(syntax_tree, path, set())
         raw: Any = yaml.load(text)
     except YAMLError as exc:
         detail = (
@@ -60,7 +62,7 @@ def parse_workflow(path: Path, text: str) -> WorkflowDocument:
     )
 
 
-def _reject_duplicate_keys(node: Node | None, workflow_path: Path, active_nodes: set[int]) -> None:
+def _validate_syntax_tree(node: Node | None, workflow_path: Path, active_nodes: set[int]) -> None:
     if node is None or isinstance(node, ScalarNode):
         return
     node_id = id(node)
@@ -71,17 +73,22 @@ def _reject_duplicate_keys(node: Node | None, workflow_path: Path, active_nodes:
         seen: set[tuple[str, str]] = set()
         for key_node, value_node in node.value:
             if isinstance(key_node, ScalarNode):
+                if key_node.tag == _YAML_MERGE_TAG:
+                    raise ConfigError(
+                        f"cannot parse GitHub workflow {workflow_path}: "
+                        "YAML merge keys are not supported"
+                    )
                 marker = (key_node.tag, key_node.value)
                 if marker in seen:
                     raise ConfigError(
                         f"cannot parse GitHub workflow {workflow_path}: duplicate YAML mapping key"
                     )
                 seen.add(marker)
-            _reject_duplicate_keys(key_node, workflow_path, active_nodes)
-            _reject_duplicate_keys(value_node, workflow_path, active_nodes)
+            _validate_syntax_tree(key_node, workflow_path, active_nodes)
+            _validate_syntax_tree(value_node, workflow_path, active_nodes)
     elif isinstance(node, SequenceNode):
         for value_node in node.value:
-            _reject_duplicate_keys(value_node, workflow_path, active_nodes)
+            _validate_syntax_tree(value_node, workflow_path, active_nodes)
     active_nodes.remove(node_id)
 
 
