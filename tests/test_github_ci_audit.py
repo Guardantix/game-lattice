@@ -508,6 +508,13 @@ def test_direct_doc_lattice_invocations_handles_shell_prefixes_and_boundaries(sc
     assert direct_doc_lattice_invocations(script) == expected
 
 
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+def test_direct_doc_lattice_invocations_does_not_continue_after_escaped_backslash(newline):
+    script = "doc-lattice rec" + "\\\\" + newline + "oncile --dry-run"
+
+    assert direct_doc_lattice_invocations(script) == (("rec" + "\\", False),)
+
+
 @pytest.mark.parametrize(
     ("script", "expected"),
     [

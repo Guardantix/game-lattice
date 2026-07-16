@@ -870,7 +870,7 @@ class _ShellScanner:
 
 def scan_doc_lattice_invocations(script: str) -> ShellScanResult:
     """Scan literal Bash syntax and explicitly report bounded-scan exhaustion."""
-    normalized = script.replace("\\\r\n", "").replace("\\\n", "")
+    normalized = re.sub(r"(?<!\\)((?:\\\\)*)\\\r?\n", r"\1", script)
     normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
     if len(normalized) > _MAX_SHELL_SOURCE_CHARS:
         return ShellScanResult((), "source character limit exceeded")

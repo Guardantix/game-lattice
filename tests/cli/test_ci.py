@@ -305,7 +305,6 @@ def test_ci_audit_non_utf8_real_git_origin_has_stable_entry_error(tmp_path: Path
 @pytest.mark.parametrize(
     "error",
     [
-        FileNotFoundError("git unavailable"),
         subprocess.TimeoutExpired(["git"], 5),
         OSError("cannot execute git"),
     ],
@@ -325,6 +324,23 @@ def test_ci_audit_git_execution_failure_exits_two(
     assert result.stdout == ""
     assert "cannot resolve repository from git origin" in result.stderr
     assert "CONFIG_ERROR" in result.stderr
+
+
+def test_ci_audit_missing_git_exits_two_with_actionable_error(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise FileNotFoundError("git unavailable")
+
+    monkeypatch.setattr(ci_module.subprocess, "run", fail)
+    result = runner.invoke(app, ["ci", "audit"])
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert result.stderr == (
+        "error: git executable not found; install Git or pass --repository OWNER/REPO "
+        "(CONFIG_ERROR)\n"
+    )
 
 
 def test_ci_audit_explicit_repository_never_invokes_git(tmp_path: Path, monkeypatch):

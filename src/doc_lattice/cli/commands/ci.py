@@ -170,6 +170,10 @@ def _resolve_repository(
             check=False,
             timeout=_GIT_TIMEOUT_SECONDS,
         )
+    except FileNotFoundError as exc:
+        raise ConfigError(
+            "git executable not found; install Git or pass --repository OWNER/REPO"
+        ) from exc
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ConfigError("cannot resolve repository from git origin") from exc
     if completed.returncode != 0:
