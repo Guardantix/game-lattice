@@ -7,6 +7,37 @@ import pytest
 from doc_lattice.error_types import ConfigError
 from doc_lattice.github_ci.workflow_parser import parse_workflow
 
+MAX_UTF8_INPUT_BYTES = 1_048_576
+MAX_YAML_NESTING_DEPTH = 100
+MAX_EXPANDED_VISITS = 50_000
+MAX_COLLECTED_STRING_SCALARS = 10_000
+
+
+def _alias_graph(leaf: str, *, layers: int) -> str:
+    lines = ["on: push", f"layer0: &layer0 [{leaf}]"]
+    for level in range(1, layers + 1):
+        aliases = ", ".join([f"*layer{level - 1}"] * 10)
+        lines.append(f"layer{level}: &layer{level} [{aliases}]")
+    lines.append("jobs: {}")
+    return "\n".join(lines) + "\n"
+
+
+def _nested_sequence_workflow(levels: int) -> str:
+    nested = "[" * levels + "'leaf'" + "]" * levels
+    return f"on: push\npayload: {nested}\njobs: {{}}\n"
+
+
+def _workflow_padded_to_bytes(size: int) -> str:
+    base = "on: push\njobs: {}\n"
+    remaining = size - len(base.encode())
+    assert remaining >= 2
+    return base + "#" + ("x" * (remaining - 2)) + "\n"
+
+
+def _null_visit_workflow(values: int) -> str:
+    items = "\n".join("  -" for _ in range(values))
+    return f"payload:\n{items}\njobs: {{}}\n"
+
 
 def test_parse_workflow_normalizes_a_managed_linear_job():
     workflow = parse_workflow(
@@ -304,6 +335,203 @@ jobs:
     assert parsed.jobs[0].steps[0].run == "uv run doc-lattice audit"
 
 
+def test_parse_workflow_expands_shared_aliases_at_each_path_in_order():
+    parsed = parse_workflow(
+        Path(".github/workflows/shared-alias.yml"),
+        """\
+shared: &shared [first, second]
+copies: [*shared, *shared]
+jobs: {}
+""",
+    )
+
+    assert [
+        (scalar.path, scalar.value) for scalar in parsed.scalars if scalar.path[:1] == ("copies",)
+    ] == [
+        (("copies", "0", "0"), "first"),
+        (("copies", "0", "1"), "second"),
+        (("copies", "1", "0"), "first"),
+        (("copies", "1", "1"), "second"),
+    ]
+
+
+def test_parse_workflow_rejects_recursive_aliases():
+    with pytest.raises(ConfigError) as exc:
+        parse_workflow(
+            Path(".github/workflows/recursive.yml"),
+            "recursive: &recursive [*recursive]\njobs: {}\n",
+        )
+
+    assert "recursive YAML aliases" in str(exc.value)
+
+
+def test_parse_workflow_rejects_alias_expansion_over_scalar_budget():
+    path = Path(".github/workflows/aliases.yml")
+
+    with pytest.raises(ConfigError) as exc:
+        parse_workflow(path, _alias_graph("LEAK_ME", layers=4))
+
+    assert str(path) in str(exc.value)
+    assert "resource limit" in str(exc.value)
+    assert "LEAK_ME" not in str(exc.value)
+
+
+def test_parse_workflow_rejects_alias_expansion_over_visit_budget():
+    path = Path(".github/workflows/aliases.yml")
+
+    with pytest.raises(ConfigError) as exc:
+        parse_workflow(path, _alias_graph("null", layers=5))
+
+    assert str(path) in str(exc.value)
+    assert "resource limit" in str(exc.value)
+    assert str(MAX_EXPANDED_VISITS) not in str(exc.value)
+
+
+def test_parse_workflow_accepts_exact_expanded_visit_budget():
+    # With two root entries, N null list items consume exactly 2*N + 8 syntax/value visits.
+    null_values = (MAX_EXPANDED_VISITS - 8) // 2
+    parsed = parse_workflow(
+        Path(".github/workflows/visit-boundary.yml"),
+        _null_visit_workflow(null_values),
+    )
+
+    assert parsed.jobs == ()
+
+
+def test_parse_workflow_rejects_first_visit_over_budget():
+    null_values = (MAX_EXPANDED_VISITS - 8) // 2 + 1
+
+    with pytest.raises(ConfigError) as exc:
+        parse_workflow(
+            Path(".github/workflows/visit-over.yml"),
+            _null_visit_workflow(null_values),
+        )
+
+    assert "resource limit" in str(exc.value)
+
+
+def test_parse_workflow_accepts_exact_scalar_budget():
+    values = "\n".join("  - value" for _ in range(MAX_COLLECTED_STRING_SCALARS - 1))
+    parsed = parse_workflow(
+        Path(".github/workflows/scalar-boundary.yml"),
+        f"on: push\nvalues:\n{values}\njobs: {{}}\n",
+    )
+
+    assert len(parsed.scalars) == MAX_COLLECTED_STRING_SCALARS
+
+
+def test_parse_workflow_accepts_exact_input_byte_budget():
+    parsed = parse_workflow(
+        Path(".github/workflows/input-boundary.yml"),
+        _workflow_padded_to_bytes(MAX_UTF8_INPUT_BYTES),
+    )
+
+    assert parsed.jobs == ()
+
+
+def test_parse_workflow_rejects_input_over_byte_budget_before_parsing():
+    path = Path(".github/workflows/oversize.yml")
+
+    with pytest.raises(ConfigError) as exc:
+        parse_workflow(path, _workflow_padded_to_bytes(MAX_UTF8_INPUT_BYTES + 1))
+
+    assert str(path) in str(exc.value)
+    assert "resource limit" in str(exc.value)
+
+
+def test_parse_workflow_accepts_exact_nesting_depth_budget():
+    parsed = parse_workflow(
+        Path(".github/workflows/depth-boundary.yml"),
+        _nested_sequence_workflow(MAX_YAML_NESTING_DEPTH - 2),
+    )
+
+    assert parsed.jobs == ()
+
+
+def test_parse_workflow_rejects_nesting_over_depth_budget():
+    path = Path(".github/workflows/deep.yml")
+
+    with pytest.raises(ConfigError) as exc:
+        parse_workflow(
+            path,
+            _nested_sequence_workflow(MAX_YAML_NESTING_DEPTH - 1),
+        )
+
+    assert str(path) in str(exc.value)
+    assert "resource limit" in str(exc.value)
+
+
+def test_parse_workflow_wraps_oversized_numeric_scalar_conversion():
+    path = Path(".github/workflows/number.yml")
+    digits = "9" * 5_000
+
+    with pytest.raises(ConfigError) as exc:
+        parse_workflow(path, f"on: push\npayload: {digits}\njobs: {{}}\n")
+
+    message = str(exc.value)
+    assert str(path) in message
+    assert "malformed YAML" in message
+    assert "999999999999" not in message
+    assert "ValueError" not in message
+
+
+def test_parse_workflow_wraps_invalid_unicode_encoding():
+    path = Path(".github/workflows/unicode.yml")
+
+    with pytest.raises(ConfigError) as exc:
+        parse_workflow(path, "on: push\npayload: '\ud800'\njobs: {}\n")
+
+    assert str(path) in str(exc.value)
+    assert "malformed YAML" in str(exc.value)
+
+
+def test_parse_workflow_uses_yaml_1_2_semantics_by_default():
+    parsed = parse_workflow(
+        Path(".github/workflows/yaml-default.yml"),
+        """\
+on: push
+jobs:
+  audit:
+    env:
+      NO_VALUE: no
+      OFF_VALUE: off
+      ON_VALUE: on
+      YES_VALUE: yes
+      FALSE_VALUE: false
+      TRUE_VALUE: true
+""",
+    )
+
+    assert parsed.triggers[0].name == "push"
+    assert parsed.jobs[0].env == (
+        ("FALSE_VALUE", "false"),
+        ("NO_VALUE", "no"),
+        ("OFF_VALUE", "off"),
+        ("ON_VALUE", "on"),
+        ("TRUE_VALUE", "true"),
+        ("YES_VALUE", "yes"),
+    )
+
+
+def test_parse_workflow_accepts_explicit_yaml_1_2():
+    parsed = parse_workflow(
+        Path(".github/workflows/yaml-1.2.yml"),
+        "%YAML 1.2\n---\non: push\njobs: {}\n",
+    )
+
+    assert parsed.triggers[0].name == "push"
+
+
+def test_parse_workflow_rejects_explicit_yaml_1_1():
+    path = Path(".github/workflows/yaml-1.1.yml")
+
+    with pytest.raises(ConfigError) as exc:
+        parse_workflow(path, "%YAML 1.1\n---\non: push\njobs: {}\n")
+
+    assert str(path) in str(exc.value)
+    assert "unsupported YAML version" in str(exc.value)
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -411,3 +639,29 @@ def test_parse_workflow_error_uses_display_path_without_leaking_checkout_path(
 
     assert str(display_path) in str(exc.value)
     assert str(checkout) not in str(exc.value)
+
+
+def test_parse_workflow_escapes_control_characters_in_display_path():
+    path = Path(".github/workflows/bad\nname\x1b.yml")
+
+    with pytest.raises(ConfigError) as exc:
+        parse_workflow(path, "on: [push\njobs: {}\n")
+
+    message = str(exc.value)
+    assert "\n" not in message
+    assert "\x1b" not in message
+    assert r"\n" in message
+    assert r"\u001b" in message
+
+
+def test_parse_workflow_renders_yaml_path_components_unambiguously():
+    with pytest.raises(ConfigError) as exc:
+        parse_workflow(
+            Path(".github/workflows/location.yml"),
+            'on: push\njobs:\n  "bad.key\\nnext": scalar\n',
+        )
+
+    message = str(exc.value)
+    assert "\n" not in message
+    assert r'$["jobs"]["bad.key\nnext"]' in message
+    assert "jobs.bad.key" not in message
