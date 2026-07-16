@@ -1,0 +1,376 @@
+"""Tests for the GitHub Actions workflow parser boundary."""
+
+from pathlib import Path
+
+import pytest
+
+from doc_lattice.error_types import ConfigError
+from doc_lattice.github_ci.workflow_parser import parse_workflow
+
+
+def test_parse_workflow_normalizes_a_managed_linear_job():
+    workflow = parse_workflow(
+        Path(".github/workflows/linear.yml"),
+        """\
+name: Linear
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linear:
+    if: github.repository == 'acme/widgets'
+    environment: production
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: audit
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+        run: uv run doc-lattice audit --linear
+""",
+    )
+
+    assert [(trigger.name, trigger.shape, trigger.branches) for trigger in workflow.triggers] == [
+        ("push", "mapping", ("main",)),
+        ("workflow_dispatch", "null", None),
+    ]
+    assert workflow.permissions == (("contents", "read"),)
+    assert len(workflow.jobs) == 1
+    job = workflow.jobs[0]
+    assert job.job_id == "linear"
+    assert job.if_condition == "github.repository == 'acme/widgets'"
+    assert job.environment == "production"
+    assert job.runs_on == "ubuntu-latest"
+    assert job.permissions is None
+    assert job.env == ()
+    assert len(job.steps) == 2
+    assert job.steps[0].uses == "actions/checkout@v4"
+    assert job.steps[0].with_values == (("persist-credentials", "false"),)
+    assert job.steps[1].step_id == "audit"
+    assert job.steps[1].env == (("LINEAR_API_KEY", "${{ secrets.LINEAR_API_KEY }}"),)
+    assert job.steps[1].run == "uv run doc-lattice audit --linear"
+    assert any(
+        scalar.path == ("jobs", "linear", "steps", "1", "run")
+        and scalar.value == "uv run doc-lattice audit --linear"
+        for scalar in workflow.scalars
+    )
+
+
+@pytest.mark.parametrize(
+    ("event_yaml", "expected"),
+    [
+        ("on: pull_request", [("pull_request", "null", None)]),
+        (
+            "on: [push, pull_request]",
+            [("push", "null", None), ("pull_request", "null", None)],
+        ),
+        (
+            "on: {pull_request_target: null}",
+            [("pull_request_target", "null", None)],
+        ),
+        (
+            "on: {schedule: [{cron: '17 3 * * *'}]}",
+            [("schedule", "sequence", None)],
+        ),
+    ],
+)
+def test_parse_workflow_accepts_event_shorthands(event_yaml, expected):
+    parsed = parse_workflow(
+        Path(".github/workflows/events.yml"),
+        f"{event_yaml}\njobs: {{}}\n",
+    )
+
+    assert [
+        (trigger.name, trigger.shape, trigger.branches) for trigger in parsed.triggers
+    ] == expected
+
+
+def test_parse_workflow_accepts_unrelated_matrix_reusable_and_schedule_shapes():
+    parsed = parse_workflow(
+        Path(".github/workflows/unrelated.yml"),
+        """\
+name: Unrelated
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  pull_request:
+    types: [opened, synchronize]
+jobs:
+  matrix:
+    strategy:
+      matrix:
+        python: ["3.13", "3.14"]
+        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            experimental: true
+    environment:
+      name: production
+      url: https://example.test/deploy
+    runs-on: [self-hosted, "${{ matrix.os }}"]
+    steps:
+      - name: Test
+        run: uv run pytest
+  reusable:
+    uses: acme/automation/.github/workflows/reusable.yml@main
+    with:
+      dry-run: false
+    secrets: inherit
+""",
+    )
+
+    assert [(trigger.name, trigger.shape) for trigger in parsed.triggers] == [
+        ("schedule", "sequence"),
+        ("pull_request", "mapping"),
+    ]
+    assert [job.job_id for job in parsed.jobs] == ["matrix", "reusable"]
+    assert parsed.jobs[0].environment is None
+    assert parsed.jobs[0].runs_on is None
+    assert parsed.jobs[1].steps == ()
+    assert any(
+        scalar.path == ("jobs", "matrix", "strategy", "matrix", "python", "0")
+        and scalar.value == "3.13"
+        for scalar in parsed.scalars
+    )
+    assert any(
+        scalar.path == ("jobs", "reusable", "uses")
+        and scalar.value == "acme/automation/.github/workflows/reusable.yml@main"
+        for scalar in parsed.scalars
+    )
+
+
+def test_parse_workflow_normalizes_permissions_env_and_with_scalars():
+    parsed = parse_workflow(
+        Path(".github/workflows/scalars.yml"),
+        """\
+on: push
+permissions: read-all
+jobs:
+  audit:
+    permissions:
+      actions: write
+      contents: read
+    env:
+      BOOL: true
+      COUNT: 3
+      FRACTION: 1.5
+      TEXT: unchanged
+    steps:
+      - id: 17
+        name: false
+        uses: 4
+        run: true
+        env:
+          ENABLED: false
+        with:
+          attempts: 2
+          enabled: true
+          mode: strict
+""",
+    )
+
+    assert parsed.permissions == "read-all"
+    job = parsed.jobs[0]
+    assert job.permissions == (("actions", "write"), ("contents", "read"))
+    assert job.env == (
+        ("BOOL", "true"),
+        ("COUNT", "3"),
+        ("FRACTION", "1.5"),
+        ("TEXT", "unchanged"),
+    )
+    step = job.steps[0]
+    assert step.step_id is None
+    assert step.name is None
+    assert step.uses is None
+    assert step.run is None
+    assert step.env == (("ENABLED", "false"),)
+    assert step.with_values == (
+        ("attempts", "2"),
+        ("enabled", "true"),
+        ("mode", "strict"),
+    )
+
+
+def test_parse_workflow_preserves_only_string_optional_job_fields():
+    parsed = parse_workflow(
+        Path(".github/workflows/optional.yml"),
+        """\
+on: push
+jobs:
+  audit:
+    if: false
+    environment: 7
+    runs-on: true
+""",
+    )
+
+    job = parsed.jobs[0]
+    assert job.if_condition is None
+    assert job.environment is None
+    assert job.runs_on is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "on: [push\njobs: {}\n",
+        "on: push\non: pull_request\njobs: {}\n",
+        "- on\n- push\n",
+        "on: {push: 3}\njobs: {}\n",
+        "on: push\njobs: []\n",
+        "on: push\n",
+    ],
+    ids=[
+        "malformed-sequence",
+        "duplicate-top-level-on",
+        "top-level-sequence",
+        "unsupported-event-scalar",
+        "jobs-sequence",
+        "missing-jobs",
+    ],
+)
+def test_parse_workflow_rejects_unreliable_top_level_shapes(text):
+    path = Path(".github/workflows/broken.yml")
+
+    with pytest.raises(ConfigError) as exc:
+        parse_workflow(path, text)
+
+    assert exc.value.code == "CONFIG_ERROR"
+    assert str(path) in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "on: push\njobs:\n  audit:\n    env: {}\n    env: {}\n",
+        (
+            "on: push\njobs:\n  audit:\n    steps:\n"
+            "      - env:\n          TOKEN: one\n          TOKEN: two\n"
+        ),
+        (
+            "on: push\njobs:\n  audit:\n"
+            "    <<: &defaults\n      runs-on: ubuntu-latest\n"
+            "    steps: []\n    steps:\n      - run: echo unsafe\n"
+        ),
+    ],
+    ids=["duplicate-job-key", "duplicate-step-env-key", "duplicate-after-merge-key"],
+)
+def test_parse_workflow_rejects_duplicate_nested_keys(text):
+    with pytest.raises(ConfigError) as exc:
+        parse_workflow(Path(".github/workflows/duplicate.yml"), text)
+
+    assert ".github/workflows/duplicate.yml" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "7: value\non: push\njobs: {}\n",
+        "on: push\njobs:\n  7: {}\n",
+        "on: push\njobs:\n  audit:\n    strategy:\n      matrix:\n        3.13: ubuntu-latest\n",
+        "on: push\njobs:\n  audit:\n    steps:\n      - env:\n          1: value\n",
+    ],
+    ids=["top-level", "job-id", "unrelated-nested-key", "env-key"],
+)
+def test_parse_workflow_rejects_non_string_mapping_keys_anywhere(text):
+    with pytest.raises(ConfigError):
+        parse_workflow(Path(".github/workflows/non-string-key.yml"), text)
+
+
+@pytest.mark.parametrize(
+    "branches_yaml",
+    [
+        "3",
+        "true",
+        "{}",
+        "[main, 7]",
+        "[[main]]",
+        "null",
+    ],
+)
+def test_parse_workflow_rejects_invalid_branch_filters(branches_yaml):
+    text = f"on:\n  push:\n    branches: {branches_yaml}\njobs: {{}}\n"
+
+    with pytest.raises(ConfigError) as exc:
+        parse_workflow(Path(".github/workflows/branches.yml"), text)
+
+    assert "branches" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "on: push\npermissions: [read-all]\njobs: {}\n",
+        "on: push\npermissions:\n  contents: true\njobs: {}\n",
+        "on: push\njobs:\n  audit:\n    permissions: {}\n    env: [TOKEN]\n",
+        "on: push\njobs:\n  audit:\n    env:\n      TOKEN: [nested]\n",
+        "on: push\njobs:\n  audit:\n    permissions:\n      contents: [read]\n",
+        "on: push\njobs:\n  audit:\n    steps: {}\n",
+        "on: push\njobs:\n  audit:\n    steps:\n      - run\n",
+        "on: push\njobs:\n  audit:\n    steps:\n      - env: TOKEN\n",
+        "on: push\njobs:\n  audit:\n    steps:\n      - with: [value]\n",
+        "on: push\njobs:\n  audit:\n    steps:\n      - env:\n          TOKEN: null\n",
+        "on: push\njobs:\n  audit:\n    steps:\n      - with:\n          option: [nested]\n",
+    ],
+    ids=[
+        "top-permissions-sequence",
+        "top-permissions-non-string-value",
+        "job-env-sequence",
+        "job-env-container-value",
+        "job-permissions-container-value",
+        "steps-mapping",
+        "step-scalar",
+        "step-env-scalar",
+        "step-with-sequence",
+        "step-env-null-value",
+        "step-with-container-value",
+    ],
+)
+def test_parse_workflow_rejects_invalid_audited_containers(text):
+    with pytest.raises(ConfigError) as exc:
+        parse_workflow(Path(".github/workflows/container.yml"), text)
+
+    assert ".github/workflows/container.yml" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "on: [push, 7]\njobs: {}\n",
+        "on:\n  push: null\n  7: null\njobs: {}\n",
+        "on:\n  push:\n    branches: main\n    paths:\n      - src/**\njobs:\n  audit: scalar\n",
+        "on: push\njobs:\n  audit:\n    if: [always]\n",
+        "on: push\njobs:\n  audit:\n    steps:\n      - name: [Audit]\n",
+    ],
+    ids=[
+        "event-list-non-string",
+        "event-mapping-non-string-key",
+        "job-scalar",
+        "job-if-container",
+        "step-name-container",
+    ],
+)
+def test_parse_workflow_rejects_other_unreliable_audited_shapes(text):
+    with pytest.raises(ConfigError):
+        parse_workflow(Path(".github/workflows/unreliable.yml"), text)
+
+
+def test_parse_workflow_error_uses_display_path_without_leaking_checkout_path(
+    tmp_path, monkeypatch
+):
+    checkout = tmp_path / "secret-checkout-name"
+    checkout.mkdir()
+    monkeypatch.chdir(checkout)
+    display_path = Path(".github/workflows/broken.yml")
+    text = "on: [push\njobs: {}\n"
+
+    with pytest.raises(ConfigError) as exc:
+        parse_workflow(display_path, text)
+
+    assert str(display_path) in str(exc.value)
+    assert str(checkout) not in str(exc.value)
