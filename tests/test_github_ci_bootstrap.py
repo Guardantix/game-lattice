@@ -32,6 +32,9 @@ POLICIES_JQ = ".branch_policies[] | [.name, .type] | @tsv"
 ENVIRONMENT_SECRETS_JQ = ".secrets[].name"
 _CONFIRMATION_PROMPT = b"Type Guardantix/doc-lattice to apply: "
 _PROCESS_TIMEOUT_SECONDS = 10
+_SECRET_FIXTURE_PREFIX = "lin_api_"  # noqa: S105  # pragma: allowlist secret
+_LEGACY_SECRET_CANARY = f"{_SECRET_FIXTURE_PREFIX}legacy_canary"
+_DEDICATED_SECRET_CANARY = f"{_SECRET_FIXTURE_PREFIX}dedicated_canary"
 
 _FAKE_GH = r"""#!/usr/bin/env python3
 import json
@@ -339,6 +342,13 @@ def _read_fake_gh_calls(log_path: Path) -> tuple[list[str], ...]:
     return tuple(json.loads(line) for line in log_path.read_text().splitlines())
 
 
+def _assert_no_bootstrap_secret_leak(observed: str) -> None:
+    """Reject either exact canary or their shared fixture prefix in captured outputs."""
+    for canary in (_LEGACY_SECRET_CANARY, _DEDICATED_SECRET_CANARY):
+        assert canary not in observed, f"secret canary leaked: {canary}"
+    assert _SECRET_FIXTURE_PREFIX not in observed.casefold(), "secret canary prefix leaked"
+
+
 def _read_until_confirmation_or_exit(
     process: subprocess.Popen[bytes],
 ) -> tuple[bytes, bool]:
@@ -456,7 +466,8 @@ def _run_bootstrap(  # noqa: PLR0913
     env = {
         **os.environ,
         "PATH": path,
-        "LINEAR_SECRET_FIXTURE": "lin_api_DO_NOT_LEAK_FROM_BOOTSTRAP",  # pragma: allowlist secret
+        "LINEAR_API_KEY": _LEGACY_SECRET_CANARY,
+        "DOC_LATTICE_LINEAR_API_KEY": _DEDICATED_SECRET_CANARY,
         "FAKE_GH_STATE": str(state_path),
         "FAKE_GH_LOG": str(log_path),
         "FAKE_SORT_COUNT": str(tmp_path / "sort-count"),
@@ -499,7 +510,7 @@ def _run_bootstrap(  # noqa: PLR0913
         {"calls": calls, "state": final_state, "stdout": result.stdout, "stderr": result.stderr},
         sort_keys=True,
     )
-    assert "lin_api_" not in observed.casefold()
+    _assert_no_bootstrap_secret_leak(observed)
     assert all(call[:1] != ["secret"] for call in calls)
     mutation_indices = [index for index, call in enumerate(calls) if "--method" in call]
     for mutation_index in mutation_indices:
@@ -560,6 +571,39 @@ def test_rendered_bootstrap_is_the_third_managed_artifact_and_is_valid_bash(
     assert "--yes" not in bootstrap.text
     assert " -y" not in bootstrap.text
     assert 'return "$EXIT_FINDING"' in bootstrap.text
+
+
+@pytest.mark.parametrize(
+    ("variable_name", "canary"),
+    [
+        ("LINEAR_API_KEY", _LEGACY_SECRET_CANARY),
+        ("DOC_LATTICE_LINEAR_API_KEY", _DEDICATED_SECRET_CANARY),
+    ],
+)
+def test_bootstrap_leak_guard_rejects_actual_sensitive_environment_output(
+    variable_name: str,
+    canary: str,
+):
+    completed = subprocess.run(  # noqa: S603
+        ["/bin/bash", "-c", 'printf "%s" "${!1}"', "bash", variable_name],
+        env={variable_name: canary},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    with pytest.raises(AssertionError, match="secret canary"):
+        _assert_no_bootstrap_secret_leak(
+            json.dumps(
+                {
+                    "stdout": completed.stdout,
+                    "stderr": completed.stderr,
+                    "calls": [],
+                    "state": {},
+                },
+                sort_keys=True,
+            )
+        )
 
 
 @pytest.mark.parametrize(

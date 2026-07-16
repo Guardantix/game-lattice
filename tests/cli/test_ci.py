@@ -20,6 +20,11 @@ from doc_lattice.github_ci.render import CHECKOUT_REF, SETUP_UV_REF, render_mana
 
 from .helpers import runner
 
+_OFFLINE_WORKFLOW = ".github/workflows/doc-lattice.yml"
+_LINEAR_WORKFLOW = ".github/workflows/doc-lattice-linear.yml"
+_UNRELATED_WORKFLOW = ".github/workflows/unrelated.yml"
+_BOOTSTRAP_SCRIPT = ".github/doc-lattice-bootstrap.sh"
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -44,6 +49,14 @@ def _replace_once(path: Path, old: str, new: str) -> None:
     text = path.read_text(encoding="utf-8")
     assert old in text
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def _audit_finding_keys(stdout: str) -> frozenset[tuple[str, str]]:
+    findings: set[tuple[str, str]] = set()
+    for line in stdout.splitlines():
+        path, code, _message = line.split(": ", 2)
+        findings.add((path, code))
+    return frozenset(findings)
 
 
 def _write_non_utf8_origin(root: Path) -> None:
@@ -326,34 +339,44 @@ def test_init_github_then_ci_audit_round_trips_without_loading_lattice(
 
 
 @pytest.mark.parametrize(
-    ("target", "old", "new", "finding_code"),
+    ("target", "old", "new", "expected_findings"),
     [
         pytest.param(
             "offline",
             "on:\n  push:",
             "on:\n  pull_request_target:\n  push:",
-            "PULL_REQUEST_TARGET",
+            frozenset(
+                {
+                    (_OFFLINE_WORKFLOW, "MANAGED_TRIGGERS"),
+                    (_OFFLINE_WORKFLOW, "PULL_REQUEST_TARGET"),
+                }
+            ),
             id="pull-request-target",
         ),
         pytest.param(
             "linear",
             "  workflow_dispatch:",
             "  workflow_dispatch:\n  pull_request:",
-            "PR_LINEAR_INVOCATION",
+            frozenset(
+                {
+                    (_LINEAR_WORKFLOW, "MANAGED_TRIGGERS"),
+                    (_LINEAR_WORKFLOW, "PR_LINEAR_INVOCATION"),
+                }
+            ),
             id="linear-pr-trigger",
         ),
         pytest.param(
             "linear",
             "      github.repository == 'Guardantix/doc-lattice' &&\n",
             "",
-            "MANAGED_COMMAND",
+            frozenset({(_LINEAR_WORKFLOW, "MANAGED_COMMAND")}),
             id="repository-condition-removed",
         ),
         pytest.param(
             "linear",
             "      github.ref == 'refs/heads/main' &&\n",
             "      startsWith(github.ref, 'refs/heads/') &&\n",
-            "MANAGED_COMMAND",
+            frozenset({(_LINEAR_WORKFLOW, "MANAGED_COMMAND")}),
             id="ref-condition-broadened",
         ),
         pytest.param(
@@ -362,42 +385,64 @@ def test_init_github_then_ci_audit_round_trips_without_loading_lattice(
             "      (github.event_name == 'push' || "
             "github.event_name == 'workflow_dispatch' || "
             "github.event_name == 'pull_request')",
-            "MANAGED_COMMAND",
+            frozenset({(_LINEAR_WORKFLOW, "MANAGED_COMMAND")}),
             id="event-condition-broadened",
         ),
         pytest.param(
             "linear",
             "jobs:\n  linear:",
             "jobs:\n  trusted:",
-            "MANAGED_JOB",
+            frozenset(
+                {
+                    (_LINEAR_WORKFLOW, "LINEAR_SECRET_REFERENCE"),
+                    (_LINEAR_WORKFLOW, "MANAGED_JOB"),
+                }
+            ),
             id="linear-job-renamed",
         ),
         pytest.param(
             "linear",
             "    environment: doc-lattice-linear\n",
             "",
-            "MANAGED_JOB",
+            frozenset({(_LINEAR_WORKFLOW, "MANAGED_JOB")}),
             id="environment-removed",
         ),
         pytest.param(
             "secret-job-env",
             "",
             "",
-            "MANAGED_SECRET",
+            frozenset(
+                {
+                    (_LINEAR_WORKFLOW, "LINEAR_SECRET_REFERENCE"),
+                    (_LINEAR_WORKFLOW, "MANAGED_COMMAND"),
+                    (_LINEAR_WORKFLOW, "MANAGED_SECRET"),
+                }
+            ),
             id="secret-moved-to-job-env",
         ),
         pytest.param(
             "secret-earlier-step",
             "",
             "",
-            "MANAGED_SECRET",
+            frozenset(
+                {
+                    (_LINEAR_WORKFLOW, "LINEAR_SECRET_REFERENCE"),
+                    (_LINEAR_WORKFLOW, "MANAGED_COMMAND"),
+                    (_LINEAR_WORKFLOW, "MANAGED_SECRET"),
+                }
+            ),
             id="secret-moved-to-earlier-step",
         ),
         pytest.param(
             "linear",
             "secrets.DOC_LATTICE_LINEAR_API_KEY",
             "secrets.LINEAR_API_KEY",
-            "LINEAR_SECRET_REFERENCE",
+            frozenset(
+                {
+                    (_LINEAR_WORKFLOW, "LINEAR_SECRET_REFERENCE"),
+                    (_LINEAR_WORKFLOW, "MANAGED_SECRET"),
+                }
+            ),
             id="legacy-repository-secret",
         ),
         pytest.param(
@@ -413,35 +458,35 @@ jobs:
           TOKEN: ${{ secrets.DOC_LATTICE_LINEAR_API_KEY }}
         run: true
 """,
-            "LINEAR_SECRET_REFERENCE",
+            frozenset({(_UNRELATED_WORKFLOW, "LINEAR_SECRET_REFERENCE")}),
             id="unrelated-secret-reference",
         ),
         pytest.param(
             "offline",
             "        with:\n          persist-credentials: false\n",
             "",
-            "MANAGED_CHECKOUT",
+            frozenset({(_OFFLINE_WORKFLOW, "MANAGED_CHECKOUT")}),
             id="checkout-credentials-setting-removed",
         ),
         pytest.param(
             "offline",
             f"actions/checkout@{CHECKOUT_REF}",
             "actions/checkout@v4",
-            "MANAGED_ACTION",
+            frozenset({(_OFFLINE_WORKFLOW, "MANAGED_ACTION")}),
             id="checkout-tag",
         ),
         pytest.param(
             "linear",
             f"astral-sh/setup-uv@{SETUP_UV_REF}",
             "astral-sh/setup-uv@v6",
-            "MANAGED_ACTION",
+            frozenset({(_LINEAR_WORKFLOW, "MANAGED_ACTION")}),
             id="setup-uv-tag",
         ),
         pytest.param(
             "linear",
             "          enable-cache: false",
             "          enable-cache: true",
-            "MANAGED_CACHE",
+            frozenset({(_LINEAR_WORKFLOW, "MANAGED_CACHE")}),
             id="setup-uv-cache-enabled",
         ),
         pytest.param(
@@ -451,7 +496,7 @@ jobs:
             "        with:\n"
             "          path: .cache\n"
             "      - name: Audit, check, and lint\n",
-            "MANAGED_CACHE",
+            frozenset({(_OFFLINE_WORKFLOW, "MANAGED_CACHE")}),
             id="actions-cache-added",
         ),
         pytest.param(
@@ -465,14 +510,14 @@ jobs:
     steps:
       - run: doc-lattice reconcile --all
 """,
-            "PR_MUTATING_RECONCILE",
+            frozenset({(_UNRELATED_WORKFLOW, "PR_MUTATING_RECONCILE")}),
             id="mutating-reconcile-on-pr",
         ),
         pytest.param(
             "delete-bootstrap",
             "",
             "",
-            "MISSING_MANAGED_ARTIFACT",
+            frozenset({(_BOOTSTRAP_SCRIPT, "MISSING_MANAGED_ARTIFACT")}),
             id="bootstrap-deleted",
         ),
     ],
@@ -483,7 +528,7 @@ def test_ci_audit_reports_each_load_bearing_security_control_mutation(  # noqa: 
     target: str,
     old: str,
     new: str,
-    finding_code: str,
+    expected_findings: frozenset[tuple[str, str]],
 ):
     artifacts = render_managed_artifacts("Guardantix/doc-lattice", __version__)
     _install(tmp_path)
@@ -529,7 +574,7 @@ def test_ci_audit_reports_each_load_bearing_security_control_mutation(  # noqa: 
     )
 
     assert result.exit_code == 1
-    assert f": {finding_code}:" in result.stdout
+    assert _audit_finding_keys(result.stdout) == expected_findings
 
 
 def test_ci_audit_allows_unrelated_release_workflow_controls(tmp_path: Path, monkeypatch):
