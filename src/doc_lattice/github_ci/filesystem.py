@@ -15,6 +15,7 @@ from .model import (
     ArtifactRole,
     InstalledArtifact,
     ManagedArtifact,
+    ManagedArtifactTarget,
     ManagedMarker,
     WorkflowDiscovery,
     WorkflowDocument,
@@ -156,7 +157,7 @@ def _bounded_workflow_names(directory: Path, display_directory: str) -> tuple[st
 
 def inspect_installed_artifacts(
     root: Path,
-    expected: tuple[ManagedArtifact, ...],
+    expected: tuple[ManagedArtifactTarget, ...],
 ) -> tuple[InstalledArtifact | None, ...]:
     """Read fixed managed artifact paths and inspect strict ownership markers.
 
@@ -489,7 +490,9 @@ def _preflight(
     return tuple(changes)
 
 
-def _validate_artifact_path(artifact: ManagedArtifact) -> None:
+def _validate_artifact_path(
+    artifact: ManagedArtifactTarget,
+) -> None:
     """Require each artifact role to use its single fixed canonical path."""
     expected = _CANONICAL_PATHS.get(artifact.role)
     if expected is None:
@@ -504,7 +507,7 @@ def _validate_artifact_path(artifact: ManagedArtifact) -> None:
 def _resolve_destination(
     logical_destination: Path,
     root: Path,
-    artifact: ManagedArtifact,
+    artifact: ManagedArtifactTarget,
     operation: str,
 ) -> Path:
     """Resolve one fixed destination with typed path context."""
@@ -573,7 +576,7 @@ def _read_installed_bytes(
     logical_destination: Path,
     destination: Path,
     root: Path,
-    artifact: ManagedArtifact,
+    artifact: ManagedArtifactTarget,
 ) -> bytes | None:
     """Read one installed artifact with the per-file workflow byte bound."""
     path = artifact.relative_path.as_posix()
@@ -632,7 +635,10 @@ def _require_regular_not_symlink(mode: int, path: str) -> None:
         raise ConfigError(f"existing target must be a regular file for managed artifact {path}")
 
 
-def _parse_managed_marker(data: bytes, artifact: ManagedArtifact) -> ManagedMarker:
+def _parse_managed_marker(
+    data: bytes,
+    artifact: ManagedArtifactTarget,
+) -> ManagedMarker:
     """Parse the exact ownership header from existing managed artifact bytes."""
     path = artifact.relative_path.as_posix()
     try:

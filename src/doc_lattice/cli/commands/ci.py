@@ -23,7 +23,7 @@ from ...github_ci.identity import (
     parse_repository,
     validate_final_release_version,
 )
-from ...github_ci.render import render_managed_artifacts
+from ...github_ci.render import CANONICAL_ARTIFACT_TARGETS, render_managed_artifacts
 from ..errors import EXIT_FINDING, exit_on_project_error
 from ..runtime import CliRuntime, get_runtime
 
@@ -58,9 +58,8 @@ def register_ci(app: typer.Typer) -> None:
         exit_code = 0
         with exit_on_project_error(runtime):
             identity = _resolve_repository(runtime, repository)
-            artifacts = render_managed_artifacts(identity.display, __version__)
             discovery = discover_workflows(runtime.cwd)
-            installed = inspect_installed_artifacts(runtime.cwd, artifacts)
+            installed = inspect_installed_artifacts(runtime.cwd, CANONICAL_ARTIFACT_TARGETS)
             findings = tuple(
                 sorted(
                     set(

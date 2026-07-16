@@ -16,7 +16,7 @@ from .model import (
     WorkflowStep,
     WorkflowStructureEntry,
 )
-from .render import render_managed_artifacts, render_workflows
+from .render import CANONICAL_ARTIFACT_TARGETS, render_workflows
 from .shell_scanner import direct_doc_lattice_invocations, scan_doc_lattice_invocations
 from .workflow_parser import parse_workflow
 
@@ -148,7 +148,7 @@ def audit_managed_installation(
     Raises:
         ConfigError: If inspection results do not use the canonical three-slot order.
     """
-    canonical = render_managed_artifacts(repository.display, running_version)
+    canonical = CANONICAL_ARTIFACT_TARGETS
     if len(installed) != len(canonical):
         raise ConfigError("managed artifact inspection must contain exactly three slots")
     for index, artifact in enumerate(installed):

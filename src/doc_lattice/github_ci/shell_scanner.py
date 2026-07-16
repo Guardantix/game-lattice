@@ -18,12 +18,10 @@ _SURROGATE_MAX = 0xDFFF
 _COMMAND_PREFIXES = frozenset(
     {
         "!",
-        "coproc",
         "do",
         "elif",
         "if",
         "then",
-        "time",
         "until",
         "while",
     }
@@ -47,7 +45,20 @@ _REDIRECTION_OPERATORS = (
     ">",
     "<",
 )
-_COMMAND_OPERATORS = (";;&", "&&", "||", ";;", ";&", ";", "&", "|", "(", ")")
+_COMMAND_OPERATORS = (
+    ";;&",
+    "&&",
+    "||",
+    ";;",
+    ";&",
+    ";",
+    "&",
+    "|",
+    "(",
+    ")",
+    "{",
+    "}",
+)
 _WORD_BREAKS = frozenset(" \t\r\n;&|()<>")
 
 _UV_SHARED_OPTIONS_WITH_ARGUMENTS = frozenset(
@@ -138,6 +149,8 @@ _UV_RUN_NON_COMMAND_OPTIONS = frozenset(
         "-s",
     }
 )
+_DOC_LATTICE_ROOT_OPTIONS = frozenset({"--no-color"})
+_DOC_LATTICE_NON_COMMAND_ROOT_OPTIONS = frozenset({"--version"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -840,8 +853,15 @@ class _ShellScanner:
                 operator,
                 index,
             ):
+                if operator in {"{", "}"} and not self._standalone_brace_at(index, limit):
+                    continue
                 return operator
         return None
+
+    def _standalone_brace_at(self, index: int, limit: int) -> bool:
+        """Return whether a leading brace is a shell reserved word, not word text."""
+        next_index = index + 1
+        return next_index == limit or self.source[next_index] in " \t\r\n;&|()<>"
 
     def _line_end(self, index: int, limit: int) -> int:
         line_end = self.source.find("\n", index, limit)
@@ -884,12 +904,15 @@ def _invocation_in_simple_command(words: list[_ShellWord]) -> _Invocation | None
     if index >= len(words):
         return None
     executable_index = _doc_lattice_payload_index(words, index)
-    if executable_index is None or executable_index + 1 >= len(words):
+    if executable_index is None:
         return None
-    subcommand = words[executable_index + 1]
+    subcommand_index = _doc_lattice_subcommand_index(words, executable_index + 1)
+    if subcommand_index is None or subcommand_index >= len(words):
+        return None
+    subcommand = words[subcommand_index]
     if subcommand.dynamic or not subcommand.literal:
         return None
-    arguments = words[executable_index + 1 :]
+    arguments = words[subcommand_index:]
     has_dry_run = any(
         not argument.dynamic and argument.literal == "--dry-run" for argument in arguments
     )
@@ -905,6 +928,14 @@ def _skip_shell_prefixes(words: list[_ShellWord], start: int) -> int:
         if word.literal in _COMMAND_PREFIXES or _SHELL_ASSIGNMENT_RE.fullmatch(word.literal):
             index += 1
             continue
+        if word.literal == "time":
+            index += 1
+            if index < len(words) and not words[index].dynamic and words[index].literal == "-p":
+                index += 1
+            continue
+        if word.literal == "coproc":
+            index = _skip_coproc_prefix(words, index + 1)
+            continue
         if word.literal == "env":
             index = _skip_env_prefix(words, index + 1)
             continue
@@ -914,6 +945,22 @@ def _skip_shell_prefixes(words: list[_ShellWord], start: int) -> int:
             return _skip_exec_wrapper(words, index + 1)
         return index
     return index
+
+
+def _skip_coproc_prefix(words: list[_ShellWord], start: int) -> int:
+    """Skip the optional literal name in a named Bash coprocess."""
+    if start + 1 >= len(words):
+        return start
+    name = words[start]
+    executable = words[start + 1]
+    if (
+        not name.dynamic
+        and _is_name(name.literal)
+        and not executable.dynamic
+        and _basename(executable.literal) == "doc-lattice"
+    ):
+        return start + 1
+    return start
 
 
 def _skip_command_builtin(words: list[_ShellWord], start: int) -> int:
@@ -1004,6 +1051,25 @@ def _doc_lattice_payload_index(
     ):
         return payload_index
     return None
+
+
+def _doc_lattice_subcommand_index(
+    words: list[_ShellWord],
+    start: int,
+) -> int | None:
+    """Skip exact root options that can precede a doc-lattice subcommand."""
+    index = start
+    while index < len(words):
+        word = words[index]
+        if word.dynamic:
+            return None
+        if word.literal in _DOC_LATTICE_NON_COMMAND_ROOT_OPTIONS:
+            return None
+        if word.literal in _DOC_LATTICE_ROOT_OPTIONS:
+            index += 1
+            continue
+        return index
+    return index
 
 
 def _skip_options(

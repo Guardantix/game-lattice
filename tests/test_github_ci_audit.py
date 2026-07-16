@@ -20,7 +20,12 @@ from doc_lattice.github_ci.filesystem import (
 )
 from doc_lattice.github_ci.identity import parse_repository
 from doc_lattice.github_ci.model import InstalledArtifact, WorkflowDiscovery, WorkflowDocument
-from doc_lattice.github_ci.render import CHECKOUT_REF, SETUP_UV_REF, render_managed_artifacts
+from doc_lattice.github_ci.render import (
+    CANONICAL_ARTIFACT_TARGETS,
+    CHECKOUT_REF,
+    SETUP_UV_REF,
+    render_managed_artifacts,
+)
 from doc_lattice.github_ci.workflow_parser import parse_workflow
 
 
@@ -391,6 +396,62 @@ def test_direct_doc_lattice_invocations_handles_documented_forms(script, expecte
 @pytest.mark.parametrize(
     ("script", "expected"),
     [
+        ("doc-lattice --no-color linear", LINEAR),
+        ("doc-lattice --no-color reconcile --all", RECONCILE),
+        (
+            "uvx --from doc-lattice==2.1.0 doc-lattice --no-color linear",
+            LINEAR,
+        ),
+        ("{ doc-lattice linear; }", LINEAR),
+        ("{ doc-lattice reconcile --all; }", RECONCILE),
+        ("time -p doc-lattice linear", LINEAR),
+        ("coproc DL doc-lattice reconcile --all", RECONCILE),
+    ],
+)
+def test_direct_doc_lattice_invocations_handles_root_options_and_compound_grammar(
+    script,
+    expected,
+):
+    assert direct_doc_lattice_invocations(script) == expected
+
+
+@pytest.mark.parametrize(
+    ("script", "expected_code"),
+    [
+        ("doc-lattice --no-color linear", "PR_LINEAR_INVOCATION"),
+        ("doc-lattice --no-color reconcile --all", "PR_MUTATING_RECONCILE"),
+        (
+            "uvx --from doc-lattice==2.1.0 doc-lattice --no-color linear",
+            "PR_LINEAR_INVOCATION",
+        ),
+        ("{ doc-lattice linear; }", "PR_LINEAR_INVOCATION"),
+        ("{ doc-lattice reconcile --all; }", "PR_MUTATING_RECONCILE"),
+        ("time -p doc-lattice linear", "PR_LINEAR_INVOCATION"),
+        ("coproc DL doc-lattice reconcile --all", "PR_MUTATING_RECONCILE"),
+    ],
+)
+def test_global_audit_rejects_root_options_and_compound_grammar_on_pr(
+    script,
+    expected_code,
+):
+    document = _workflow(
+        f"""\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          {script}
+"""
+    )
+
+    assert _finding_codes(audit_global_workflows((document,))) == {expected_code}
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
         ("TOKEN=value doc-lattice linear", (("linear", False),)),
         ("env TOKEN=value doc-lattice linear", (("linear", False),)),
         ("! doc-lattice reconcile --all --dry-run", (("reconcile", True),)),
@@ -452,6 +513,21 @@ def test_direct_doc_lattice_invocations_handles_bash_append_assignments(script, 
     ],
 )
 def test_direct_doc_lattice_invocations_ignores_indirect_or_similarly_named_commands(script):
+    assert direct_doc_lattice_invocations(script) == ()
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "{doc-lattice linear",
+        'coproc "$NAME" doc-lattice linear',
+        "doc-lattice --version linear",
+        "doc-lattice --no-color --version linear",
+    ],
+)
+def test_direct_doc_lattice_invocations_does_not_widen_dynamic_or_nonexecuting_forms(
+    script,
+):
     assert direct_doc_lattice_invocations(script) == ()
 
 
@@ -1292,10 +1368,12 @@ def test_inspect_installed_artifacts_returns_exact_text_and_parsed_markers(tmp_p
     expected = render_managed_artifacts("Guardantix/doc-lattice", "2.1.0")
     _write_managed_artifacts(tmp_path)
 
-    installed = inspect_installed_artifacts(tmp_path, expected)
+    installed = inspect_installed_artifacts(tmp_path, CANONICAL_ARTIFACT_TARGETS)
 
     assert all(isinstance(artifact, InstalledArtifact) for artifact in installed)
-    assert [artifact.expected for artifact in installed if artifact is not None] == list(expected)
+    assert [artifact.expected for artifact in installed if artifact is not None] == list(
+        CANONICAL_ARTIFACT_TARGETS
+    )
     assert [artifact.text for artifact in installed if artifact is not None] == [
         artifact.text for artifact in expected
     ]
@@ -1316,7 +1394,7 @@ def test_inspect_installed_artifacts_preserves_missing_positions_without_mutatio
     destination.parent.mkdir(parents=True)
     destination.write_text(offline.text, encoding="utf-8")
 
-    installed = inspect_installed_artifacts(tmp_path, expected)
+    installed = inspect_installed_artifacts(tmp_path, CANONICAL_ARTIFACT_TARGETS)
 
     assert installed[0] is not None
     assert installed[1:] == (None, None)
@@ -1337,7 +1415,7 @@ def test_inspect_installed_artifacts_reports_bad_marker_as_data(tmp_path: Path):
         encoding="utf-8",
     )
 
-    installed = inspect_installed_artifacts(tmp_path, expected)
+    installed = inspect_installed_artifacts(tmp_path, CANONICAL_ARTIFACT_TARGETS)
 
     assert installed[:2] == (None, None)
     assert installed[2] is not None
@@ -1353,7 +1431,7 @@ def test_inspect_installed_artifacts_rejects_non_utf8_and_symlinks(tmp_path: Pat
     destination.write_bytes(b"\xff\xfe")
 
     with pytest.raises(ConfigError, match=r"UTF-8.*doc-lattice\.yml"):
-        inspect_installed_artifacts(tmp_path, expected)
+        inspect_installed_artifacts(tmp_path, CANONICAL_ARTIFACT_TARGETS)
 
     destination.unlink()
     real = tmp_path / "real.yml"
@@ -1361,7 +1439,7 @@ def test_inspect_installed_artifacts_rejects_non_utf8_and_symlinks(tmp_path: Pat
     destination.symlink_to(real)
 
     with pytest.raises(ConfigError, match=r"symlink.*doc-lattice\.yml"):
-        inspect_installed_artifacts(tmp_path, expected)
+        inspect_installed_artifacts(tmp_path, CANONICAL_ARTIFACT_TARGETS)
 
 
 def test_inspect_installed_artifacts_rejects_oversized_managed_file(tmp_path: Path):
@@ -1372,7 +1450,7 @@ def test_inspect_installed_artifacts_rejects_oversized_managed_file(tmp_path: Pa
     destination.write_bytes(b"x" * (MAX_WORKFLOW_BYTES + 1))
 
     with pytest.raises(ConfigError, match=r"byte limit.*doc-lattice\.yml"):
-        inspect_installed_artifacts(tmp_path, expected)
+        inspect_installed_artifacts(tmp_path, CANONICAL_ARTIFACT_TARGETS)
 
 
 def test_inspect_external_parent_error_uses_only_repository_relative_path(tmp_path: Path):
@@ -1381,10 +1459,9 @@ def test_inspect_external_parent_error_uses_only_repository_relative_path(tmp_pa
     root.mkdir()
     outside.mkdir()
     (root / ".github").symlink_to(outside, target_is_directory=True)
-    expected = render_managed_artifacts("Guardantix/doc-lattice", "2.1.0")
 
     with pytest.raises(ConfigError) as caught:
-        inspect_installed_artifacts(root, expected)
+        inspect_installed_artifacts(root, CANONICAL_ARTIFACT_TARGETS)
 
     assert ".github/workflows/doc-lattice.yml" in str(caught.value)
     assert str(tmp_path) not in str(caught.value)
@@ -1397,7 +1474,7 @@ def test_inspection_never_yaml_parses_bootstrap(tmp_path: Path):
     destination.parent.mkdir(parents=True)
     destination.write_text(bootstrap.text + "\nnot: [valid YAML\n", encoding="utf-8")
 
-    installed = inspect_installed_artifacts(tmp_path, expected)
+    installed = inspect_installed_artifacts(tmp_path, CANONICAL_ARTIFACT_TARGETS)
 
     assert installed[2] is not None
     assert installed[2].marker is not None
@@ -1409,9 +1486,8 @@ def _audit_installed(
     expected_repository: str = "Guardantix/doc-lattice",
     running_version: str = "2.1.0",
 ):
-    expected = render_managed_artifacts(expected_repository, running_version)
     discovery = discover_workflows(root)
-    installed = inspect_installed_artifacts(root, expected)
+    installed = inspect_installed_artifacts(root, CANONICAL_ARTIFACT_TARGETS)
     findings = audit_managed_installation(
         discovery,
         installed,
@@ -1445,9 +1521,8 @@ def test_managed_audit_accepts_exact_rendered_installation(tmp_path: Path):
 
 
 def test_managed_audit_requires_exactly_three_canonical_inspection_slots(tmp_path: Path):
-    expected = render_managed_artifacts("Guardantix/doc-lattice", "2.1.0")
     discovery = discover_workflows(tmp_path)
-    installed = inspect_installed_artifacts(tmp_path, expected)
+    installed = inspect_installed_artifacts(tmp_path, CANONICAL_ARTIFACT_TARGETS)
 
     with pytest.raises(ConfigError, match="exactly three"):
         audit_managed_installation(
@@ -1459,10 +1534,9 @@ def test_managed_audit_requires_exactly_three_canonical_inspection_slots(tmp_pat
 
 
 def test_managed_audit_rejects_present_artifacts_out_of_canonical_order(tmp_path: Path):
-    expected = render_managed_artifacts("Guardantix/doc-lattice", "2.1.0")
     _write_managed_artifacts(tmp_path)
     discovery = discover_workflows(tmp_path)
-    installed = inspect_installed_artifacts(tmp_path, expected)
+    installed = inspect_installed_artifacts(tmp_path, CANONICAL_ARTIFACT_TARGETS)
 
     with pytest.raises(ConfigError, match="canonical order"):
         audit_managed_installation(
@@ -1512,6 +1586,33 @@ def test_managed_audit_reports_stale_generator_without_current_version_cascade(
 
     assert _finding_codes(findings) == {"STALE_GENERATOR"}
     assert all("ci refresh" in finding.message for finding in findings)
+
+
+@pytest.mark.parametrize(
+    "running_version",
+    ["2.2.0.dev1", "2.2.0rc1", "2.1.0+local"],
+)
+def test_managed_audit_nonfinal_running_version_uses_installed_marker_semantics(
+    tmp_path: Path,
+    monkeypatch,
+    running_version: str,
+):
+    from doc_lattice.github_ci import audit as audit_module  # noqa: PLC0415
+
+    _write_managed_artifacts(tmp_path)
+    rendered_versions: list[str] = []
+    real_render_workflows = audit_module.render_workflows
+
+    def track_render_workflows(repository: str, version: str):
+        rendered_versions.append(version)
+        return real_render_workflows(repository, version)
+
+    monkeypatch.setattr(audit_module, "render_workflows", track_render_workflows)
+
+    findings = _audit_installed(tmp_path, running_version=running_version)
+
+    assert _finding_codes(findings) == {"STALE_GENERATOR"}
+    assert rendered_versions == ["2.1.0", "2.1.0"]
 
 
 def test_managed_audit_reports_invalid_bootstrap_marker_as_finding(tmp_path: Path):

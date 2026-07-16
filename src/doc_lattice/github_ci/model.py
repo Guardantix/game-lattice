@@ -37,11 +37,17 @@ class ManagedMarker:
 
 
 @dataclass(frozen=True, slots=True)
-class ManagedArtifact:
-    """A rendered GitHub CI artifact managed by the generator."""
+class ManagedArtifactTarget:
+    """One fixed managed artifact identity used for read-only inspection."""
 
     role: ArtifactRole
     relative_path: PurePosixPath
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedArtifact(ManagedArtifactTarget):
+    """A rendered GitHub CI artifact managed by the generator."""
+
     text: str
 
 
@@ -49,7 +55,7 @@ class ManagedArtifact:
 class InstalledArtifact:
     """A present managed artifact with its expected form and ownership inspection."""
 
-    expected: ManagedArtifact
+    expected: ManagedArtifactTarget
     text: str
     marker: ManagedMarker | None
     marker_error: str | None

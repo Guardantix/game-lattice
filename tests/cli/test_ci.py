@@ -16,7 +16,12 @@ from doc_lattice.cli.commands import ci as ci_module
 from doc_lattice.cli.runtime import CliRuntime
 from doc_lattice.error_types import ConfigError
 from doc_lattice.github_ci.filesystem import apply_changes, preflight_create
-from doc_lattice.github_ci.render import CHECKOUT_REF, SETUP_UV_REF, render_managed_artifacts
+from doc_lattice.github_ci.render import (
+    CANONICAL_ARTIFACT_TARGETS,
+    CHECKOUT_REF,
+    SETUP_UV_REF,
+    render_managed_artifacts,
+)
 
 from .helpers import runner
 
@@ -106,6 +111,41 @@ def test_ci_audit_exact_installation_exits_zero(tmp_path: Path, monkeypatch):
     result = runner.invoke(app, ["ci", "audit", "--repository", "Guardantix/doc-lattice"])
     assert result.exit_code == 0
     assert result.stdout == "doc-lattice ci audit: ok\n"
+
+
+@pytest.mark.parametrize(
+    "running_version",
+    ["2.1.0.dev1", "2.1.0rc1", "2.0.0+local"],
+)
+def test_ci_audit_nonfinal_running_version_reports_stale_without_generation(
+    tmp_path: Path,
+    monkeypatch,
+    running_version: str,
+):
+    _install(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ci_module, "__version__", running_version)
+
+    def fail_generation(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("ci audit must not generate artifacts from the running version")
+
+    monkeypatch.setattr(ci_module, "render_managed_artifacts", fail_generation)
+
+    result = runner.invoke(
+        app,
+        ["ci", "audit", "--repository", "Guardantix/doc-lattice"],
+    )
+
+    assert result.exit_code == 1
+    assert result.stderr == ""
+    assert _audit_finding_keys(result.stdout) == frozenset(
+        {
+            (_OFFLINE_WORKFLOW, "STALE_GENERATOR"),
+            (_LINEAR_WORKFLOW, "STALE_GENERATOR"),
+            (_BOOTSTRAP_SCRIPT, "STALE_GENERATOR"),
+        }
+    )
+    assert "MANAGED_" not in result.stdout
 
 
 def test_ci_audit_policy_finding_exits_one(tmp_path: Path, monkeypatch):
@@ -618,6 +658,36 @@ def test_ci_refresh_current_installation_exits_zero(tmp_path: Path, monkeypatch)
     result = runner.invoke(app, ["ci", "refresh", "--repository", "Guardantix/doc-lattice"])
     assert result.exit_code == 0
     assert result.stdout == "doc-lattice ci refresh: current\n"
+
+
+@pytest.mark.parametrize(
+    "running_version",
+    ["2.1.0.dev1", "2.1.0rc1", "2.0.0+local"],
+)
+def test_ci_refresh_still_rejects_nonfinal_running_version(
+    tmp_path: Path,
+    monkeypatch,
+    running_version: str,
+):
+    _install(tmp_path)
+    before = {
+        target.relative_path: (tmp_path / target.relative_path).read_bytes()
+        for target in CANONICAL_ARTIFACT_TARGETS
+    }
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ci_module, "__version__", running_version)
+
+    result = runner.invoke(
+        app,
+        ["ci", "refresh", "--repository", "Guardantix/doc-lattice"],
+    )
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert "must be a final release version" in result.stderr
+    assert all(
+        (tmp_path / relative_path).read_bytes() == data for relative_path, data in before.items()
+    )
 
 
 def test_ci_refresh_previews_stale_managed_artifacts_without_writing(tmp_path: Path, monkeypatch):

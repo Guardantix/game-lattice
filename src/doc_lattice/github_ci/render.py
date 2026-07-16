@@ -4,11 +4,17 @@ import re
 from pathlib import PurePosixPath
 
 from .identity import parse_repository, validate_final_release_version
-from .model import ArtifactRole, ManagedArtifact
+from .model import ArtifactRole, ManagedArtifact, ManagedArtifactTarget
 
 OFFLINE_WORKFLOW_PATH = PurePosixPath(".github/workflows/doc-lattice.yml")
 LINEAR_WORKFLOW_PATH = PurePosixPath(".github/workflows/doc-lattice-linear.yml")
 BOOTSTRAP_PATH = PurePosixPath(".github/doc-lattice-bootstrap.sh")
+
+CANONICAL_ARTIFACT_TARGETS = (
+    ManagedArtifactTarget("offline", OFFLINE_WORKFLOW_PATH),
+    ManagedArtifactTarget("linear", LINEAR_WORKFLOW_PATH),
+    ManagedArtifactTarget("bootstrap", BOOTSTRAP_PATH),
+)
 
 CHECKOUT_REF = "34e114876b0b11c390a56381ad16ebd13914f8d5"  # pragma: allowlist secret
 SETUP_UV_REF = "d0cc045d04ccac9d8b7881df0226f9e82c39688e"  # pragma: allowlist secret
