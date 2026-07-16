@@ -1,7 +1,10 @@
 """Typer adapter for project scaffold initialization."""
 
+from __future__ import annotations
+
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 from rich.markup import escape
@@ -15,6 +18,29 @@ from ...scaffold import build_scaffold
 from ...text_utils import strip_control_chars
 from ..errors import exit_on_project_error
 from ..runtime import get_runtime
+
+if TYPE_CHECKING:
+    from ...github_ci.model import ArtifactChange
+
+
+@dataclass(frozen=True, slots=True)
+class _GithubInitPlan:
+    """Preflighted inputs for explicit managed GitHub artifact creation."""
+
+    repository: str
+    artifact_paths: tuple[str, str, str]
+    changes: tuple[ArtifactChange, ...]
+
+
+def _validate_github_options(github: bool, repository: str | None) -> str | None:
+    """Validate explicit GitHub option pairing and return the required identity."""
+    if github:
+        if repository is None:
+            raise ConfigError("--repository is required with --github")
+        return repository
+    if repository is not None:
+        raise ConfigError("--repository requires --github")
+    return None
 
 
 def _validate_init_flags(docs_roots: tuple[str, ...], linear_team: str | None) -> None:
@@ -41,6 +67,31 @@ def _validate_init_flags(docs_roots: tuple[str, ...], linear_team: str | None) -
         raise ConfigError(msg)
 
 
+def _prepare_github_init(root: Path, repository: str) -> _GithubInitPlan:
+    """Validate and preflight explicit GitHub artifact initialization."""
+    from ...github_ci.filesystem import preflight_create  # noqa: PLC0415
+    from ...github_ci.identity import (  # noqa: PLC0415
+        parse_repository,
+        validate_final_release_version,
+    )
+    from ...github_ci.render import render_managed_artifacts  # noqa: PLC0415
+
+    identity = parse_repository(repository)
+    validate_final_release_version(__version__)
+    artifacts = render_managed_artifacts(identity.display, __version__)
+    changes = preflight_create(root, artifacts)
+    artifact_paths = (
+        artifacts[0].relative_path.as_posix(),
+        artifacts[1].relative_path.as_posix(),
+        artifacts[2].relative_path.as_posix(),
+    )
+    return _GithubInitPlan(
+        repository=identity.display,
+        artifact_paths=artifact_paths,
+        changes=tuple(change for change in changes if change.action == "create"),
+    )
+
+
 def register_init(app: typer.Typer) -> None:
     """Register the ``init`` command on an application.
 
@@ -62,12 +113,30 @@ def register_init(app: typer.Typer) -> None:
                 help="Linear team key (uppercase, for example ENG) to bake into the config.",
             ),
         ] = None,
+        github: Annotated[
+            bool,
+            typer.Option(
+                "--github",
+                help="Create managed GitHub Actions and bootstrap artifacts.",
+            ),
+        ] = False,
+        repository: Annotated[
+            str | None,
+            typer.Option(
+                "--repository",
+                help="Exact GitHub OWNER/REPO for generated guards.",
+            ),
+        ] = None,
     ) -> None:
         """Scaffold .doc-lattice.yml and print ignore, pre-commit, and CI guidance."""
         runtime = get_runtime(ctx)
         with exit_on_project_error(runtime):
+            github_repository = _validate_github_options(github, repository)
             roots = tuple(docs_root) if docs_root else ("docs",)
             _validate_init_flags(roots, linear_team)
+            github_plan = None
+            if github_repository is not None:
+                github_plan = _prepare_github_init(runtime.cwd, github_repository)
             scaffold = build_scaffold(roots, linear_team, __version__)
             target = runtime.cwd / DEFAULT_CONFIG_NAME
             try:
@@ -91,17 +160,33 @@ def register_init(app: typer.Typer) -> None:
                 raise error from exc
             else:
                 runtime.stderr.print(f"wrote {escape(target.name)}")
+            if github_plan is not None:
+                from ...github_ci.filesystem import apply_changes  # noqa: PLC0415
+
+                apply_changes(github_plan.changes)
             runtime.write_stdout("# ===== .gitignore (append these lines) =====")
             runtime.write_stdout(scaffold.gitignore_text)
             runtime.write_stdout("# ===== .pre-commit-config.yaml (add under `repos:`) =====")
             runtime.write_stdout(scaffold.precommit_text)
-            runtime.write_stdout("# ===== .github/workflows/doc-lattice.yml (new file) =====")
-            runtime.write_stdout(scaffold.ci_text)
-            runtime.stderr.print(
-                "Append the .gitignore block, add the pre-commit block under `repos:`, "
-                "save the workflow as "
-                ".github/workflows/doc-lattice.yml, and make sure the "
-                f"exact pinned version {__version__} is published on PyPI so the "
-                "snippets resolve."
-            )
+            if github_plan is None:
+                runtime.write_stdout("# ===== .github/workflows/doc-lattice.yml (new file) =====")
+                runtime.write_stdout(scaffold.ci_text)
+                runtime.stderr.print(
+                    "Append the .gitignore block, add the pre-commit block under `repos:`, "
+                    "save the workflow as "
+                    ".github/workflows/doc-lattice.yml, and make sure the "
+                    f"exact pinned version {__version__} is published on PyPI so the "
+                    "snippets resolve."
+                )
+            else:
+                offline_path, linear_path, bootstrap_path = github_plan.artifact_paths
+                runtime.stderr.print(
+                    "Append the .gitignore block and add the pre-commit block under `repos:`. "
+                    f"Review {escape(offline_path)}, {escape(linear_path)}, and "
+                    f"{escape(bootstrap_path)} before enabling or running them."
+                )
+                runtime.stderr.print(
+                    f"bash .github/doc-lattice-bootstrap.sh plan {escape(github_plan.repository)}",
+                    soft_wrap=True,
+                )
         raise typer.Exit(0)
