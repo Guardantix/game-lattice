@@ -93,7 +93,10 @@ EXIT_FINDING=1
 EXIT_TOOL_ERROR=2
 
 die() { printf 'error: %s\n' "$1" >&2; exit "$EXIT_TOOL_ERROR"; }
-lower_ascii() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+lower_ascii() {
+  printf '%s' "$1" | LC_ALL=C tr \
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz'
+}
 api() { gh api --hostname github.com "$@"; }
 confirm_repository() {
   [ -t 0 ] || die "apply requires an interactive TTY on stdin"
@@ -102,12 +105,16 @@ confirm_repository() {
   [ "$answer" = "$CANONICAL_REPOSITORY" ] || die "repository confirmation did not match"
 }
 
-sort_lines() {
-  if [ -n "$1" ]; then
-    printf '%s\n' "$1" | LC_ALL=C sort
-  else
-    printf ''
+REINSPECTING=0
+inspection_die() {
+  if [ "$REINSPECTING" -eq 1 ]; then
+    die "$1; run a fresh plan then apply"
   fi
+  die "$1"
+}
+
+sort_lines() {
+  printf '%s\n' "$1" | LC_ALL=C sort
 }
 
 contains_line() {
@@ -120,23 +127,23 @@ EOF
   return 1
 }
 
-fingerprint_value() { printf '%s:%s' "${#1}" "$1"; }
+append_fingerprint() { STATE_FINGERPRINT="${STATE_FINGERPRINT}${#1}:$1"; }
 
 load_repository() {
   repository_fields=$(api "repos/$REQUESTED_REPOSITORY" --jq \
     '[.full_name, .default_branch, .visibility, .owner.type] | @tsv') || \
-    die "repository metadata inspection failed"
-  IFS="$(printf '\t')" read -r CANONICAL_REPOSITORY DEFAULT_BRANCH VISIBILITY OWNER_TYPE <<EOF
+    inspection_die "repository metadata inspection failed"
+  IFS=$'\t' read -r CANONICAL_REPOSITORY DEFAULT_BRANCH VISIBILITY OWNER_TYPE <<EOF
 $repository_fields
 EOF
   [ -n "$CANONICAL_REPOSITORY" ] && [ -n "$DEFAULT_BRANCH" ] && \
     [ -n "$VISIBILITY" ] && [ -n "$OWNER_TYPE" ] || \
-    die "repository metadata was incomplete"
+    inspection_die "repository metadata was incomplete"
   printf 'canonical repository: %s\n' "$CANONICAL_REPOSITORY"
   [ "$CANONICAL_REPOSITORY" = "$EXPECTED_REPOSITORY" ] || \
-    die "canonical repository identity does not match embedded repository; "\
-"run a fresh plan then apply"
-  [ "$DEFAULT_BRANCH" = "main" ] || die "default branch must be exactly main"
+    inspection_die "canonical repository identity does not match embedded repository"
+  [ "$DEFAULT_BRANCH" = "main" ] || \
+    inspection_die "default branch must be exactly main"
   OWNER=${CANONICAL_REPOSITORY%%/*}
   REPOSITORY=${CANONICAL_REPOSITORY#*/}
 }
@@ -148,29 +155,29 @@ check_eligibility() {
       ELIGIBILITY="public repository"
       ;;
     internal:User)
-      die "user-owned internal repositories are not eligible"
+      inspection_die "user-owned internal repositories are not eligible"
       ;;
     private:User)
       PLAN_NAME=$(api "users/$OWNER" --jq '.plan.name') || \
-        die "personal plan metadata is unavailable; eligibility is unverified"
+        inspection_die "personal plan metadata is unavailable; eligibility is unverified"
       [ "$PLAN_NAME" = "pro" ] || \
-        die "personal private repositories require the pro plan"
+        inspection_die "personal private repositories require the pro plan"
       ELIGIBILITY="personal pro plan"
       ;;
     private:Organization|internal:Organization)
       PLAN_NAME=$(api "orgs/$OWNER" --jq '.plan.name') || \
-        die "organization plan metadata is unavailable; eligibility is unverified"
+        inspection_die "organization plan metadata is unavailable; eligibility is unverified"
       case "$PLAN_NAME" in
         team|enterprise|business|business_plus)
           ELIGIBILITY="organization $PLAN_NAME plan"
           ;;
         *)
-          die "organization plan is not recognized as eligible"
+          inspection_die "organization plan is not recognized as eligible"
           ;;
       esac
       ;;
     *)
-      die "repository visibility or owner type is not recognized as eligible"
+      inspection_die "repository visibility or owner type is not recognized as eligible"
       ;;
   esac
   printf 'eligibility: %s\n' "$ELIGIBILITY"
@@ -179,13 +186,15 @@ check_eligibility() {
 load_state() {
   REPOSITORY_SECRET_NAMES=$(api \
     "repos/$OWNER/$REPOSITORY/actions/secrets" --paginate --jq '.secrets[].name') || \
-    die "repository secret-name metadata inspection failed; state is unreliable"
-  REPOSITORY_SECRET_NAMES=$(sort_lines "$REPOSITORY_SECRET_NAMES")
+    inspection_die "repository secret-name metadata inspection failed; state is unreliable"
+  REPOSITORY_SECRET_NAMES=$(sort_lines "$REPOSITORY_SECRET_NAMES") || \
+    inspection_die "repository secret-name normalization failed; state is unreliable"
 
   ENVIRONMENT_NAMES=$(api "repos/$OWNER/$REPOSITORY/environments" --paginate \
     --jq '.environments[].name') || \
-    die "environment metadata inspection failed; state is unreliable"
-  ENVIRONMENT_NAMES=$(sort_lines "$ENVIRONMENT_NAMES")
+    inspection_die "environment metadata inspection failed; state is unreliable"
+  ENVIRONMENT_NAMES=$(sort_lines "$ENVIRONMENT_NAMES") || \
+    inspection_die "environment-name normalization failed; state is unreliable"
 
   ENVIRONMENT_EXISTS=0
   CUSTOM_BRANCH_POLICIES=""
@@ -197,20 +206,22 @@ load_state() {
     environment_fields=$(api "repos/$OWNER/$REPOSITORY/environments/$ENVIRONMENT" --jq \
       '[.deployment_branch_policy.custom_branch_policies, \
 .deployment_branch_policy.protected_branches] | @tsv') || \
-      die "target environment policy inspection failed; state is unreliable"
-    IFS="$(printf '\t')" read -r CUSTOM_BRANCH_POLICIES PROTECTED_BRANCHES <<EOF
+      inspection_die "target environment policy inspection failed; state is unreliable"
+    IFS=$'\t' read -r CUSTOM_BRANCH_POLICIES PROTECTED_BRANCHES <<EOF
 $environment_fields
 EOF
     POLICY_ROWS=$(api \
       "repos/$OWNER/$REPOSITORY/environments/$ENVIRONMENT/deployment-branch-policies" \
       --paginate --jq '.branch_policies[] | [.name, .type] | @tsv') || \
-      die "deployment branch-policy inspection failed; state is unreliable"
-    POLICY_ROWS=$(sort_lines "$POLICY_ROWS")
+      inspection_die "deployment branch-policy inspection failed; state is unreliable"
+    POLICY_ROWS=$(sort_lines "$POLICY_ROWS") || \
+      inspection_die "branch-policy normalization failed; state is unreliable"
     ENVIRONMENT_SECRET_NAMES=$(api \
       "repos/$OWNER/$REPOSITORY/environments/$ENVIRONMENT/secrets" \
       --paginate --jq '.secrets[].name') || \
-      die "environment secret-name metadata inspection failed; state is unreliable"
-    ENVIRONMENT_SECRET_NAMES=$(sort_lines "$ENVIRONMENT_SECRET_NAMES")
+      inspection_die "environment secret-name metadata inspection failed; state is unreliable"
+    ENVIRONMENT_SECRET_NAMES=$(sort_lines "$ENVIRONMENT_SECRET_NAMES") || \
+      inspection_die "environment secret-name normalization failed; state is unreliable"
   fi
 
   ENVIRONMENT_SECRET_PRESENT=0
@@ -226,26 +237,27 @@ EOF
   POLICY_EXACT=0
   SAFE_INCOMPLETE=0
   if [ "$CUSTOM_BRANCH_POLICIES" = "true" ] && [ "$PROTECTED_BRANCHES" = "false" ]; then
-    if [ "$POLICY_ROWS" = "$(printf 'main\tbranch')" ]; then
+    if [ "$POLICY_ROWS" = $'main\tbranch' ]; then
       POLICY_EXACT=1
     elif [ -z "$POLICY_ROWS" ] && [ "$ENVIRONMENT_SECRET_PRESENT" -eq 0 ]; then
       SAFE_INCOMPLETE=1
     fi
   fi
 
-  STATE_FINGERPRINT=$(fingerprint_value "$CANONICAL_REPOSITORY"
-    fingerprint_value "$DEFAULT_BRANCH"
-    fingerprint_value "$VISIBILITY"
-    fingerprint_value "$OWNER_TYPE"
-    fingerprint_value "$PLAN_NAME"
-    fingerprint_value "$ELIGIBILITY"
-    fingerprint_value "$REPOSITORY_SECRET_NAMES"
-    fingerprint_value "$ENVIRONMENT_NAMES"
-    fingerprint_value "$ENVIRONMENT_EXISTS"
-    fingerprint_value "$CUSTOM_BRANCH_POLICIES"
-    fingerprint_value "$PROTECTED_BRANCHES"
-    fingerprint_value "$POLICY_ROWS"
-    fingerprint_value "$ENVIRONMENT_SECRET_NAMES")
+  STATE_FINGERPRINT=""
+  append_fingerprint "$CANONICAL_REPOSITORY"
+  append_fingerprint "$DEFAULT_BRANCH"
+  append_fingerprint "$VISIBILITY"
+  append_fingerprint "$OWNER_TYPE"
+  append_fingerprint "$PLAN_NAME"
+  append_fingerprint "$ELIGIBILITY"
+  append_fingerprint "$REPOSITORY_SECRET_NAMES"
+  append_fingerprint "$ENVIRONMENT_NAMES"
+  append_fingerprint "$ENVIRONMENT_EXISTS"
+  append_fingerprint "$CUSTOM_BRANCH_POLICIES"
+  append_fingerprint "$PROTECTED_BRANCHES"
+  append_fingerprint "$POLICY_ROWS"
+  append_fingerprint "$ENVIRONMENT_SECRET_NAMES"
 }
 
 print_state() {
@@ -342,7 +354,11 @@ case "$OPERATION" in
   plan|apply|verify) ;;
   *) die "operation must be exactly plan, apply, or verify" ;;
 esac
-[ "$(lower_ascii "$REQUESTED_REPOSITORY")" = "$(lower_ascii "$EXPECTED_REPOSITORY")" ] || \
+REQUESTED_COMPARISON_KEY=$(lower_ascii "$REQUESTED_REPOSITORY") || \
+  die "requested repository identity normalization failed"
+EXPECTED_COMPARISON_KEY=$(lower_ascii "$EXPECTED_REPOSITORY") || \
+  die "embedded repository identity normalization failed"
+[ "$REQUESTED_COMPARISON_KEY" = "$EXPECTED_COMPARISON_KEY" ] || \
   die "requested repository does not match embedded repository"
 command -v gh >/dev/null 2>&1 || die "gh is required on PATH"
 gh auth status --hostname github.com >/dev/null 2>&1 || \
@@ -369,9 +385,11 @@ case "$OPERATION" in
     INITIAL_CANONICAL_REPOSITORY=$CANONICAL_REPOSITORY
     INITIAL_STATE_FINGERPRINT=$STATE_FINGERPRINT
     confirm_repository
+    REINSPECTING=1
     load_repository
     check_eligibility
     load_state
+    REINSPECTING=0
     [ "$CANONICAL_REPOSITORY" = "$INITIAL_CANONICAL_REPOSITORY" ] && \
       [ "$STATE_FINGERPRINT" = "$INITIAL_STATE_FINGERPRINT" ] || \
       die "repository state changed during confirmation; run a fresh plan then apply"

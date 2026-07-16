@@ -69,6 +69,8 @@ if arguments == [repo_endpoint, "--jq", os.environ["FAKE_REPOSITORY_JQ"]] or (
     state["repository_reads"] = state.get("repository_reads", 0) + 1
     if state["repository_reads"] == 2 and "canonical_on_reinspection" in state:
         repository["full_name"] = state["canonical_on_reinspection"]
+    if state["repository_reads"] == 2 and "default_branch_on_reinspection" in state:
+        repository["default_branch"] = state["default_branch_on_reinspection"]
     print(
         "\t".join(
             [
@@ -146,6 +148,10 @@ if arguments == [
 ]:
     if environment is None:
         fail("environment missing")
+    if state.get("environment_secret_error_after_mutation", False) and state.get(
+        "mutation_count", 0
+    ):
+        fail("configured post-mutation environment secret inspection failure")
     print("\n".join(environment["secrets"]))
     raise SystemExit(0)
 
@@ -166,6 +172,7 @@ if arguments == [
         "policies": [],
         "secrets": [],
     }
+    state["mutation_count"] = state.get("mutation_count", 0) + 1
     save()
     print("{}")
     raise SystemExit(0)
@@ -184,11 +191,72 @@ if arguments == [
     if environment is None:
         fail("environment missing")
     environment["policies"].append({"name": "main", "type": "branch"})
+    state["mutation_count"] = state.get("mutation_count", 0) + 1
     save()
     print("{}")
     raise SystemExit(0)
 
 fail("unexpected fake gh api argv: " + json.dumps(arguments))
+"""
+
+_FAKE_SORT = r"""#!/usr/bin/env python3
+import os
+import sys
+
+count_path = os.environ["FAKE_SORT_COUNT"]
+try:
+    with open(count_path, encoding="utf-8") as stream:
+        count = int(stream.read()) + 1
+except FileNotFoundError:
+    count = 1
+with open(count_path, "w", encoding="utf-8") as stream:
+    stream.write(str(count))
+
+failures = {
+    int(value)
+    for value in os.environ.get("FAKE_SORT_FAIL_CALLS", "").split(",")
+    if value
+}
+data = sys.stdin.read()
+if count in failures:
+    print(f"configured sort failure on call {count}", file=sys.stderr)
+    raise SystemExit(1)
+if data:
+    sys.stdout.write("\n".join(sorted(data.splitlines())) + "\n")
+"""
+
+_FAKE_TR = r"""#!/usr/bin/env python3
+import os
+import sys
+
+count_path = os.environ["FAKE_TR_COUNT"]
+try:
+    with open(count_path, encoding="utf-8") as stream:
+        count = int(stream.read()) + 1
+except FileNotFoundError:
+    count = 1
+with open(count_path, "w", encoding="utf-8") as stream:
+    stream.write(str(count))
+
+failures = {
+    int(value)
+    for value in os.environ.get("FAKE_TR_FAIL_CALLS", "").split(",")
+    if value
+}
+if count in failures:
+    print(f"configured tr failure on call {count}", file=sys.stderr)
+    raise SystemExit(1)
+
+accepted = [
+    ["[:upper:]", "[:lower:]"],
+    ["ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"],
+]
+if sys.argv[1:] not in accepted:
+    print("unexpected fake tr argv", file=sys.stderr)
+    raise SystemExit(1)
+source = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+target = "abcdefghijklmnopqrstuvwxyz"
+sys.stdout.write(sys.stdin.read().translate(str.maketrans(source, target)))
 """
 
 
@@ -218,13 +286,19 @@ def _state(**overrides):
     return state
 
 
-def _write_fake_gh(tmp_path: Path):
-    """Create a strict metadata-only fake gh executable."""
+def _write_fake_tools(tmp_path: Path):
+    """Create strict metadata-only fake gh and sort executables."""
     bin_path = tmp_path / "bin"
     bin_path.mkdir()
     gh_path = bin_path / "gh"
     gh_path.write_text(_FAKE_GH)
     gh_path.chmod(0o755)
+    sort_path = bin_path / "sort"
+    sort_path.write_text(_FAKE_SORT)
+    sort_path.chmod(0o755)
+    tr_path = bin_path / "tr"
+    tr_path.write_text(_FAKE_TR)
+    tr_path.chmod(0o755)
     return bin_path
 
 
@@ -237,6 +311,8 @@ def _run_bootstrap(  # noqa: PLR0913
     confirmation: str | None = None,
     include_gh: bool = True,
     arguments: list[str] | None = None,
+    sort_fail_calls: tuple[int, ...] = (),
+    tr_fail_calls: tuple[int, ...] = (),
 ):
     """Render and exercise the bootstrap against fake GitHub metadata."""
     tmp_path.mkdir(parents=True, exist_ok=True)
@@ -249,7 +325,7 @@ def _run_bootstrap(  # noqa: PLR0913
     log_path = tmp_path / "gh.jsonl"
     log_path.write_text("")
     if include_gh:
-        bin_path = _write_fake_gh(tmp_path)
+        bin_path = _write_fake_tools(tmp_path)
         path = f"{bin_path}:{os.environ['PATH']}"
     else:
         bin_path = tmp_path / "missing-bin"
@@ -261,6 +337,10 @@ def _run_bootstrap(  # noqa: PLR0913
         "PATH": path,
         "FAKE_GH_STATE": str(state_path),
         "FAKE_GH_LOG": str(log_path),
+        "FAKE_SORT_COUNT": str(tmp_path / "sort-count"),
+        "FAKE_SORT_FAIL_CALLS": ",".join(str(call) for call in sort_fail_calls),
+        "FAKE_TR_COUNT": str(tmp_path / "tr-count"),
+        "FAKE_TR_FAIL_CALLS": ",".join(str(call) for call in tr_fail_calls),
         "FAKE_REPOSITORY_JQ": REPOSITORY_JQ,
         "FAKE_PLAN_JQ": PLAN_JQ,
         "FAKE_REPOSITORY_SECRETS_JQ": REPOSITORY_SECRETS_JQ,
@@ -438,6 +518,24 @@ def test_apply_creates_absent_environment_after_tty_confirmation(tmp_path: Path)
         '--repo "$CANONICAL_REPOSITORY"'
     )
     assert verified < secret_command
+    mutation_indices = [index for index, call in enumerate(calls) if "--method" in call]
+    first_mutation = mutation_indices[0]
+    last_mutation = mutation_indices[-1]
+    repository_inspections = [index for index, call in enumerate(calls) if REPOSITORY_JQ in call]
+    assert len([index for index in repository_inspections if index < first_mutation]) == 2
+    readback_endpoints = [
+        call[3]
+        for call in calls[last_mutation + 1 :]
+        if call[:3] == ["api", "--hostname", "github.com"] and call[3] != "--method"
+    ]
+    assert readback_endpoints == [
+        "repos/Guardantix/doc-lattice/actions/secrets",
+        "repos/Guardantix/doc-lattice/environments",
+        "repos/Guardantix/doc-lattice/environments/doc-lattice-linear",
+        ("repos/Guardantix/doc-lattice/environments/doc-lattice-linear/deployment-branch-policies"),
+        "repos/Guardantix/doc-lattice/environments/doc-lattice-linear/secrets",
+    ]
+    assert all(call[:1] != ["secret"] for call in calls)
 
 
 @pytest.mark.parametrize(
@@ -618,6 +716,50 @@ def test_repository_secret_permission_failure_stops_state_inspection(tmp_path: P
     assert _mutation_calls(calls) == []
 
 
+@pytest.mark.parametrize("operation", ["plan", "verify"])
+@pytest.mark.parametrize("failed_normalization", [1, 2, 3, 4])
+def test_read_only_sort_failure_is_unreliable_state_error(
+    tmp_path: Path,
+    operation: str,
+    failed_normalization: int,
+):
+    """Fail closed when any metadata-name or policy normalization fails."""
+    result, _, calls = _run_bootstrap(
+        tmp_path,
+        _state(repo_secrets=["UNRELATED_NAME"]),
+        operation,
+        sort_fail_calls=(failed_normalization,),
+    )
+
+    assert result.returncode == 2
+    assert "normalization failed" in result.stderr
+    assert "state is unreliable" in result.stderr
+    assert "policy: exact" not in result.stdout
+    assert _mutation_calls(calls) == []
+
+
+def test_apply_sort_failure_cannot_erase_mismatched_environment(tmp_path: Path):
+    """Never turn repeated failed environment normalization into create permission."""
+    mismatched = {
+        "custom": True,
+        "protected": False,
+        "policies": [{"name": "release/*", "type": "branch"}],
+        "secrets": [],
+    }
+    result, final_state, calls = _run_bootstrap(
+        tmp_path,
+        _state(environment=mismatched, repo_secrets=["UNRELATED_NAME"]),
+        "apply",
+        confirmation="Guardantix/doc-lattice",
+        sort_fail_calls=(2, 4),
+    )
+
+    assert result.returncode == 2
+    assert "environment-name normalization failed" in result.stderr
+    assert _mutation_calls(calls) == []
+    assert final_state["environment"] == mismatched
+
+
 def test_exact_apply_rerun_confirms_without_mutation(tmp_path: Path):
     """Require confirmation even when the current observable state is exact."""
     result, _, calls = _run_bootstrap(
@@ -743,6 +885,41 @@ def test_apply_rejects_canonical_change_during_reinspection(tmp_path: Path):
     assert result.returncode == 2
     assert "canonical repository identity" in result.stderr
     assert "fresh plan then apply" in result.stderr
+    assert result.stderr.count("run a fresh plan then apply") == 1
+    assert _mutation_calls(calls) == []
+
+
+def test_apply_default_branch_drift_requests_fresh_plan(tmp_path: Path):
+    """Add fresh-plan guidance to a default-branch failure during reinspection."""
+    result, _, calls = _run_bootstrap(
+        tmp_path,
+        _state(default_branch_on_reinspection="trunk"),
+        "apply",
+        confirmation="Guardantix/doc-lattice",
+    )
+
+    assert result.returncode == 2
+    assert "default branch must be exactly main" in result.stderr
+    assert "run a fresh plan then apply" in result.stderr
+    assert result.stderr.count("run a fresh plan then apply") == 1
+    assert _mutation_calls(calls) == []
+
+
+def test_apply_plan_drift_requests_fresh_plan(tmp_path: Path):
+    """Add fresh-plan guidance to an eligibility failure during reinspection."""
+    state = _state(plan="team", plan_on_reinspection="free")
+    state["repository"] = {**state["repository"], "visibility": "private"}
+    result, _, calls = _run_bootstrap(
+        tmp_path,
+        state,
+        "apply",
+        confirmation="Guardantix/doc-lattice",
+    )
+
+    assert result.returncode == 2
+    assert "organization plan is not recognized as eligible" in result.stderr
+    assert "run a fresh plan then apply" in result.stderr
+    assert result.stderr.count("run a fresh plan then apply") == 1
     assert _mutation_calls(calls) == []
 
 
@@ -894,6 +1071,26 @@ def test_requested_identity_mismatch_fails_before_auth_or_api(tmp_path: Path):
     assert calls == []
 
 
+@pytest.mark.parametrize("repository", ["Guardantix/doc-lattice", "Guardantix/other"])
+@pytest.mark.parametrize("failed_calls", [(1,), (2,), (1, 2)])
+def test_identity_translation_failure_stops_before_auth_or_api(
+    tmp_path: Path,
+    repository: str,
+    failed_calls: tuple[int, ...],
+):
+    """Never treat failed ASCII identity normalization as an equal identity."""
+    result, _, calls = _run_bootstrap(
+        tmp_path,
+        _state(),
+        repository=repository,
+        tr_fail_calls=failed_calls,
+    )
+
+    assert result.returncode == 2
+    assert "repository identity normalization failed" in result.stderr
+    assert calls == []
+
+
 def test_missing_gh_fails_before_api(tmp_path: Path):
     """Require gh on PATH before attempting authentication or API access."""
     result, _, calls = _run_bootstrap(tmp_path, _state(), include_gh=False)
@@ -923,4 +1120,33 @@ def test_secret_set_command_is_printed_but_never_invoked(tmp_path: Path):
     assert result.returncode == 1, result.stderr
     assert "environment policy verified" in result.stdout
     assert "gh secret set DOC_LATTICE_LINEAR_API_KEY" in result.stdout
+    assert all(call[:1] != ["secret"] for call in calls)
+
+
+def test_post_mutation_readback_failure_suppresses_secret_commands(tmp_path: Path):
+    """Print no migration command unless the complete target read-back succeeds."""
+    result, _, calls = _run_bootstrap(
+        tmp_path,
+        _state(environment=None, environment_secret_error_after_mutation=True),
+        "apply",
+        confirmation="Guardantix/doc-lattice",
+    )
+
+    assert result.returncode == 2
+    last_mutation = max(index for index, call in enumerate(calls) if "--method" in call)
+    readback_endpoints = [
+        call[3]
+        for call in calls[last_mutation + 1 :]
+        if call[:3] == ["api", "--hostname", "github.com"] and call[3] != "--method"
+    ]
+    assert readback_endpoints == [
+        "repos/Guardantix/doc-lattice/actions/secrets",
+        "repos/Guardantix/doc-lattice/environments",
+        "repos/Guardantix/doc-lattice/environments/doc-lattice-linear",
+        ("repos/Guardantix/doc-lattice/environments/doc-lattice-linear/deployment-branch-policies"),
+        "repos/Guardantix/doc-lattice/environments/doc-lattice-linear/secrets",
+    ]
+    assert "environment policy verified" not in result.stdout
+    assert "gh secret set" not in result.stdout
+    assert "gh secret delete" not in result.stdout
     assert all(call[:1] != ["secret"] for call in calls)
