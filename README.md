@@ -602,9 +602,9 @@ release is already published or that an unreleased source checkout matches that 
 When `ci audit` omits `--repository`, it resolves the local `origin` only from GitHub.com SCP
 (`git@github.com:OWNER/REPO.git`), `ssh://git@github.com/OWNER/REPO.git`, or
 `https://github.com/OWNER/REPO.git` form, with the `.git` suffix optional. Comparisons are ASCII
-case-insensitive, but the offline audit cannot establish GitHub's canonical display casing.
-Bootstrap `plan` and `verify` read the API `full_name` and require its spelling and case to match the
-generated literal exactly.
+case-insensitive, and the repository segment is limited to GitHub's 100-character maximum. The
+offline audit cannot establish GitHub's canonical display casing. Bootstrap `plan` and `verify`
+read the API `full_name` and require its spelling and case to match the generated literal exactly.
 
 For an existing installation, rotate or obtain a Linear key out of band. After the pre-generation
 workflow replacement described above, set the replacement key only as

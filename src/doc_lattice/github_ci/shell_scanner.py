@@ -579,7 +579,7 @@ class _ShellScanner:
         if character in " \t\r":
             return index + 1
         if character == "#":
-            return self._line_end(index, limit)
+            return self._comment_end(index, limit)
         if character != "\n":
             return None
         self._flush_command(state)
@@ -710,6 +710,9 @@ class _ShellScanner:
                 quoted = True
                 continue
             if character == "\\" and index + 1 < limit:
+                if self.source[index + 1] == "\n":
+                    index += 2
+                    continue
                 characters.append(self.source[index + 1])
                 quoted = True
                 index += 2
@@ -731,28 +734,70 @@ class _ShellScanner:
             body_end = limit
             after_delimiter = limit
             while index <= limit:
-                self.budget.step()
-                line_end = self._line_end(index, limit)
-                candidate = self.source[index:line_end]
-                if heredoc.strip_tabs:
-                    candidate = candidate.lstrip("\t")
-                if candidate == heredoc.delimiter:
-                    body_end = index
-                    after_delimiter = (
+                logical_line_start = index
+                if heredoc.expand:
+                    candidate, index = self._consume_unquoted_heredoc_line(
+                        index,
+                        limit,
+                        heredoc.strip_tabs,
+                    )
+                else:
+                    self.budget.step()
+                    line_end = self._line_end(index, limit)
+                    candidate = self.source[index:line_end]
+                    if heredoc.strip_tabs:
+                        candidate = candidate.lstrip("\t")
+                    index = (
                         line_end + 1
                         if line_end < limit and self.source[line_end] == "\n"
-                        else line_end
+                        else limit + 1
                     )
+                if candidate == heredoc.delimiter:
+                    body_end = logical_line_start
+                    after_delimiter = min(index, limit)
                     break
-                index = (
-                    line_end + 1
-                    if line_end < limit and self.source[line_end] == "\n"
-                    else limit + 1
-                )
             if heredoc.expand:
-                self._scan_heredoc_expansions(body_start, body_end, depth + 1)
+                body = _remove_active_line_continuations(self.source[body_start:body_end])
+                child = _ShellScanner(
+                    body,
+                    budget=self.budget,
+                    invocations=self.invocations,
+                )
+                child._scan_heredoc_expansions(0, len(body), depth + 1)
             index = after_delimiter
         return min(index, limit)
+
+    def _consume_unquoted_heredoc_line(
+        self,
+        start: int,
+        limit: int,
+        strip_tabs: bool,
+    ) -> tuple[str, int]:
+        """Read one logical unquoted-heredoc line after active continuations."""
+        parts: list[str] = []
+        index = start
+        first_physical_line = True
+        while index <= limit:
+            self.budget.step()
+            line_end = self._line_end(index, limit)
+            physical_line = self.source[index:line_end]
+            if first_physical_line and strip_tabs:
+                physical_line = physical_line.lstrip("\t")
+            first_physical_line = False
+
+            backslash_start = len(physical_line)
+            while backslash_start > 0 and physical_line[backslash_start - 1] == "\\":
+                backslash_start -= 1
+            trailing_backslashes = len(physical_line) - backslash_start
+            if line_end < limit and trailing_backslashes % 2 == 1:
+                parts.append(physical_line[:-1])
+                index = line_end + 1
+                continue
+
+            parts.append(physical_line)
+            next_index = line_end + 1 if line_end < limit else limit + 1
+            return "".join(parts), next_index
+        return "".join(parts), limit + 1
 
     def _scan_heredoc_expansions(
         self,
@@ -819,6 +864,9 @@ class _ShellScanner:
                 dynamic = dynamic or fragment_dynamic
                 continue
             if character == "\\":
+                if index + 1 < limit and self.source[index + 1] == "\n":
+                    index += 2
+                    continue
                 if index + 1 < limit:
                     characters.append(self.source[index + 1])
                     index += 2
@@ -855,6 +903,9 @@ class _ShellScanner:
                 return characters, index + 1, dynamic
             if character == "\\" and index + 1 < limit:
                 escaped = self.source[index + 1]
+                if escaped == "\n":
+                    index += 2
+                    continue
                 if escaped in {"$", '"', "\\", "`"}:
                     characters.append(escaped)
                     index += 2
@@ -1082,11 +1133,30 @@ class _ShellScanner:
         line_end = self.source.find("\n", index, limit)
         return limit if line_end == -1 else line_end
 
+    def _comment_end(self, index: int, limit: int) -> int:
+        """Return the end of a comment after active backslash-newline continuations."""
+        while index < limit:
+            self.budget.step()
+            line_end = self._line_end(index, limit)
+            if line_end == limit:
+                return limit
+            backslash_index = line_end
+            while backslash_index > index and self.source[backslash_index - 1] == "\\":
+                backslash_index -= 1
+            if (line_end - backslash_index) % 2 == 0:
+                return line_end
+            index = line_end + 1
+        return limit
+
+
+def _remove_active_line_continuations(source: str) -> str:
+    """Remove unescaped continuations from a context where Bash keeps them active."""
+    return re.sub(r"(?<!\\)((?:\\\\)*)\\\n", r"\1", source)
+
 
 def scan_doc_lattice_invocations(script: str) -> ShellScanResult:
     """Scan literal Bash syntax and explicitly report bounded-scan exhaustion."""
-    normalized = re.sub(r"(?<!\\)((?:\\\\)*)\\\r?\n", r"\1", script)
-    normalized = normalize_newlines(normalized)
+    normalized = normalize_newlines(script)
     if len(normalized) > _MAX_SHELL_SOURCE_CHARS:
         return ShellScanResult((), "source character limit exceeded")
 
@@ -1439,6 +1509,9 @@ def _read_simple_quoted_segment(
             return "".join(characters), index + 1, True
         if quote == '"' and character == "\\" and index + 1 < limit:
             escaped = source[index + 1]
+            if escaped == "\n":
+                index += 2
+                continue
             if escaped in {"$", '"', "\\", "`"}:
                 characters.append(escaped)
                 index += 2

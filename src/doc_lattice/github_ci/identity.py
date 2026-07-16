@@ -7,8 +7,9 @@ from doc_lattice.error_types import ConfigError
 
 from .model import RepositoryIdentity
 
+_MAX_REPOSITORY_NAME_CHARACTERS = 100
 _OWNER_PATTERN = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?"
-_REPOSITORY_PATTERN = r"[A-Za-z0-9_.-]+"
+_REPOSITORY_PATTERN = rf"[A-Za-z0-9_.-]{{1,{_MAX_REPOSITORY_NAME_CHARACTERS}}}"
 _IDENTITY_RE = re.compile(rf"{_OWNER_PATTERN}/{_REPOSITORY_PATTERN}", flags=re.ASCII)
 _SCP_ORIGIN_RE = re.compile(r"git@(?i:github\.com):(?P<identity>.+)", flags=re.ASCII)
 _UNSAFE_ORIGIN_CHARACTER_RE = re.compile(r"[\s\x00-\x1f\x7f]")

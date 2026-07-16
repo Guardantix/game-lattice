@@ -95,6 +95,11 @@ ACCEPTANCE_CASES = [
         'echo "$(\n# doc-lattice linear\ndoc-lattice check\n)"',
         CHECK,
     ),
+    (
+        "continued comment remains a comment",
+        "# harmless \\\ndoc-lattice linear",
+        NONE,
+    ),
     # Legacy backtick substitutions.
     (
         "nested legacy substitution",
@@ -204,6 +209,21 @@ ACCEPTANCE_CASES = [
         NONE,
     ),
     (
+        "unquoted heredoc delimiter word removes continuation",
+        "cat <<E\\\nOF\nharmless\nEOF\ndoc-lattice linear",
+        LINEAR,
+    ),
+    (
+        "double-quoted heredoc delimiter word removes continuation",
+        'cat <<"E\\\nOF"\nharmless\nEOF\ndoc-lattice linear',
+        LINEAR,
+    ),
+    (
+        "single-quoted heredoc delimiter word preserves continuation",
+        "cat <<'E\\\nOF'\nharmless\nEOF\ndoc-lattice linear",
+        NONE,
+    ),
+    (
         "ansi-quoted heredoc suppresses substitution",
         "cat <<$'EOF'\n$(doc-lattice linear)\nEOF",
         NONE,
@@ -249,6 +269,21 @@ ACCEPTANCE_CASES = [
             "doc-lattice lint"
         ),
         LINEAR_LINT,
+    ),
+    (
+        "unquoted heredoc continuation suppresses physical delimiter",
+        "cat <<EOF\nbody \\\nEOF\ndoc-lattice linear",
+        NONE,
+    ),
+    (
+        "unquoted heredoc continuation forms delimiter",
+        "cat <<EOF\nEO\\\nF\ndoc-lattice linear",
+        LINEAR,
+    ),
+    (
+        "unquoted heredoc continuation forms command substitution",
+        "cat <<EOF\n$\\\n(doc-lattice linear)\nEOF",
+        LINEAR,
     ),
     (
         "here-string substitution",
@@ -754,6 +789,13 @@ doc-lattice lint
         ("check", False),
         ("lint", False),
     )
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+def test_direct_doc_lattice_invocations_preserves_quoted_heredoc_continuation(newline):
+    script = f"cat <<'EOF'{newline}body \\{newline}EOF{newline}doc-lattice linear{newline}"
+
+    assert direct_doc_lattice_invocations(script) == LINEAR
 
 
 def test_direct_doc_lattice_invocations_keeps_command_after_here_string():

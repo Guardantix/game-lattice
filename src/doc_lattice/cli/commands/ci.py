@@ -147,6 +147,7 @@ def _resolve_repository(
             [  # noqa: S607 - git is intentionally resolved from the maintainer's PATH
                 "git",
                 "config",
+                "--local",
                 "--get",
                 "remote.origin.url",
             ],

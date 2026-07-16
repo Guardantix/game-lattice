@@ -97,6 +97,24 @@ jobs:
     assert _finding_codes(audit_global_workflows((document,))) == {expected_code}
 
 
+def test_global_audit_rejects_linear_after_quoted_heredoc_continuation():
+    script = "cat <<'EOF'\nbody \\\nEOF\ndoc-lattice linear"
+    indented_script = script.replace("\n", "\n          ")
+    document = _workflow(
+        f"""\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          {indented_script}
+"""
+    )
+
+    assert _finding_codes(audit_global_workflows((document,))) == {"PR_LINEAR_INVOCATION"}
+
+
 def test_global_audit_fails_closed_at_shell_invocation_limit():
     script = "\n".join([*(["doc-lattice check"] * 10_000), "doc-lattice linear"])
     assert len(script.encode()) < MAX_WORKFLOW_BYTES

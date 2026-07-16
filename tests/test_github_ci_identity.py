@@ -28,6 +28,15 @@ def test_parse_repository_accepts_ascii_github_identity(value):
     assert identity.comparison_key == value.lower()
 
 
+def test_parse_repository_accepts_maximum_length_repository_name():
+    value = f"owner/{'r' * 100}"
+
+    identity = parse_repository(value)
+
+    assert identity.display == value
+    assert identity.comparison_key == value
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -114,6 +123,7 @@ def test_parse_origin_repository_traceback_hides_malformed_port_origin():
         "owner-/repo",
         "owner/.",
         "owner/..",
+        f"owner/{'r' * 101}",
     ],
 )
 def test_parse_repository_rejects_invalid_identity(value):
@@ -144,6 +154,7 @@ def test_parse_repository_rejects_invalid_identity(value):
         "ssh://git@github.com/Guardantix/",
         "git@github.com:Guardantix/",
         "git@github.com://Guardantix/doc-lattice.git",
+        f"https://github.com/owner/{'r' * 101}.git",
     ],
 )
 def test_parse_origin_repository_rejects_unsupported_urls(url):

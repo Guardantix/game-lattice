@@ -217,11 +217,34 @@ def test_ci_audit_omitted_repository_resolves_supported_origin(
     assert result.stdout == "doc-lattice ci audit: ok\n"
     assert calls == [
         (
-            ["git", "config", "--get", "remote.origin.url"],
+            ["git", "config", "--local", "--get", "remote.origin.url"],
             tmp_path,
             5,
         )
     ]
+
+
+def test_ci_audit_omitted_repository_ignores_global_origin(tmp_path: Path, monkeypatch):
+    subprocess.run(
+        ["git", "init", "--quiet"],  # noqa: S607 - test requires the local git executable
+        cwd=tmp_path,
+        check=True,
+    )
+    global_config = tmp_path / "global.gitconfig"
+    global_config.write_text(
+        '[remote "origin"]\n\turl = https://github.com/unrelated/global-origin.git\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["ci", "audit"])
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert "cannot resolve repository from git origin" in result.stderr
+    assert "CONFIG_ERROR" in result.stderr
 
 
 @pytest.mark.parametrize(
