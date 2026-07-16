@@ -15,9 +15,8 @@ from doc_lattice.github_ci.render import (
     render_workflows,
 )
 
-_SECRET_CONTEXT_RE = re.compile(
-    r"\bsecrets\s*(?:\.\s*[A-Za-z_][A-Za-z0-9_]*|\[\s*([\"'])[^\"']+\1\s*\])"
-)
+_GITHUB_EXPRESSION_RE = re.compile(r"\$\{\{(?P<body>.*?)\}\}", flags=re.DOTALL)
+_SECRETS_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])secrets(?![A-Za-z0-9_])")
 
 
 def _load_workflow(text):
@@ -28,7 +27,8 @@ def _load_workflow(text):
 def _collect_secret_context_scalars(value, path=()):
     """Yield paths and string values that dereference the GitHub secrets context."""
     if isinstance(value, str):
-        if _SECRET_CONTEXT_RE.search(value) is not None:
+        expressions = _GITHUB_EXPRESSION_RE.finditer(value)
+        if any(_SECRETS_TOKEN_RE.search(match["body"]) is not None for match in expressions):
             yield path, value
     elif isinstance(value, Mapping):
         for key, nested in value.items():
@@ -45,13 +45,19 @@ def test_collect_secret_context_scalars_detects_dereference_variants():
             "${{ secrets['BRACKET_NAME'] }}",
             {"spaced": "${{ secrets [ 'SPACED_NAME' ] }}"},
         ],
-        "ordinary": ["secrets stay private", "${{ notsecrets.NAME }}"],
+        "function": "${{ toJSON(secrets) }}",
+        "dynamic": "${{ secrets[env.SECRET_NAME] }}",
+        "multiline": "${{\n  secrets\n}}",
+        "ordinary": ["secrets.NAME is prose", "${{ notsecrets.NAME }}"],
     }
 
     assert list(_collect_secret_context_scalars(document)) == [
         (("dot",), "${{ secrets . DOT_NAME }}"),
         (("items", "0"), "${{ secrets['BRACKET_NAME'] }}"),
         (("items", "1", "spaced"), "${{ secrets [ 'SPACED_NAME' ] }}"),
+        (("function",), "${{ toJSON(secrets) }}"),
+        (("dynamic",), "${{ secrets[env.SECRET_NAME] }}"),
+        (("multiline",), "${{\n  secrets\n}}"),
     ]
 
 
