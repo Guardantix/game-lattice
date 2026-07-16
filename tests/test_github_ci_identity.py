@@ -72,6 +72,10 @@ def test_parse_repository_rejects_invalid_identity(value):
         "https://github.com/Guardantix/doc-lattice/extra",
         "https://github.com/Guardantix/doc-lattice.git?ref=main",
         "https://github.com/Guardantix/doc-lattice.git#fragment",
+        "https://github.com/Guardantix/doc-lattice.git?",
+        "https://github.com/Guardantix/doc-lattice.git#",
+        "ssh://git@github.com/Guardantix/doc-lattice.git?",
+        "ssh://git@github.com/Guardantix/doc-lattice.git#",
     ],
 )
 def test_parse_origin_repository_rejects_unsupported_urls(url):

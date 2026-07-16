@@ -53,6 +53,9 @@ def parse_origin_repository(url: str) -> RepositoryIdentity:
     Raises:
         ConfigError: If the URL is not one of the supported exact GitHub.com forms.
     """
+    if "?" in url or "#" in url:
+        raise ConfigError(_origin_error(url))
+
     scp_match = _SCP_ORIGIN_RE.fullmatch(url)
     if scp_match is not None:
         return parse_repository(_strip_git_suffix(scp_match.group("identity")))
@@ -64,8 +67,6 @@ def parse_origin_repository(url: str) -> RepositoryIdentity:
     except ValueError as exc:
         raise ConfigError(_origin_error(url)) from exc
 
-    if parsed.query or parsed.fragment:
-        raise ConfigError(_origin_error(url))
     if hostname is None or hostname.lower() != "github.com":
         raise ConfigError(_origin_error(url))
     if port is not None or ":" in parsed.netloc.rsplit("@", 1)[-1]:
