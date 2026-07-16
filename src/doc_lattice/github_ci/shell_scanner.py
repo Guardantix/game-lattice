@@ -631,6 +631,8 @@ class _ShellScanner:
         state: _CommandScanState,
         depth: int,
     ) -> int | None:
+        if self.source.startswith("\\\n", index):
+            return index + 2
         character = self.source[index]
         if character in " \t\r":
             return index + 1

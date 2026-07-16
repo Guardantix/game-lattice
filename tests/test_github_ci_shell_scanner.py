@@ -515,6 +515,21 @@ def test_direct_doc_lattice_invocations_handles_shell_prefixes_and_boundaries(sc
     assert direct_doc_lattice_invocations(script) == expected
 
 
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("doc-lattice \\\n  linear", LINEAR),
+        ("doc-lattice \\\n  reconcile --all", RECONCILE),
+    ],
+    ids=["linear", "mutating-reconcile"],
+)
+def test_direct_doc_lattice_invocations_handles_indented_command_continuations(
+    script,
+    expected,
+):
+    assert direct_doc_lattice_invocations(script) == expected
+
+
 @pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
 def test_direct_doc_lattice_invocations_does_not_continue_after_escaped_backslash(newline):
     script = "doc-lattice rec" + "\\\\" + newline + "oncile --dry-run"

@@ -116,6 +116,31 @@ jobs:
 
 
 @pytest.mark.parametrize(
+    ("script", "expected_code"),
+    [
+        ("doc-lattice \\\n  linear", "PR_LINEAR_INVOCATION"),
+        ("doc-lattice \\\n  reconcile --all", "PR_MUTATING_RECONCILE"),
+    ],
+    ids=["linear", "mutating-reconcile"],
+)
+def test_global_audit_rejects_indented_command_continuations(script, expected_code):
+    indented_script = script.replace("\n", "\n          ")
+    document = _workflow(
+        f"""\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          {indented_script}
+"""
+    )
+
+    assert _finding_codes(audit_global_workflows((document,))) == {expected_code}
+
+
+@pytest.mark.parametrize(
     "script",
     [
         # A trailing backslash in a comment does not continue it, so the next line still runs.
