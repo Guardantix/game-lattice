@@ -92,6 +92,24 @@ def test_direct_doc_lattice_invocations_handles_shell_prefixes_and_boundaries(sc
 
 
 @pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("PATH+=:/tools doc-lattice linear --exit-code", (("linear", False),)),
+        (
+            "FLAGS+=x uv run doc-lattice reconcile --all",
+            (("reconcile", False),),
+        ),
+        (
+            "FLAGS+=x uv run doc-lattice reconcile --all --dry-run",
+            (("reconcile", True),),
+        ),
+    ],
+)
+def test_direct_doc_lattice_invocations_handles_bash_append_assignments(script, expected):
+    assert direct_doc_lattice_invocations(script) == expected
+
+
+@pytest.mark.parametrize(
     "script",
     [
         "other-doc-lattice linear",
@@ -100,6 +118,8 @@ def test_direct_doc_lattice_invocations_handles_shell_prefixes_and_boundaries(sc
         "echo doc-lattice linear",
         "printf doc-lattice reconcile",
         "runner doc-lattice linear",
+        "+=x doc-lattice linear",
+        "FLAGS++=x doc-lattice linear",
     ],
 )
 def test_direct_doc_lattice_invocations_ignores_indirect_or_similarly_named_commands(script):
@@ -366,6 +386,30 @@ def test_discover_workflows_returns_normal_absent_directory_state(tmp_path: Path
 
     assert discovery == WorkflowDiscovery(directory_exists=False, documents=())
     assert not (tmp_path / ".github").exists()
+
+
+@pytest.mark.parametrize("kind", ["external", "internal", "broken"])
+def test_discover_workflows_rejects_symlinked_github_parent_when_workflows_absent(
+    tmp_path: Path,
+    kind: str,
+):
+    root = tmp_path / "root"
+    root.mkdir()
+    if kind == "external":
+        target = tmp_path / "outside"
+        target.mkdir()
+    elif kind == "internal":
+        target = root / "internal"
+        target.mkdir()
+    else:
+        target = root / "missing"
+    (root / ".github").symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(ConfigError) as caught:
+        discover_workflows(root)
+
+    assert ".github/workflows" in str(caught.value)
+    assert str(tmp_path) not in str(caught.value)
 
 
 def test_discover_workflows_reads_direct_yaml_files_in_stable_relative_order(

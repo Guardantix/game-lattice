@@ -41,7 +41,11 @@ _UV_RUN_OPTIONS_WITH_ARGUMENTS = frozenset(
         "--with-editable",
     }
 )
-_SHELL_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
+_SHELL_ASSIGNMENT_RE = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*(?:\+=|=).*",
+    re.DOTALL,
+)
+_ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
 _SECRET_NAME_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?:LINEAR_API_KEY|DOC_LATTICE_LINEAR_API_KEY)(?![A-Za-z0-9_])"
 )
@@ -321,7 +325,7 @@ def _skip_env_prefix(command: list[str], start: int) -> int:
     index = start
     while index < len(command):
         word = command[index]
-        if _SHELL_ASSIGNMENT_RE.fullmatch(word):
+        if _ENV_ASSIGNMENT_RE.fullmatch(word):
             index += 1
         elif word in {"-u", "--unset", "-C", "--chdir"}:
             index += 2

@@ -59,9 +59,24 @@ def discover_workflows(root: Path) -> WorkflowDiscovery:
     """
     logical_directory = root / _WORKFLOWS_DIRECTORY
     display_directory = _WORKFLOWS_DIRECTORY.as_posix()
+    if not _workflow_parent_exists(root, display_directory):
+        _resolve_repository_path(
+            logical_directory,
+            root,
+            display_directory,
+            "GitHub workflow directory",
+        )
+        return WorkflowDiscovery(directory_exists=False, documents=())
     try:
         directory_stat = logical_directory.stat(follow_symlinks=False)
     except FileNotFoundError:
+        _resolve_repository_path(
+            logical_directory,
+            root,
+            display_directory,
+            "GitHub workflow directory",
+        )
+        _workflow_parent_exists(root, display_directory)
         return WorkflowDiscovery(directory_exists=False, documents=())
     except OSError as exc:
         raise _filesystem_error(
@@ -314,6 +329,25 @@ def _read_workflow(root: Path, name: str) -> WorkflowDocument:
     except UnicodeDecodeError as exc:
         raise ConfigError(f"UTF-8 text is required for GitHub workflow {display_path}") from exc
     return parse_workflow(Path(display_path), text)
+
+
+def _workflow_parent_exists(root: Path, display_path: str) -> bool:
+    """Validate the real ``.github`` parent before classifying workflows as absent."""
+    logical_parent = root / _WORKFLOWS_DIRECTORY.parent
+    try:
+        parent_stat = logical_parent.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise _filesystem_error(
+            f"cannot inspect GitHub workflow parent for {display_path}",
+            exc,
+        ) from exc
+    if stat.S_ISLNK(parent_stat.st_mode):
+        raise ConfigError(f"symlink is not allowed in GitHub workflow path {display_path}")
+    if not stat.S_ISDIR(parent_stat.st_mode):
+        raise ConfigError(f"GitHub workflow parent must be a real directory: {display_path}")
+    return True
 
 
 def _resolve_repository_path(
