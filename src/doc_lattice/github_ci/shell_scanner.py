@@ -200,6 +200,8 @@ _UV_LAUNCHER_FLAGS = frozenset(
 _DOC_LATTICE_ROOT_OPTIONS = frozenset({"--no-color"})
 # --help and --version are eager Typer options that exit before any subcommand runs.
 _DOC_LATTICE_NON_COMMAND_ROOT_OPTIONS = frozenset({"--version", "--help"})
+_RECONCILE_OPTIONS_WITH_ARGUMENTS = frozenset({"--config", "--format", "--ref"})
+_RECONCILE_FLAGS = frozenset({"--all", "--dry-run", "--recover"})
 
 
 def _short_options(options: frozenset[str]) -> tuple[str, ...]:
@@ -1206,11 +1208,47 @@ def _invocation_in_simple_command(words: list[_ShellWord]) -> _Invocation | None
     subcommand = words[subcommand_index]
     if subcommand.dynamic or not subcommand.literal:
         return None
-    arguments = words[subcommand_index:]
-    has_dry_run = any(
-        not argument.dynamic and argument.literal == "--dry-run" for argument in arguments
-    )
+    arguments = words[subcommand_index + 1 :]
+    if subcommand.literal == "reconcile":
+        has_dry_run = _reconcile_has_effective_dry_run(arguments)
+    else:
+        has_dry_run = any(
+            not argument.dynamic and argument.literal == "--dry-run" for argument in arguments
+        )
     return subcommand.literal, has_dry_run
+
+
+def _reconcile_has_effective_dry_run(arguments: list[_ShellWord]) -> bool:
+    """Return whether Typer will parse a literal reconcile ``--dry-run`` option.
+
+    Known value-taking options consume their next word even when it looks like another option.
+    A dynamic or unknown word before ``--dry-run`` could itself become a value-taking option at
+    runtime, so the scanner conservatively refuses to classify the invocation as read-only.
+    """
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        literal = argument.literal
+        option_name, separator, _value = literal.partition("=")
+        if separator and option_name in _RECONCILE_OPTIONS_WITH_ARGUMENTS:
+            index += 1
+            continue
+        if argument.dynamic:
+            return False
+        if literal == "--dry-run":
+            return True
+        if literal == "--":
+            return False
+        if literal in _RECONCILE_OPTIONS_WITH_ARGUMENTS:
+            index += 2
+            continue
+        if literal in _RECONCILE_FLAGS:
+            index += 1
+            continue
+        if literal.startswith("-"):
+            return False
+        index += 1
+    return False
 
 
 def _skip_shell_prefixes(words: list[_ShellWord], start: int) -> int:

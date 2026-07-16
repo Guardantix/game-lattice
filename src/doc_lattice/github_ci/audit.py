@@ -67,11 +67,9 @@ _COMMAND_BEHAVIOR_FIELDS = frozenset(
         "timeout-minutes",
     }
 )
-_ROOT_ENV_PATH_LENGTH = 2
 _JOB_FIELD_PATH_LENGTH = 3
 _JOB_ENV_PATH_LENGTH = 4
 _STEP_FIELD_PATH_LENGTH = 5
-_STEP_ENV_PATH_LENGTH = 6
 _MANAGED_MESSAGES = {
     "MANAGED_TRIGGERS": "managed workflow triggers differ from the canonical installation",
     "MANAGED_PERMISSIONS": "managed workflow permissions differ from the canonical installation",
@@ -637,26 +635,11 @@ def _has_linear_secret_reference(document: WorkflowDocument) -> bool:
             return True
 
     for entry in document.structure:
-        if not _is_environment_key_path(entry.path):
-            continue
         if entry.path == exempt_path and entry.value == _CANONICAL_LINEAR_ENV_VALUE:
             continue
-        if entry.path[-1].casefold() in _SECRET_NAMES_CASEFOLDED:
+        if entry.path and entry.path[-1].casefold() in _SECRET_NAMES_CASEFOLDED:
             return True
     return False
-
-
-def _is_environment_key_path(path: tuple[str, ...]) -> bool:
-    return (
-        (len(path) == _ROOT_ENV_PATH_LENGTH and path[0] == "env")
-        or (len(path) == _JOB_ENV_PATH_LENGTH and path[0] == "jobs" and path[2] == "env")
-        or (
-            len(path) == _STEP_ENV_PATH_LENGTH
-            and path[0] == "jobs"
-            and path[2] == "steps"
-            and path[4] == "env"
-        )
-    )
 
 
 def _canonical_linear_secret_path(document: WorkflowDocument) -> tuple[str, ...] | None:

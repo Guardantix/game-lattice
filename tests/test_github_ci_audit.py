@@ -234,6 +234,21 @@ jobs:
     assert audit_global_workflows((document,)) == ()
 
 
+def test_global_audit_rejects_dry_run_token_consumed_as_reconcile_config_value():
+    document = _workflow(
+        """\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: doc-lattice reconcile pc-design --config --dry-run
+"""
+    )
+
+    assert _finding_codes(audit_global_workflows((document,))) == {"PR_MUTATING_RECONCILE"}
+
+
 def test_global_audit_does_not_apply_pr_command_rules_to_workflow_run():
     document = _workflow(
         """\
@@ -311,6 +326,37 @@ jobs:
 
     assert _finding_codes(audit_global_workflows((job_env,))) == {"LINEAR_SECRET_REFERENCE"}
     assert _finding_codes(audit_global_workflows((step_env,))) == {"LINEAR_SECRET_REFERENCE"}
+
+
+@pytest.mark.parametrize(
+    "workflow",
+    [
+        """\
+on:
+  workflow_call:
+    secrets:
+      LINEAR_API_KEY:
+        required: true
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+""",
+        """\
+on: push
+jobs:
+  reusable:
+    uses: owner/repository/.github/workflows/reusable.yml@main
+    secrets:
+      DOC_LATTICE_LINEAR_API_KEY: ordinary
+""",
+    ],
+)
+def test_global_audit_detects_reusable_workflow_secret_mapping_keys(workflow: str):
+    document = _workflow(workflow)
+
+    assert _finding_codes(audit_global_workflows((document,))) == {"LINEAR_SECRET_REFERENCE"}
 
 
 def test_global_audit_allows_only_the_exact_canonical_linear_secret_slot():

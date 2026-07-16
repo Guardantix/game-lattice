@@ -272,7 +272,7 @@ EOF
   if [ "$CUSTOM_BRANCH_POLICIES" = "true" ] && [ "$PROTECTED_BRANCHES" = "false" ]; then
     if [ "$POLICY_ROWS" = $'main\tbranch' ]; then
       POLICY_EXACT=1
-    elif [ -z "$POLICY_ROWS" ] && [ "$ENVIRONMENT_SECRET_PRESENT" -eq 0 ]; then
+    elif [ -z "$POLICY_ROWS" ] && [ -z "$ENVIRONMENT_SECRET_NAMES" ]; then
       SAFE_INCOMPLETE=1
     fi
   fi

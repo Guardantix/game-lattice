@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from io import StringIO
@@ -160,6 +161,25 @@ def test_ci_audit_policy_finding_exits_one(tmp_path: Path, monkeypatch):
         ".github/workflows/unsafe.yml: PULL_REQUEST_TARGET: "
         "pull_request_target is prohibited for repository workflows\n"
     )
+
+
+def test_ci_audit_escapes_control_characters_in_finding_paths(tmp_path: Path, monkeypatch):
+    _install(tmp_path)
+    relative_path = ".github/workflows/evil\nFAKE: OK\x1b.yml"
+    unsafe = tmp_path / relative_path
+    unsafe.write_text("on: pull_request_target\njobs: {}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["ci", "audit", "--repository", "Guardantix/doc-lattice"])
+
+    display_path = json.dumps(relative_path, ensure_ascii=True)[1:-1]
+    assert result.exit_code == 1
+    assert result.stdout == (
+        f"{display_path}: PULL_REQUEST_TARGET: "
+        "pull_request_target is prohibited for repository workflows\n"
+    )
+    assert result.stdout.count("\n") == 1
+    assert "\x1b" not in result.stdout
 
 
 def test_ci_audit_malformed_present_yaml_exits_two(tmp_path: Path, monkeypatch):

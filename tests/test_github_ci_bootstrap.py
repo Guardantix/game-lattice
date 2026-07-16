@@ -1048,6 +1048,29 @@ def test_safe_incomplete_environment_only_posts_main_policy(tmp_path: Path):
     assert final_state["environment"]["policies"] == [{"name": "main", "type": "branch"}]
 
 
+def test_apply_refuses_zero_policy_environment_with_unrelated_secret(tmp_path: Path):
+    """Do not make preexisting environment secrets deployable by adding the main policy."""
+    environment = {
+        "custom": True,
+        "protected": False,
+        "policies": [],
+        "secrets": ["UNRELATED_SECRET"],
+    }
+
+    result, final_state, calls = _run_bootstrap(
+        tmp_path,
+        _state(environment=environment),
+        "apply",
+        confirmation="Guardantix/doc-lattice",
+    )
+
+    assert result.returncode == 2
+    assert "policy: mismatch" in result.stdout
+    assert "refusing to narrow or take ownership" in result.stderr
+    assert _mutation_calls(calls) == []
+    assert final_state["environment"] == environment
+
+
 @pytest.mark.parametrize(
     "environment",
     [

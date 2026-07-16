@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from typing import TYPE_CHECKING, Annotated, TextIO
 
@@ -62,7 +63,8 @@ def register_ci(app: typer.Typer) -> None:
             findings = audit_repository(discovery, installed, identity, __version__)
             if findings:
                 for finding in findings:
-                    runtime.write_stdout(f"{finding.path}: {finding.code}: {finding.message}")
+                    display_path = _display_finding_path(finding.path)
+                    runtime.write_stdout(f"{display_path}: {finding.code}: {finding.message}")
                 exit_code = EXIT_FINDING
             else:
                 runtime.write_stdout("doc-lattice ci audit: ok")
@@ -118,6 +120,11 @@ def register_ci(app: typer.Typer) -> None:
                     apply_changes(repeated_changes)
                     _verify_refresh_converged(runtime, artifacts)
         raise typer.Exit(exit_code)
+
+
+def _display_finding_path(path: str) -> str:
+    """Escape repository-controlled path text without changing ordinary path output."""
+    return json.dumps(path, ensure_ascii=True)[1:-1]
 
 
 def require_repository_confirmation(stream: TextIO, runtime: CliRuntime, repository: str) -> None:

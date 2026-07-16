@@ -1,6 +1,7 @@
 """Tests for the bounded, non-executing doc-lattice shell invocation scanner."""
 
 import pytest
+from typer.core import TyperGroup
 from typer.main import get_command
 
 from doc_lattice.cli.application import create_app
@@ -8,6 +9,8 @@ from doc_lattice.error_types import ConfigError, ProjectError
 from doc_lattice.github_ci.shell_scanner import (
     _DOC_LATTICE_NON_COMMAND_ROOT_OPTIONS,
     _DOC_LATTICE_ROOT_OPTIONS,
+    _RECONCILE_FLAGS,
+    _RECONCILE_OPTIONS_WITH_ARGUMENTS,
     _ShellScanIncomplete,
     direct_doc_lattice_invocations,
     scan_doc_lattice_invocations,
@@ -549,6 +552,35 @@ def test_direct_doc_lattice_invocations_requires_a_distinct_dry_run_token(script
     assert direct_doc_lattice_invocations(script) == (("reconcile", False),)
 
 
+@pytest.mark.parametrize(
+    "script",
+    [
+        "doc-lattice reconcile pc-design --config --dry-run",
+        "doc-lattice reconcile pc-design --ref --dry-run",
+        "doc-lattice reconcile pc-design --format --dry-run",
+        "doc-lattice reconcile pc-design -- --dry-run",
+        'doc-lattice reconcile pc-design "$OPTION" --dry-run',
+    ],
+)
+def test_direct_doc_lattice_invocations_requires_dry_run_to_be_an_effective_option(script):
+    assert direct_doc_lattice_invocations(script) == RECONCILE
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "doc-lattice reconcile pc-design --config=.doc-lattice.yml --dry-run",
+        "doc-lattice reconcile pc-design --config .doc-lattice.yml --dry-run",
+        "doc-lattice reconcile pc-design --ref spec#section --dry-run",
+        "doc-lattice reconcile pc-design --format human --dry-run",
+        "doc-lattice reconcile pc-design --all --dry-run",
+        "doc-lattice reconcile pc-design --dry-run --config .doc-lattice.yml",
+    ],
+)
+def test_direct_doc_lattice_invocations_accepts_unconsumed_reconcile_dry_run_option(script):
+    assert direct_doc_lattice_invocations(script) == RECONCILE_DRY
+
+
 def test_direct_doc_lattice_invocations_keeps_dry_run_scoped_to_one_command():
     script = "doc-lattice reconcile --all; doc-lattice check --dry-run"
 
@@ -733,6 +765,23 @@ def test_scanner_covers_every_typer_root_option():
 
     assert option_names, "expected the Typer root callback to expose at least one option"
     assert option_names <= covered
+
+
+def test_scanner_reconcile_option_grammar_matches_typer_command():
+    root = get_command(create_app())
+    assert isinstance(root, TyperGroup)
+    command = root.commands["reconcile"]
+    value_options: set[str] = set()
+    flags: set[str] = set()
+    for param in command.params:
+        option_names = {name for name in getattr(param, "opts", ()) if name.startswith("-")}
+        if getattr(param, "is_flag", False):
+            flags.update(option_names)
+        else:
+            value_options.update(option_names)
+
+    assert value_options == _RECONCILE_OPTIONS_WITH_ARGUMENTS
+    assert flags == _RECONCILE_FLAGS
 
 
 def test_shell_scan_incomplete_is_a_coded_project_error():
