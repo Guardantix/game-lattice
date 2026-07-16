@@ -138,6 +138,10 @@ _JOB_FIELD_PATH_LENGTH = 3
 _JOB_ENV_PATH_LENGTH = 4
 _STEP_FIELD_PATH_LENGTH = 5
 _STEP_ENV_PATH_LENGTH = 6
+_OCTAL_BASE = 8
+_UNICODE_MAX = 0x10FFFF
+_SURROGATE_MIN = 0xD800
+_SURROGATE_MAX = 0xDFFF
 _MANAGED_MESSAGES = {
     "MANAGED_TRIGGERS": "managed workflow triggers differ from the canonical installation",
     "MANAGED_PERMISSIONS": "managed workflow permissions differ from the canonical installation",
@@ -364,7 +368,8 @@ def direct_doc_lattice_invocations(script: str) -> tuple[tuple[str, bool], ...]:
     normalized = script.replace("\\\r\n", "").replace("\\\n", "")
     normalized = _strip_heredoc_bodies(normalized)
     normalized = _separate_legacy_command_substitutions(normalized)
-    normalized = normalized.replace("\r\n", "\n").replace("\r", "\n").replace("\n", ";")
+    normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = normalized.replace("\n", "\n;\n")
     lexer = shlex.shlex(normalized, posix=True, punctuation_chars=";&|()<>")
     lexer.whitespace_split = True
 
@@ -667,6 +672,12 @@ def _read_heredoc_delimiter(line: str, start: int) -> tuple[str, int]:
             continue
         if character.isspace() or character in ";&|()<>":
             break
+        if line.startswith("$'", index):
+            segment, index, closed = _read_ansi_c_quoted_segment(line, index)
+            if not closed:
+                return "", index
+            characters.extend(segment)
+            continue
         if character in {"'", '"'}:
             quote = character
         elif character == "\\" and index + 1 < len(line):
@@ -678,6 +689,105 @@ def _read_heredoc_delimiter(line: str, start: int) -> tuple[str, int]:
     if quote is not None:
         return "", index
     return "".join(characters), index
+
+
+def _read_ansi_c_quoted_segment(
+    line: str,
+    start: int,
+) -> tuple[str, int, bool]:
+    characters: list[str] = []
+    index = start + 2
+    while index < len(line):
+        character = line[index]
+        if character == "'":
+            return "".join(characters), index + 1, True
+        if character != "\\":
+            characters.append(character)
+            index += 1
+            continue
+        escaped, index = _read_ansi_c_escape(line, index + 1)
+        characters.append(escaped)
+    return "", index, False
+
+
+def _read_ansi_c_escape(line: str, start: int) -> tuple[str, int]:
+    if start >= len(line):
+        return "\\", start
+    character = line[start]
+    simple = {
+        "a": "\a",
+        "b": "\b",
+        "e": "\x1b",
+        "E": "\x1b",
+        "f": "\f",
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+        "v": "\v",
+        "\\": "\\",
+        "'": "'",
+        '"': '"',
+        "?": "?",
+    }
+    if character in simple:
+        result = (simple[character], start + 1)
+    elif character in "01234567":
+        result = _read_ansi_c_numeric_escape(line, start, _OCTAL_BASE, 3)
+    elif character == "x":
+        result = _read_ansi_c_prefixed_escape(line, start, 16, 2)
+    elif character == "u":
+        result = _read_ansi_c_prefixed_escape(line, start, 16, 4)
+    elif character == "U":
+        result = _read_ansi_c_prefixed_escape(line, start, 16, 8)
+    elif character == "c" and start + 1 < len(line):
+        controlled = line[start + 1]
+        value = 127 if controlled == "?" else ord(controlled.upper()) & 0x1F
+        result = (chr(value), start + 2)
+    else:
+        result = (f"\\{character}", start + 1)
+    return result
+
+
+def _read_ansi_c_prefixed_escape(
+    line: str,
+    prefix_index: int,
+    base: int,
+    limit: int,
+) -> tuple[str, int]:
+    value, end = _read_ansi_c_digits(line, prefix_index + 1, base, limit)
+    if end == prefix_index + 1:
+        return f"\\{line[prefix_index]}", end
+    return _valid_ansi_c_character(value, line[prefix_index:end]), end
+
+
+def _read_ansi_c_numeric_escape(
+    line: str,
+    start: int,
+    base: int,
+    limit: int,
+) -> tuple[str, int]:
+    value, end = _read_ansi_c_digits(line, start, base, limit)
+    return _valid_ansi_c_character(value, line[start:end]), end
+
+
+def _read_ansi_c_digits(
+    line: str,
+    start: int,
+    base: int,
+    limit: int,
+) -> tuple[int, int]:
+    valid = "01234567" if base == _OCTAL_BASE else "0123456789abcdefABCDEF"
+    index = start
+    while index < len(line) and index - start < limit and line[index] in valid:
+        index += 1
+    value = int(line[start:index], base) if index != start else 0
+    return value, index
+
+
+def _valid_ansi_c_character(value: int, source: str) -> str:
+    if value > _UNICODE_MAX or _SURROGATE_MIN <= value <= _SURROGATE_MAX:
+        return f"\\{source}"
+    return chr(value)
 
 
 def _collect_quoted_delimiter_character(
@@ -701,7 +811,8 @@ def _collect_quoted_delimiter_character(
 def _separate_legacy_command_substitutions(script: str) -> str:
     separated: list[str] = []
     index = 0
-    quote: str | None = None
+    quotes: list[str | None] = [None]
+    substitution_depths: list[int] = []
     while index < len(script):
         character = script[index]
         if character == "\\":
@@ -712,11 +823,30 @@ def _separate_legacy_command_substitutions(script: str) -> str:
             index += 1
             continue
         if character in {"'", '"'}:
-            quote = _updated_shell_quote(quote, character)
+            quotes[-1] = _updated_shell_quote(quotes[-1], character)
             separated.append(character)
             index += 1
             continue
-        if character != "`" or quote == "'":
+        if (
+            script.startswith("$(", index)
+            and not script.startswith("$((", index)
+            and quotes[-1] != "'"
+        ):
+            separated.append("$(")
+            quotes.append(None)
+            substitution_depths.append(1)
+            index += 2
+            continue
+        if substitution_depths and quotes[-1] is None and character in {"(", ")"}:
+            _update_substitution_context(
+                character,
+                quotes,
+                substitution_depths,
+            )
+            separated.append(character)
+            index += 1
+            continue
+        if character != "`" or quotes[-1] == "'":
             separated.append(character)
             index += 1
             continue
@@ -726,9 +856,23 @@ def _separate_legacy_command_substitutions(script: str) -> str:
             index += 1
             continue
         body = script[index + 1 : closing]
-        separated.extend(_legacy_substitution_fragments(body, quote))
+        separated.extend(_legacy_substitution_fragments(body, quotes))
         index = closing + 1
     return "".join(separated)
+
+
+def _update_substitution_context(
+    character: str,
+    quotes: list[str | None],
+    depths: list[int],
+) -> None:
+    if character == "(":
+        depths[-1] += 1
+        return
+    depths[-1] -= 1
+    if depths[-1] == 0:
+        depths.pop()
+        quotes.pop()
 
 
 def _updated_shell_quote(quote: str | None, character: str) -> str | None:
@@ -741,11 +885,10 @@ def _updated_shell_quote(quote: str | None, character: str) -> str | None:
 
 def _legacy_substitution_fragments(
     body: str,
-    quote: str | None,
+    quotes: list[str | None],
 ) -> tuple[str, str, str]:
-    if quote == '"':
-        return '" ; ', body, ' ; "'
-    return " ; ", body, " ; "
+    quote_boundaries = '"' * sum(quote == '"' for quote in quotes)
+    return f"{quote_boundaries} ; ", body, f" ; {quote_boundaries}"
 
 
 def _legacy_command_substitution_end(script: str, start: int) -> int | None:

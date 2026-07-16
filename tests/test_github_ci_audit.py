@@ -290,6 +290,41 @@ def test_direct_doc_lattice_invocations_ignores_literal_backticks(script):
     assert direct_doc_lattice_invocations(script) == ()
 
 
+def test_direct_doc_lattice_invocations_keeps_command_after_comment_line():
+    script = "# setup\ndoc-lattice linear"
+
+    assert direct_doc_lattice_invocations(script) == (("linear", False),)
+
+
+def test_direct_doc_lattice_invocations_keeps_command_after_trailing_comment():
+    script = "echo setup # harmless\ndoc-lattice linear"
+
+    assert direct_doc_lattice_invocations(script) == (("linear", False),)
+
+
+def test_direct_doc_lattice_invocations_removes_ansi_c_quoted_heredoc_body():
+    script = """\
+cat <<$'EOF'
+harmless
+EOF
+doc-lattice linear
+"""
+
+    assert direct_doc_lattice_invocations(script) == (("linear", False),)
+
+
+def test_direct_doc_lattice_invocations_ignores_literal_backticks_in_substitution():
+    script = '''echo "$(printf '%s' '`doc-lattice linear`')"'''
+
+    assert direct_doc_lattice_invocations(script) == ()
+
+
+def test_direct_doc_lattice_invocations_detects_active_backticks_in_substitution():
+    script = '''echo "$(printf '%s' `doc-lattice linear`)"'''
+
+    assert direct_doc_lattice_invocations(script) == (("linear", False),)
+
+
 def test_global_audit_reports_target_secret_linear_and_mutating_reconcile():
     document = _workflow(
         """\
