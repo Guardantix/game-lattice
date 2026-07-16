@@ -3,6 +3,8 @@
 import re
 from dataclasses import dataclass
 
+from doc_lattice.error_types import ConfigError
+
 _Invocation = tuple[str, bool]
 _MAX_SHELL_SOURCE_CHARS = 1_048_576
 _MAX_SHELL_SCAN_STEPS = 4_194_304
@@ -155,6 +157,26 @@ class _Heredoc:
 class _CommandScanState:
     words: list[_ShellWord]
     heredocs: list[_Heredoc]
+    cases: list["_CaseScanState"]
+
+
+@dataclass(slots=True)
+class _CaseScanState:
+    phase: str
+    pattern_parentheses: int = 0
+    at_pattern_start: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class ShellScanResult:
+    """Complete invocations or an explicit reason the bounded scan stopped."""
+
+    invocations: tuple[_Invocation, ...]
+    incomplete_reason: str | None = None
+
+
+class _ShellScanIncomplete(RuntimeError):
+    """A declared scanner resource bound prevented a complete result."""
 
 
 @dataclass(slots=True)
@@ -162,9 +184,11 @@ class _ScanBudget:
     remaining_steps: int = _MAX_SHELL_SCAN_STEPS
 
     def step(self, amount: int = 1) -> bool:
-        if amount < 0 or self.remaining_steps < amount:
+        if amount < 0:
+            raise ValueError("shell scan step amount cannot be negative")
+        if self.remaining_steps < amount:
             self.remaining_steps = 0
-            return False
+            raise _ShellScanIncomplete("step limit exceeded")
         self.remaining_steps -= amount
         return True
 
@@ -194,11 +218,14 @@ class _ShellScanner:
         depth: int,
     ) -> int:
         if depth > _MAX_SHELL_RECURSION_DEPTH:
-            return start
-        state = _CommandScanState(words=[], heredocs=[])
+            raise _ShellScanIncomplete("recursion limit exceeded")
+        state = _CommandScanState(words=[], heredocs=[], cases=[])
         index = start
         while index < limit and self.budget.step():
             character = self.source[index]
+            if character == ")" and self._consume_case_pattern_close(state):
+                index += 1
+                continue
             if terminator is not None and character == terminator:
                 self._flush_command(state.words)
                 return index + 1
@@ -230,26 +257,93 @@ class _ShellScanner:
                 if heredoc is not None:
                     state.heredocs.append(heredoc)
                 continue
-            operator = self._command_operator_at(index, limit)
-            if operator is not None:
-                self._flush_command(state.words)
-                index += len(operator)
-                if operator == "(":
-                    index = self._scan_commands(
-                        index,
-                        limit,
-                        terminator=")",
-                        depth=depth + 1,
-                    )
+            operator_end = self._consume_command_operator(index, limit, state, depth)
+            if operator_end is not None:
+                index = operator_end
                 continue
             word, next_index = self._parse_word(index, limit, depth)
             if next_index == index:
                 index += 1
                 continue
-            state.words.append(word)
+            self._record_word(state, word)
             index = next_index
         self._flush_command(state.words)
         return index
+
+    def _consume_command_operator(
+        self,
+        index: int,
+        limit: int,
+        state: _CommandScanState,
+        depth: int,
+    ) -> int | None:
+        operator = self._command_operator_at(index, limit)
+        if operator is None:
+            return None
+        index += len(operator)
+        if self._consume_case_pattern_operator(state, operator):
+            return index
+        self._flush_command(state.words)
+        self._advance_case_body(state, operator)
+        if operator == "(":
+            return self._scan_commands(
+                index,
+                limit,
+                terminator=")",
+                depth=depth + 1,
+            )
+        return index
+
+    def _record_word(self, state: _CommandScanState, word: _ShellWord) -> None:
+        command_position = _skip_shell_prefixes(state.words, 0) == len(state.words)
+        if not word.dynamic and command_position and word.literal == "case":
+            state.cases.append(_CaseScanState(phase="word"))
+        elif state.cases:
+            case = state.cases[-1]
+            if case.phase == "word":
+                case.phase = "in"
+            elif not word.dynamic and case.phase == "in" and word.literal == "in":
+                case.phase = "pattern"
+                case.at_pattern_start = True
+            elif not word.dynamic and case.phase == "pattern":
+                if word.literal == "esac" and case.at_pattern_start:
+                    state.cases.pop()
+                else:
+                    case.at_pattern_start = False
+        state.words.append(word)
+
+    def _consume_case_pattern_close(self, state: _CommandScanState) -> bool:
+        if not state.cases or state.cases[-1].phase != "pattern":
+            return False
+        case = state.cases[-1]
+        if case.pattern_parentheses:
+            case.pattern_parentheses -= 1
+        else:
+            state.words.clear()
+            case.phase = "body"
+        return True
+
+    def _consume_case_pattern_operator(
+        self,
+        state: _CommandScanState,
+        operator: str,
+    ) -> bool:
+        if not state.cases or state.cases[-1].phase != "pattern":
+            return False
+        case = state.cases[-1]
+        if operator == "(":
+            if case.at_pattern_start:
+                case.at_pattern_start = False
+            else:
+                case.pattern_parentheses += 1
+        return True
+
+    def _advance_case_body(self, state: _CommandScanState, operator: str) -> None:
+        if state.cases and state.cases[-1].phase == "body" and operator in {";;", ";&", ";;&"}:
+            case = state.cases[-1]
+            case.phase = "pattern"
+            case.pattern_parentheses = 0
+            case.at_pattern_start = True
 
     def _consume_command_boundary(
         self,
@@ -278,11 +372,13 @@ class _ShellScanner:
         return index
 
     def _flush_command(self, words: list[_ShellWord]) -> None:
-        if not words or len(self.invocations) >= _MAX_SHELL_INVOCATIONS:
+        if not words:
             words.clear()
             return
         invocation = _invocation_in_simple_command(words)
         if invocation is not None:
+            if len(self.invocations) >= _MAX_SHELL_INVOCATIONS:
+                raise _ShellScanIncomplete("invocation limit exceeded")
             self.invocations.append(invocation)
         words.clear()
 
@@ -542,7 +638,12 @@ class _ShellScanner:
                 characters.append("\\")
                 index += 1
                 continue
-            expansion_end = self._consume_active_expansion(index, limit, depth)
+            expansion_end = self._consume_active_expansion(
+                index,
+                limit,
+                depth,
+                double_quoted=True,
+            )
             if expansion_end is not None:
                 dynamic = True
                 index = expansion_end
@@ -556,9 +657,11 @@ class _ShellScanner:
         index: int,
         limit: int,
         depth: int,
+        *,
+        double_quoted: bool = False,
     ) -> int | None:
         if depth > _MAX_SHELL_RECURSION_DEPTH:
-            return min(index + 1, limit)
+            raise _ShellScanIncomplete("recursion limit exceeded")
         end: int | None = None
         if self.source.startswith("$((", index):
             end = self._consume_arithmetic(index + 3, limit, depth + 1)
@@ -570,7 +673,12 @@ class _ShellScanner:
                 depth=depth + 1,
             )
         elif self.source.startswith("${", index):
-            end = self._consume_parameter(index + 2, limit, depth + 1)
+            end = self._consume_parameter(
+                index + 2,
+                limit,
+                depth + 1,
+                double_quoted=double_quoted,
+            )
         elif self.source.startswith("$[", index):
             end = self._consume_legacy_arithmetic(index + 2, limit, depth + 1)
         elif self.source[index] == "`":
@@ -584,34 +692,33 @@ class _ShellScanner:
         start: int,
         limit: int,
         depth: int,
+        *,
+        double_quoted: bool,
     ) -> int:
         index = start
         braces = 1
         quote: str | None = None
         while index < limit and self.budget.step():
             character = self.source[index]
-            if quote == "'":
-                if character == "'":
-                    quote = None
-                index += 1
-                continue
-            if quote == '"':
-                if character == '"':
-                    quote = None
-                    index += 1
-                    continue
-                if character == "\\":
-                    index = min(index + 2, limit)
-                    continue
-            elif character in {"'", '"'}:
-                quote = character
-                index += 1
+            quoted_character = self._consume_parameter_quoted_character(
+                index,
+                limit,
+                quote,
+                double_quoted,
+            )
+            if quoted_character is not None:
+                index, quote = quoted_character
                 continue
             if self.source.startswith("${", index):
                 braces += 1
                 index += 2
                 continue
-            expansion_end = self._consume_active_expansion(index, limit, depth)
+            expansion_end = self._consume_active_expansion(
+                index,
+                limit,
+                depth,
+                double_quoted=double_quoted,
+            )
             if expansion_end is not None:
                 index = expansion_end
                 continue
@@ -623,6 +730,32 @@ class _ShellScanner:
                 continue
             index += 1
         return index
+
+    def _consume_parameter_quoted_character(
+        self,
+        index: int,
+        limit: int,
+        quote: str | None,
+        double_quoted: bool,
+    ) -> tuple[int, str | None] | None:
+        character = self.source[index]
+        if quote == "'":
+            return index + 1, None if character == "'" else quote
+        if quote == '"' and character == '"':
+            return index + 1, None
+        if character == "\\" and index + 1 < limit:
+            escaped = self.source[index + 1]
+            consumes_escape = (quote is None and not double_quoted) or escaped in {
+                "$",
+                '"',
+                "\\",
+                "`",
+                "\n",
+            }
+            return index + (2 if consumes_escape else 1), quote
+        if quote is None and (character == '"' or (character == "'" and not double_quoted)):
+            return index + 1, character
+        return None
 
     def _consume_arithmetic(
         self,
@@ -715,18 +848,35 @@ class _ShellScanner:
         return limit if line_end == -1 else line_end
 
 
+def scan_doc_lattice_invocations(script: str) -> ShellScanResult:
+    """Scan literal Bash syntax and explicitly report bounded-scan exhaustion."""
+    normalized = script.replace("\\\r\n", "").replace("\\\n", "")
+    normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
+    if len(normalized) > _MAX_SHELL_SOURCE_CHARS:
+        return ShellScanResult((), "source character limit exceeded")
+
+    scanner = _ShellScanner(normalized)
+    try:
+        invocations = scanner.scan()
+    except _ShellScanIncomplete as error:
+        return ShellScanResult(tuple(scanner.invocations), str(error))
+    return ShellScanResult(invocations)
+
+
 def direct_doc_lattice_invocations(script: str) -> tuple[_Invocation, ...]:
     """Return conservative direct doc-lattice commands from literal Bash syntax.
 
     The scanner is bounded, recursive, and non-executing. It intentionally does not resolve
     aliases, functions, variables used as executable names, ``eval``/``source``, ``sh -c`` or
     ``bash -c``, external wrapper scripts, actions, or reusable workflows.
+
+    Raises:
+        ConfigError: If a scanner resource bound prevents a complete result.
     """
-    normalized = script.replace("\\\r\n", "").replace("\\\n", "")
-    normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
-    if len(normalized) > _MAX_SHELL_SOURCE_CHARS:
-        normalized = normalized[:_MAX_SHELL_SOURCE_CHARS]
-    return _ShellScanner(normalized).scan()
+    result = scan_doc_lattice_invocations(script)
+    if result.incomplete_reason is not None:
+        raise ConfigError(f"shell scan incomplete: {result.incomplete_reason}")
+    return result.invocations
 
 
 def _invocation_in_simple_command(words: list[_ShellWord]) -> _Invocation | None:

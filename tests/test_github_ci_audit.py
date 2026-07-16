@@ -681,6 +681,57 @@ def test_direct_doc_lattice_invocations_tracks_parameter_expansion_in_substituti
     assert direct_doc_lattice_invocations(script) == ()
 
 
+def test_direct_doc_lattice_invocations_tracks_case_pattern_parentheses_in_substitution():
+    script = 'echo "$(case x in x) doc-lattice linear;; esac)"'
+
+    assert direct_doc_lattice_invocations(script) == LINEAR
+
+
+def test_direct_doc_lattice_invocations_tracks_dynamic_case_subject_in_substitution():
+    script = 'echo "$(case "$x" in x) doc-lattice linear;; esac)"'
+
+    assert direct_doc_lattice_invocations(script) == LINEAR
+
+
+def test_direct_doc_lattice_invocations_expands_single_quotes_inside_quoted_parameter():
+    script = '''unset x; echo "${x:-'$(doc-lattice linear)'}"'''
+
+    assert direct_doc_lattice_invocations(script) == LINEAR
+
+
+def test_direct_doc_lattice_invocations_honors_escaped_dollar_inside_parameter():
+    script = r'unset x; echo "${x:-\$(doc-lattice linear)}"'
+
+    assert direct_doc_lattice_invocations(script) == NONE
+
+
+def test_direct_doc_lattice_invocations_fails_closed_at_recursion_limit():
+    script = 'echo "' + ("$(" * 65) + "doc-lattice linear" + (")" * 65) + '"'
+
+    with pytest.raises(ConfigError, match=r"shell scan.*recursion limit"):
+        direct_doc_lattice_invocations(script)
+
+
+def test_global_audit_fails_closed_at_shell_invocation_limit():
+    script = "\n".join([*(["doc-lattice check"] * 10_000), "doc-lattice linear"])
+    assert len(script.encode()) < MAX_WORKFLOW_BYTES
+    indented_script = script.replace("\n", "\n          ")
+    document = _workflow(
+        f"""\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          {indented_script}
+"""
+    )
+
+    with pytest.raises(ConfigError, match=r"shell scan.*invocation limit"):
+        audit_global_workflows((document,))
+
+
 def test_global_audit_reports_target_secret_linear_and_mutating_reconcile():
     document = _workflow(
         """\

@@ -17,8 +17,15 @@ from .model import (
     WorkflowStructureEntry,
 )
 from .render import render_managed_artifacts, render_workflows
-from .shell_scanner import direct_doc_lattice_invocations
+from .shell_scanner import direct_doc_lattice_invocations, scan_doc_lattice_invocations
 from .workflow_parser import parse_workflow
+
+__all__ = [
+    "SECRET_NAMES",
+    "audit_global_workflows",
+    "audit_managed_installation",
+    "direct_doc_lattice_invocations",
+]
 
 PR_EVENTS = frozenset(
     {
@@ -82,13 +89,18 @@ def audit_global_workflows(
                 )
             )
         if trigger_names & PR_EVENTS:
-            invocations = tuple(
-                invocation
-                for job in document.jobs
-                for step in job.steps
-                if step.run is not None
-                for invocation in direct_doc_lattice_invocations(step.run)
-            )
+            invocations: list[tuple[str, bool]] = []
+            for job in document.jobs:
+                for step in job.steps:
+                    if step.run is None:
+                        continue
+                    scan = scan_doc_lattice_invocations(step.run)
+                    if scan.incomplete_reason is not None:
+                        raise ConfigError(
+                            f"{document.path.as_posix()}: shell scan incomplete: "
+                            f"{scan.incomplete_reason}"
+                        )
+                    invocations.extend(scan.invocations)
             if any(command == "linear" for command, _dry_run in invocations):
                 findings.append(
                     _finding(
