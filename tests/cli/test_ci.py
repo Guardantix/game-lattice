@@ -1,0 +1,466 @@
+"""CLI integration tests for managed GitHub CI audit and refresh."""
+
+from __future__ import annotations
+
+import subprocess
+from io import StringIO
+from typing import TYPE_CHECKING, cast
+
+import pytest
+from rich.console import Console
+
+from doc_lattice import __version__
+from doc_lattice.cli import app
+from doc_lattice.cli.commands import ci as ci_module
+from doc_lattice.cli.runtime import CliRuntime
+from doc_lattice.error_types import ConfigError
+from doc_lattice.github_ci.filesystem import apply_changes, preflight_create
+from doc_lattice.github_ci.render import render_managed_artifacts
+
+from .helpers import runner
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from doc_lattice.config import ProjectConfig
+    from doc_lattice.github_ci.model import ArtifactChange, ManagedArtifact
+    from doc_lattice.model import Lattice
+
+
+class _TtyStringIO(StringIO):
+    """In-memory text stream that reports an attached terminal."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+def _install(root: Path, repository: str = "Guardantix/doc-lattice") -> None:
+    artifacts = render_managed_artifacts(repository, __version__)
+    apply_changes(preflight_create(root, artifacts))
+
+
+def _runtime(tmp_path: Path) -> tuple[CliRuntime, StringIO]:
+    stderr = StringIO()
+
+    def unexpected_config(_config: Path | None, _cwd: Path) -> ProjectConfig:
+        raise AssertionError("project loading is not allowed")
+
+    def unexpected_lattice(
+        project: ProjectConfig,
+        *,
+        require_verified: bool = False,
+        persist_cache: bool = True,
+    ) -> Lattice:
+        del project, require_verified, persist_cache
+        raise AssertionError("lattice loading is not allowed")
+
+    return (
+        CliRuntime(
+            stdout=Console(file=StringIO(), no_color=True),
+            stderr=Console(file=stderr, stderr=True, no_color=True),
+            cwd=tmp_path,
+            load_config=unexpected_config,
+            load_lattice=unexpected_lattice,
+        ),
+        stderr,
+    )
+
+
+def test_ci_audit_exact_installation_exits_zero(tmp_path: Path, monkeypatch):
+    _install(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["ci", "audit", "--repository", "Guardantix/doc-lattice"])
+    assert result.exit_code == 0
+    assert result.stdout == "doc-lattice ci audit: ok\n"
+
+
+def test_ci_audit_policy_finding_exits_one(tmp_path: Path, monkeypatch):
+    _install(tmp_path)
+    unsafe = tmp_path / ".github/workflows/unsafe.yml"
+    unsafe.write_text("on: pull_request_target\njobs: {}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["ci", "audit", "--repository", "Guardantix/doc-lattice"])
+    assert result.exit_code == 1
+    assert result.stdout == (
+        ".github/workflows/unsafe.yml: PULL_REQUEST_TARGET: "
+        "pull_request_target is prohibited for repository workflows\n"
+    )
+
+
+def test_ci_audit_malformed_present_yaml_exits_two(tmp_path: Path, monkeypatch):
+    _install(tmp_path)
+    broken = tmp_path / ".github/workflows/broken.yml"
+    broken.write_text("on: [push\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["ci", "audit", "--repository", "Guardantix/doc-lattice"])
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert ".github/workflows/broken.yml" in result.stderr
+    assert "CONFIG_ERROR" in result.stderr
+
+
+def test_ci_audit_absent_workflows_before_adoption_exits_one(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["ci", "audit", "--repository", "Guardantix/doc-lattice"])
+    assert result.exit_code == 1
+    assert ".github/workflows: MISSING_WORKFLOW_DIRECTORY:" in result.stdout
+    assert ".github/workflows/doc-lattice.yml: MISSING_MANAGED_ARTIFACT:" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "git@github.com:Guardantix/doc-lattice.git\n",
+        "ssh://git@github.com/Guardantix/doc-lattice.git\n",
+        "https://github.com/Guardantix/doc-lattice.git\n",
+    ],
+)
+def test_ci_audit_omitted_repository_resolves_supported_origin(
+    tmp_path: Path, monkeypatch, origin: str
+):
+    _install(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    calls: list[tuple[list[str], Path, int]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        assert kwargs["check"] is False
+        calls.append(
+            (
+                argv,
+                cast("Path", kwargs["cwd"]),
+                cast("int", kwargs["timeout"]),
+            )
+        )
+        return subprocess.CompletedProcess(argv, 0, origin, "")
+
+    monkeypatch.setattr(ci_module.subprocess, "run", fake_run)
+    result = runner.invoke(app, ["ci", "audit"])
+
+    assert result.exit_code == 0
+    assert result.stdout == "doc-lattice ci audit: ok\n"
+    assert calls == [
+        (
+            ["git", "config", "--get", "remote.origin.url"],
+            tmp_path,
+            5,
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        (subprocess.CompletedProcess([], 1, "", "ignored"), "cannot resolve"),
+        (subprocess.CompletedProcess([], 0, "", ""), "cannot resolve"),
+        (
+            subprocess.CompletedProcess(
+                [], 0, "https://github.com/a/b\nhttps://github.com/c/d\n", ""
+            ),
+            "cannot resolve",
+        ),
+        (
+            subprocess.CompletedProcess([], 0, "https://example.com/a/b\n", ""),
+            "origin URL",
+        ),
+    ],
+)
+def test_ci_audit_missing_ambiguous_or_unsupported_origin_exits_two(
+    tmp_path: Path,
+    monkeypatch,
+    failure: subprocess.CompletedProcess[str],
+    message: str,
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ci_module.subprocess, "run", lambda *_args, **_kwargs: failure)
+    result = runner.invoke(app, ["ci", "audit"])
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert message in result.stderr
+    assert "CONFIG_ERROR" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        FileNotFoundError("git unavailable"),
+        subprocess.TimeoutExpired(["git"], 5),
+        OSError("cannot execute git"),
+    ],
+)
+def test_ci_audit_git_execution_failure_exits_two(
+    tmp_path: Path, monkeypatch, error: BaseException
+):
+    monkeypatch.chdir(tmp_path)
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise error
+
+    monkeypatch.setattr(ci_module.subprocess, "run", fail)
+    result = runner.invoke(app, ["ci", "audit"])
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert "cannot resolve repository from git origin" in result.stderr
+    assert "CONFIG_ERROR" in result.stderr
+
+
+def test_ci_audit_explicit_repository_never_invokes_git(tmp_path: Path, monkeypatch):
+    _install(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("git must not run for an explicit repository")
+
+    monkeypatch.setattr(ci_module.subprocess, "run", fail)
+    result = runner.invoke(app, ["ci", "audit", "--repository", "Guardantix/doc-lattice"])
+
+    assert result.exit_code == 0
+
+
+def test_ci_audit_does_not_load_project_or_lattice(tmp_path: Path, monkeypatch):
+    _install(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("project state must not be loaded")
+
+    monkeypatch.setattr("doc_lattice.cli.runtime.load_config", fail)
+    monkeypatch.setattr("doc_lattice.cli.runtime.load_lattice", fail)
+    result = runner.invoke(app, ["ci", "audit", "--repository", "Guardantix/doc-lattice"])
+
+    assert result.exit_code == 0
+
+
+def test_ci_refresh_current_installation_exits_zero(tmp_path: Path, monkeypatch):
+    _install(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["ci", "refresh", "--repository", "Guardantix/doc-lattice"])
+    assert result.exit_code == 0
+    assert result.stdout == "doc-lattice ci refresh: current\n"
+
+
+def test_ci_refresh_previews_stale_managed_artifacts_without_writing(tmp_path: Path, monkeypatch):
+    old = render_managed_artifacts("Guardantix/doc-lattice", "1.9.0")
+    apply_changes(preflight_create(tmp_path, old))
+    before = {item.relative_path: (tmp_path / item.relative_path).read_bytes() for item in old}
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["ci", "refresh", "--repository", "Guardantix/doc-lattice"])
+
+    assert result.exit_code == 1
+    assert "--- a/.github/workflows/doc-lattice.yml" in result.stdout
+    assert all((tmp_path / path).read_bytes() == data for path, data in before.items())
+
+
+def test_ci_refresh_unsafe_unmarked_state_exits_two_without_writing(tmp_path: Path, monkeypatch):
+    _install(tmp_path)
+    target = tmp_path / ".github/workflows/doc-lattice.yml"
+    original = target.read_bytes()
+    target.write_text("# unmanaged\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["ci", "refresh", "--repository", "Guardantix/doc-lattice"])
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert "ownership marker" in result.stderr
+    assert target.read_text(encoding="utf-8") == "# unmanaged\n"
+    assert target.read_bytes() != original
+
+
+def test_ci_refresh_apply_non_tty_exits_two_without_writing(tmp_path: Path, monkeypatch):
+    old = render_managed_artifacts("Guardantix/doc-lattice", "1.9.0")
+    apply_changes(preflight_create(tmp_path, old))
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app,
+        ["ci", "refresh", "--repository", "Guardantix/doc-lattice", "--apply"],
+        input="Guardantix/doc-lattice\n",
+    )
+    assert result.exit_code == 2
+    assert "interactive TTY" in result.stderr
+    assert (tmp_path / old[0].relative_path).read_text(encoding="utf-8") == old[0].text
+
+
+@pytest.mark.parametrize(
+    ("answer", "message"),
+    [
+        ("", "ended before"),
+        ("guardantix/doc-lattice\n", "did not match"),
+        ("Guardantix/doc-lattice \n", "did not match"),
+        ("Guardantix/doc-lattice\r\n", "did not match"),
+    ],
+)
+def test_require_repository_confirmation_fails_closed(tmp_path: Path, answer: str, message: str):
+    runtime, stderr = _runtime(tmp_path)
+    with pytest.raises(ConfigError, match=message):
+        ci_module.require_repository_confirmation(
+            _TtyStringIO(answer), runtime, "Guardantix/doc-lattice"
+        )
+    assert stderr.getvalue() == "Type Guardantix/doc-lattice to apply managed refresh: "
+
+
+def test_require_repository_confirmation_accepts_exact_text(tmp_path: Path):
+    runtime, stderr = _runtime(tmp_path)
+    ci_module.require_repository_confirmation(
+        _TtyStringIO("Guardantix/doc-lattice\n"),
+        runtime,
+        "Guardantix/doc-lattice",
+    )
+    assert stderr.getvalue() == "Type Guardantix/doc-lattice to apply managed refresh: "
+
+
+def test_ci_refresh_apply_repeats_preflight_and_applies_exact_plan(tmp_path: Path, monkeypatch):
+    old = render_managed_artifacts("Guardantix/doc-lattice", "1.9.0")
+    apply_changes(preflight_create(tmp_path, old))
+    monkeypatch.chdir(tmp_path)
+    confirmations: list[str] = []
+    real_preflight = ci_module.preflight_refresh
+    preflight_calls = 0
+
+    def confirm(_stream: object, _runtime: CliRuntime, repository: str) -> None:
+        confirmations.append(repository)
+
+    def tracked_preflight(
+        root: Path, artifacts: tuple[ManagedArtifact, ...]
+    ) -> tuple[ArtifactChange, ...]:
+        nonlocal preflight_calls
+        preflight_calls += 1
+        return real_preflight(root, artifacts)
+
+    monkeypatch.setattr(ci_module, "require_repository_confirmation", confirm)
+    monkeypatch.setattr(ci_module, "preflight_refresh", tracked_preflight)
+    result = runner.invoke(
+        app,
+        ["ci", "refresh", "--repository", "Guardantix/doc-lattice", "--apply"],
+    )
+
+    assert result.exit_code == 0
+    assert confirmations == ["Guardantix/doc-lattice"]
+    assert preflight_calls == 2
+    expected = render_managed_artifacts("Guardantix/doc-lattice", __version__)
+    assert all(
+        (tmp_path / artifact.relative_path).read_text(encoding="utf-8") == artifact.text
+        for artifact in expected
+    )
+
+
+def test_ci_refresh_apply_refuses_change_after_confirmation(tmp_path: Path, monkeypatch):
+    old = render_managed_artifacts("Guardantix/doc-lattice", "1.9.0")
+    apply_changes(preflight_create(tmp_path, old))
+    target = tmp_path / old[0].relative_path
+    monkeypatch.chdir(tmp_path)
+
+    def change_after_preview(_stream: object, _runtime: CliRuntime, _repository: str) -> None:
+        target.write_text(target.read_text(encoding="utf-8") + "# changed\n", encoding="utf-8")
+
+    monkeypatch.setattr(ci_module, "require_repository_confirmation", change_after_preview)
+    result = runner.invoke(
+        app,
+        ["ci", "refresh", "--repository", "Guardantix/doc-lattice", "--apply"],
+    )
+
+    assert result.exit_code == 2
+    assert "fresh preview" in result.stderr
+    assert target.read_text(encoding="utf-8").endswith("# changed\n")
+
+
+def test_ci_refresh_recreates_missing_bootstrap(tmp_path: Path, monkeypatch):
+    _install(tmp_path)
+    artifacts = render_managed_artifacts("Guardantix/doc-lattice", __version__)
+    bootstrap = tmp_path / artifacts[2].relative_path
+    bootstrap.unlink()
+    monkeypatch.chdir(tmp_path)
+
+    preview = runner.invoke(app, ["ci", "refresh", "--repository", "Guardantix/doc-lattice"])
+    assert preview.exit_code == 1
+    assert "--- /dev/null" in preview.stdout
+    assert "+++ b/.github/doc-lattice-bootstrap.sh" in preview.stdout
+    assert not bootstrap.exists()
+
+    monkeypatch.setattr(
+        ci_module,
+        "require_repository_confirmation",
+        lambda *_args, **_kwargs: None,
+    )
+    applied = runner.invoke(
+        app,
+        ["ci", "refresh", "--repository", "Guardantix/doc-lattice", "--apply"],
+    )
+    assert applied.exit_code == 0
+    assert bootstrap.read_text(encoding="utf-8") == artifacts[2].text
+
+
+def test_ci_refresh_converges_mixed_version_rerun(tmp_path: Path, monkeypatch):
+    current = render_managed_artifacts("Guardantix/doc-lattice", __version__)
+    old = render_managed_artifacts("Guardantix/doc-lattice", "1.9.0")
+    mixed = (current[0], old[1], old[2])
+    apply_changes(preflight_create(tmp_path, mixed))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        ci_module,
+        "require_repository_confirmation",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = runner.invoke(
+        app,
+        ["ci", "refresh", "--repository", "Guardantix/doc-lattice", "--apply"],
+    )
+
+    assert result.exit_code == 0
+    assert all(
+        (tmp_path / artifact.relative_path).read_text(encoding="utf-8") == artifact.text
+        for artifact in current
+    )
+
+
+def test_ci_refresh_updates_repository_identity(tmp_path: Path, monkeypatch):
+    _install(tmp_path, repository="OldOwner/old-repo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        ci_module,
+        "require_repository_confirmation",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = runner.invoke(
+        app,
+        ["ci", "refresh", "--repository", "NewOwner/new-repo", "--apply"],
+    )
+
+    assert result.exit_code == 0
+    expected = render_managed_artifacts("NewOwner/new-repo", __version__)
+    assert all(
+        (tmp_path / artifact.relative_path).read_text(encoding="utf-8") == artifact.text
+        for artifact in expected
+    )
+
+
+@pytest.mark.parametrize("option", ["--yes", "--force"])
+def test_ci_refresh_has_no_confirmation_bypass(tmp_path: Path, monkeypatch, option: str):
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app,
+        [
+            "ci",
+            "refresh",
+            "--repository",
+            "Guardantix/doc-lattice",
+            "--apply",
+            option,
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert f"No such option: {option}" in result.stderr
+
+
+def test_ci_refresh_requires_repository(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["ci", "refresh"])
+    assert result.exit_code == 2
+    assert "Missing option '--repository'" in result.stderr
