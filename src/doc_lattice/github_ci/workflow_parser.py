@@ -1,13 +1,14 @@
 """Boundary module: validate GitHub Actions YAML into a typed audit model."""
 
 import json
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Never
 
 from ruamel.yaml import YAML
 from ruamel.yaml.constructor import DuplicateKeyError
-from ruamel.yaml.error import YAMLError
+from ruamel.yaml.error import ReusedAnchorWarning, YAMLError
 from ruamel.yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 
 from ..error_types import ConfigError
@@ -72,14 +73,16 @@ def parse_workflow(path: Path, text: str) -> WorkflowDocument:
 
         yaml = YAML(typ="safe")
         yaml.allow_duplicate_keys = False
-        syntax_tree = yaml.compose(text)
-        version: Any = yaml.version
-        if version not in (None, _YAML_1_2):
-            raise _parse_error(path, "unsupported YAML version directive")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", ReusedAnchorWarning)
+            syntax_tree = _compose_yaml(yaml, text, path)
+            version: Any = yaml.version
+            if version not in (None, _YAML_1_2):
+                raise _parse_error(path, "unsupported YAML version directive")
 
-        budget = _TraversalBudget(path)
-        _validate_syntax_tree(syntax_tree, path, budget)
-        raw: Any = yaml.load(text)
+            budget = _TraversalBudget(path)
+            _validate_syntax_tree(syntax_tree, path, budget)
+            raw: Any = _load_yaml(yaml, text, path)
         root = _require_mapping(raw, path, ())
         scalars = tuple(_collect_scalars(root, path, budget))
         triggers = _parse_triggers(root["on"], path) if "on" in root else ()
@@ -96,12 +99,28 @@ def parse_workflow(path: Path, text: str) -> WorkflowDocument:
         )
     except DuplicateKeyError as exc:
         raise _parse_error(path, "duplicate YAML mapping key") from exc
+    except ReusedAnchorWarning as exc:
+        raise _parse_error(path, "duplicate YAML anchor") from exc
     except YAMLError as exc:
         raise _parse_error(path, "malformed YAML") from exc
     except RecursionError as exc:
         raise _resource_limit(path) from exc
     except (UnicodeEncodeError, UnicodeDecodeError, ValueError) as exc:
         raise _parse_error(path, "malformed YAML") from exc
+
+
+def _compose_yaml(yaml: YAML, text: str, workflow_path: Path) -> Node | None:
+    try:
+        return yaml.compose(text)
+    except AssertionError as exc:
+        raise _parse_error(workflow_path, "unsupported YAML version directive") from exc
+
+
+def _load_yaml(yaml: YAML, text: str, workflow_path: Path) -> Any:
+    try:
+        return yaml.load(text)
+    except AssertionError as exc:
+        raise _parse_error(workflow_path, "malformed YAML") from exc
 
 
 def _validate_syntax_tree(node: Node | None, workflow_path: Path, budget: _TraversalBudget) -> None:

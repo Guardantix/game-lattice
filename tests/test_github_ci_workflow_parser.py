@@ -35,6 +35,13 @@ def _workflow_padded_to_bytes(size: int) -> str:
     return base + "#" + ("x" * (remaining - 2)) + "\n"
 
 
+def _workflow_padded_to_bytes_with_multibyte_text(size: int) -> str:
+    base = "on: push\njobs: {}\n#"
+    remaining = size - len((base + "\n").encode())
+    assert remaining >= 2
+    return base + ("é" * (remaining // 2)) + ("x" * (remaining % 2)) + "\n"
+
+
 def _null_visit_workflow(values: int) -> str:
     items = "\n".join("  -" for _ in range(values))
     return f"payload:\n{items}\njobs: {{}}\n"
@@ -319,7 +326,7 @@ def test_parse_workflow_rejects_yaml_merge_keys(text):
     assert "merge key" in str(exc.value)
 
 
-def test_parse_workflow_accepts_ordinary_anchors_without_merge_keys():
+def test_parse_workflow_accepts_ordinary_anchors_without_merge_keys(capsys):
     parsed = parse_workflow(
         Path(".github/workflows/anchor.yml"),
         """\
@@ -334,6 +341,29 @@ jobs:
     )
 
     assert parsed.jobs[0].steps[0].run == "uv run doc-lattice audit"
+    assert capsys.readouterr().err == ""
+
+
+def test_parse_workflow_rejects_duplicate_anchors_without_warning_leak(capsys):
+    path = Path(".github/workflows/duplicate-anchor.yml")
+    text = """\
+on: push
+first: &SENSITIVE_ANCHOR FIRST_SECRET
+second: &SENSITIVE_ANCHOR SECOND_SECRET
+jobs: {}
+"""
+
+    with pytest.raises(ConfigError) as exc:
+        parse_workflow(path, text)
+
+    message = str(exc.value)
+    captured = capsys.readouterr()
+    assert str(path) in message
+    assert "duplicate YAML anchor" in message
+    assert "SENSITIVE_ANCHOR" not in message
+    assert "FIRST_SECRET" not in message
+    assert "SECOND_SECRET" not in message
+    assert captured.err == ""
 
 
 def test_parse_workflow_expands_shared_aliases_at_each_path_in_order():
@@ -425,6 +455,19 @@ def test_parse_workflow_accepts_exact_input_byte_budget():
     parsed = parse_workflow(
         Path(".github/workflows/input-boundary.yml"),
         _workflow_padded_to_bytes(MAX_UTF8_INPUT_BYTES),
+    )
+
+    assert parsed.jobs == ()
+
+
+def test_parse_workflow_accepts_exact_multibyte_input_byte_budget():
+    text = _workflow_padded_to_bytes_with_multibyte_text(MAX_UTF8_INPUT_BYTES)
+    assert len(text) < MAX_UTF8_INPUT_BYTES
+    assert len(text.encode("utf-8")) == MAX_UTF8_INPUT_BYTES
+
+    parsed = parse_workflow(
+        Path(".github/workflows/multibyte-input-boundary.yml"),
+        text,
     )
 
     assert parsed.jobs == ()
@@ -553,6 +596,20 @@ def test_parse_workflow_rejects_explicit_yaml_1_1():
 
     assert str(path) in str(exc.value)
     assert "unsupported YAML version" in str(exc.value)
+
+
+@pytest.mark.parametrize("directive", ["%YAML 1.0", "%YAML 1.3", "%YAML 1.4"])
+def test_parse_workflow_wraps_asserting_unsupported_yaml_versions(directive):
+    path = Path(".github/workflows/yaml-unsupported.yml")
+
+    with pytest.raises(ConfigError) as exc:
+        parse_workflow(path, f"{directive}\n---\non: push\njobs: {{}}\n")
+
+    message = str(exc.value)
+    assert str(path) in message
+    assert "unsupported YAML version" in message
+    assert "AssertionError" not in message
+    assert directive not in message
 
 
 @pytest.mark.parametrize(
