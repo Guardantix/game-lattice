@@ -1,5 +1,8 @@
 """Tests for deterministic managed GitHub Actions workflow rendering."""
 
+import re
+
+import pytest
 from ruamel.yaml import YAML
 
 from doc_lattice.github_ci.render import (
@@ -37,6 +40,7 @@ def test_render_offline_workflow_runs_all_gates_without_secrets():
     }
     assert workflow["permissions"] == {"contents": "read"}
     assert "LINEAR_API_KEY" not in offline.text
+    assert "${{ secrets." not in offline.text
     assert "pull_request_target" not in offline.text
     assert "reconcile" not in offline.text
 
@@ -47,6 +51,9 @@ def test_render_offline_workflow_runs_all_gates_without_secrets():
     assert "rc_audit=$?" in run
     assert "rc_check=$?" in run
     assert "rc_lint=$?" in run
+    assert run.splitlines()[-1] == (
+        '[ "$rc_audit" -eq 0 ] && [ "$rc_check" -eq 0 ] && [ "$rc_lint" -eq 0 ]'
+    )
 
 
 def test_render_linear_workflow_installs_before_mapping_secret():
@@ -58,9 +65,11 @@ def test_render_linear_workflow_installs_before_mapping_secret():
         "workflow_dispatch": None,
     }
     assert workflow["permissions"] == {"contents": "read"}
+    assert "env" not in workflow
 
     job = workflow["jobs"]["linear"]
     assert job["environment"] == "doc-lattice-linear"
+    assert "env" not in job
     assert job["if"] == (
         "github.repository == 'Guardantix/doc-lattice' && github.ref == 'refs/heads/main' "
         "&& (github.event_name == 'push' || github.event_name == 'workflow_dispatch')"
@@ -68,6 +77,10 @@ def test_render_linear_workflow_installs_before_mapping_secret():
 
     steps = job["steps"]
     assert all("env" not in step for step in steps[:-1])
+    for step in steps[:-1]:
+        for field in ("env", "with", "run"):
+            assert "${{ secrets." not in str(step.get(field, ""))
+    assert linear.text.count("${{ secrets.") == 1
     assert steps[-1]["env"] == {"LINEAR_API_KEY": "${{ secrets.DOC_LATTICE_LINEAR_API_KEY }}"}
     assert steps[-1]["run"] == (
         '"$RUNNER_TEMP/doc-lattice-venv/bin/doc-lattice" linear --exit-code'
@@ -78,6 +91,13 @@ def test_render_linear_workflow_installs_before_mapping_secret():
     assert 'uv venv --python 3.13 "$RUNNER_TEMP/doc-lattice-venv"' in install
     assert "uv pip install" in install
     assert "doc-lattice==2.1.0" in install
+
+
+def test_action_refs_are_approved_full_commit_shas():
+    assert CHECKOUT_REF == "34e114876b0b11c390a56381ad16ebd13914f8d5"  # pragma: allowlist secret
+    assert SETUP_UV_REF == "d0cc045d04ccac9d8b7881df0226f9e82c39688e"  # pragma: allowlist secret
+    assert re.fullmatch(r"[0-9a-f]{40}", CHECKOUT_REF) is not None
+    assert re.fullmatch(r"[0-9a-f]{40}", SETUP_UV_REF) is not None
 
 
 def test_rendered_workflows_pin_actions_and_mark_ownership():
@@ -108,3 +128,28 @@ def test_render_workflows_is_byte_deterministic():
     second = render_workflows("Guardantix/doc-lattice", "2.1.0")
 
     assert first == second
+
+
+@pytest.mark.parametrize(
+    "repository",
+    [
+        "a/__VERSION__",
+        "a/__CHECKOUT_REF__",
+        "a/__SETUP_UV_REF__",
+    ],
+)
+def test_render_workflows_preserves_token_like_repository_names(repository):
+    offline, linear = render_workflows(repository, "2.1.0")
+    offline_run = _load_workflow(offline.text)["jobs"]["check"]["steps"][-1]["run"]
+    linear_condition = _load_workflow(linear.text)["jobs"]["linear"]["if"]
+
+    assert (
+        "uvx --python 3.13 --from doc-lattice==2.1.0 doc-lattice ci audit "
+        f"--repository {repository}"
+    ) in offline_run.splitlines()
+    assert linear_condition == (
+        f"github.repository == '{repository}' && github.ref == 'refs/heads/main' "
+        "&& (github.event_name == 'push' || github.event_name == 'workflow_dispatch')"
+    )
+    assert f"--repository {repository}\n" in offline.text
+    assert f"github.repository == '{repository}' &&" in linear.text

@@ -1,5 +1,6 @@
 """Deterministic rendering for managed GitHub Actions artifacts."""
 
+import re
 from pathlib import PurePosixPath
 
 from .identity import parse_repository, validate_final_release_version
@@ -11,6 +12,8 @@ BOOTSTRAP_PATH = PurePosixPath(".github/doc-lattice-bootstrap.sh")
 
 CHECKOUT_REF = "34e114876b0b11c390a56381ad16ebd13914f8d5"  # pragma: allowlist secret
 SETUP_UV_REF = "d0cc045d04ccac9d8b7881df0226f9e82c39688e"  # pragma: allowlist secret
+
+_TOKEN_RE = re.compile(r"__(?:REPOSITORY|VERSION|CHECKOUT_REF|SETUP_UV_REF)__")
 
 _OFFLINE_TEMPLATE = (
     """name: doc-lattice
@@ -137,9 +140,10 @@ def render_workflows(repository: str, version: str) -> tuple[ManagedArtifact, Ma
 
 def _replace_tokens(template: str, repository: str, version: str) -> str:
     """Replace the fixed renderer tokens without interpreting literal braces."""
-    return (
-        template.replace("__REPOSITORY__", repository)
-        .replace("__VERSION__", version)
-        .replace("__CHECKOUT_REF__", CHECKOUT_REF)
-        .replace("__SETUP_UV_REF__", SETUP_UV_REF)
-    )
+    replacements = {
+        "__REPOSITORY__": repository,
+        "__VERSION__": version,
+        "__CHECKOUT_REF__": CHECKOUT_REF,
+        "__SETUP_UV_REF__": SETUP_UV_REF,
+    }
+    return _TOKEN_RE.sub(lambda match: replacements[match.group(0)], template)
