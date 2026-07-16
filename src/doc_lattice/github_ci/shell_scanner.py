@@ -1222,24 +1222,27 @@ def _reconcile_has_effective_dry_run(arguments: list[_ShellWord]) -> bool:
     """Return whether Typer will parse a literal reconcile ``--dry-run`` option.
 
     Known value-taking options consume their next word even when it looks like another option.
-    A dynamic or unknown word before ``--dry-run`` could itself become a value-taking option at
-    runtime, so the scanner conservatively refuses to classify the invocation as read-only.
+    Shell expansion or an unknown option before ``--dry-run`` can change the runtime argv shape,
+    so the scanner conservatively refuses to classify those invocations as read-only.
     """
     index = 0
     while index < len(arguments):
         argument = arguments[index]
+        if _word_may_change_argv(argument):
+            return False
         literal = argument.literal
         option_name, separator, _value = literal.partition("=")
         if separator and option_name in _RECONCILE_OPTIONS_WITH_ARGUMENTS:
             index += 1
             continue
-        if argument.dynamic:
-            return False
         if literal == "--dry-run":
             return True
         if literal == "--":
             return False
         if literal in _RECONCILE_OPTIONS_WITH_ARGUMENTS:
+            value_index = index + 1
+            if value_index >= len(arguments) or _word_may_change_argv(arguments[value_index]):
+                return False
             index += 2
             continue
         if literal in _RECONCILE_FLAGS:
@@ -1249,6 +1252,16 @@ def _reconcile_has_effective_dry_run(arguments: list[_ShellWord]) -> bool:
             return False
         index += 1
     return False
+
+
+def _word_may_change_argv(word: _ShellWord) -> bool:
+    """Return whether shell expansion may change one lexical word's argv shape."""
+    literal = word.literal
+    return (
+        word.dynamic
+        or any(marker in literal for marker in "*?[")
+        or ("{" in literal and "}" in literal and ("," in literal or ".." in literal))
+    )
 
 
 def _skip_shell_prefixes(words: list[_ShellWord], start: int) -> int:

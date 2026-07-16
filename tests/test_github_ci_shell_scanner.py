@@ -560,6 +560,9 @@ def test_direct_doc_lattice_invocations_requires_a_distinct_dry_run_token(script
         "doc-lattice reconcile pc-design --format --dry-run",
         "doc-lattice reconcile pc-design -- --dry-run",
         'doc-lattice reconcile pc-design "$OPTION" --dry-run',
+        "doc-lattice reconcile pc-design --config $CONFIG --dry-run",
+        "doc-lattice reconcile {pc-design,--config} --dry-run",
+        "shopt -s nullglob; doc-lattice reconcile --config no-match-* --dry-run",
     ],
 )
 def test_direct_doc_lattice_invocations_requires_dry_run_to_be_an_effective_option(script):
