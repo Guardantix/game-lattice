@@ -115,6 +115,37 @@ jobs:
     assert _finding_codes(audit_global_workflows((document,))) == {"PR_LINEAR_INVOCATION"}
 
 
+@pytest.mark.parametrize(
+    "script",
+    [
+        # A trailing backslash in a comment does not continue it, so the next line still runs.
+        "# harmless \\\ndoc-lattice linear",
+        # Unbalanced $((...)) is a command substitution running a subshell, not arithmetic.
+        "x=$((doc-lattice linear) )",
+        # Unbalanced ((...)) is a nested subshell, not an arithmetic command.
+        "((doc-lattice linear) )",
+    ],
+    ids=["comment-backslash", "dollar-arithmetic-fallback", "arithmetic-command-fallback"],
+)
+def test_global_audit_rejects_linear_hidden_by_comment_or_arithmetic_fallback(script):
+    # These forms run `doc-lattice linear` in Bash while a naive scanner would swallow the
+    # region, so the PR audit must still emit PR_LINEAR_INVOCATION rather than pass.
+    indented_script = script.replace("\n", "\n          ")
+    document = _workflow(
+        f"""\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          {indented_script}
+"""
+    )
+
+    assert _finding_codes(audit_global_workflows((document,))) == {"PR_LINEAR_INVOCATION"}
+
+
 def test_global_audit_fails_closed_at_shell_invocation_limit():
     script = "\n".join([*(["doc-lattice check"] * 10_000), "doc-lattice linear"])
     assert len(script.encode()) < MAX_WORKFLOW_BYTES
@@ -132,6 +163,27 @@ jobs:
     )
 
     with pytest.raises(ConfigError, match=r"shell scan.*invocation limit"):
+        audit_global_workflows((document,))
+
+
+def test_global_audit_fails_closed_on_brace_expanded_subcommand():
+    # Bash expands `doc-lattice linea{r,}` to `doc-lattice linear linea` and runs linear, so a
+    # scanner that declined to classify it would let the PR audit pass. The scan cannot certify
+    # the subcommand, so the audit must fail closed (ConfigError, exit 2) rather than return no
+    # findings and silently approve the workflow.
+    document = _workflow(
+        """\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          doc-lattice linea{r,}
+"""
+    )
+
+    with pytest.raises(ConfigError, match=r"shell scan.*brace or glob expansion"):
         audit_global_workflows((document,))
 
 

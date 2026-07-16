@@ -19,13 +19,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The generated Linear workflow uses a dedicated environment-only credential, maps it only on the
   final trusted step, and never exposes it to the generated pull-request workflow.
-- Existing installations with a repository-scoped `LINEAR_API_KEY` must rotate or replace the key,
-  move it to the protected environment, remove the old workflow, and delete broader repository
-  secrets under both the legacy and dedicated names.
-- Existing adopters must review and remove or replace unmarked canonical workflow files before
-  `init --github`; managed refresh intentionally refuses to adopt or overwrite unmarked files.
-- Migration also requires identifying and removing all old hand-written Linear workflows regardless
-  of filename; local audit cannot prove that indirect legacy wrappers are absent.
+- Existing installations must migrate the repository-scoped `LINEAR_API_KEY` to the protected
+  environment and remove unmarked canonical and hand-written Linear workflows before
+  `init --github`. See
+  [Managed GitHub and Linear setup](README.md#managed-github-and-linear-setup) for the full
+  migration and secret-cleanup procedure.
 
 ## [2.0.0] - 2026-07-14
 

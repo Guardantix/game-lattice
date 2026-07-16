@@ -29,6 +29,13 @@ CANONICAL_ARTIFACT_TARGETS = (
 CHECKOUT_REF = "34e114876b0b11c390a56381ad16ebd13914f8d5"  # pragma: allowlist secret
 SETUP_UV_REF = "d0cc045d04ccac9d8b7881df0226f9e82c39688e"  # pragma: allowlist secret
 
+# The trusted Linear step maps the dedicated environment secret onto this fixed environment
+# variable. Rendering and the audit trusted-slot exemption both read these constants so a
+# template edit cannot leave the exemption stale and fail a correct install.
+LINEAR_JOB_ID = "linear"
+LINEAR_SECRET_ENV_NAME = "LINEAR_API_KEY"  # noqa: S105  # pragma: allowlist secret
+LINEAR_SECRET_ENV_VALUE = "${{ secrets.DOC_LATTICE_LINEAR_API_KEY }}"  # noqa: S105  # pragma: allowlist secret
+
 _TOKEN_RE = re.compile(r"__(?:REPOSITORY|VERSION|CHECKOUT_REF|SETUP_UV_REF|PYTHON_PIN)__")
 
 _OFFLINE_TEMPLATE = (
@@ -75,8 +82,9 @@ on:
 permissions:
   contents: read
 jobs:
-  linear:
-    name: Trusted Linear gate
+"""
+    f"  {LINEAR_JOB_ID}:\n"
+    """    name: Trusted Linear gate
     if: >-
       github.repository == '__REPOSITORY__' &&
       github.ref == 'refs/heads/main' &&
@@ -98,8 +106,9 @@ jobs:
     "__VERSION__\n"
     """      - name: Run trusted Linear gate
         env:
-          LINEAR_API_KEY: ${{ secrets.DOC_LATTICE_LINEAR_API_KEY }}
-        run: '"$RUNNER_TEMP/doc-lattice-venv/bin/doc-lattice" linear --exit-code'
+"""
+    f"          {LINEAR_SECRET_ENV_NAME}: {LINEAR_SECRET_ENV_VALUE}\n"
+    """        run: '"$RUNNER_TEMP/doc-lattice-venv/bin/doc-lattice" linear --exit-code'
 """
 )
 

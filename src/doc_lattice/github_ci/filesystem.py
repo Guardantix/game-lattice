@@ -2,6 +2,7 @@
 
 import difflib
 import stat
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -51,6 +52,41 @@ class _WorkflowCandidate:
     size: int
 
 
+def _real_directory_exists(
+    logical_path: Path,
+    *,
+    inspect_context: str,
+    symlink_message: str,
+    directory_message: str,
+) -> bool:
+    """Stat one path and require any present target to be a real directory.
+
+    Args:
+        logical_path: Repository-relative path to stat without following symlinks.
+        inspect_context: Phrase passed to ``_filesystem_error`` on an inspection failure.
+        symlink_message: Exact error when the present target is a symlink.
+        directory_message: Exact error when the present target is not a directory.
+
+    Returns:
+        ``True`` when a real directory is present, ``False`` when the path is absent so each
+        caller can classify absence in its own way.
+
+    Raises:
+        ConfigError: If the path cannot be inspected, is a symlink, or is not a directory.
+    """
+    try:
+        directory_stat = logical_path.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise _filesystem_error(inspect_context, exc) from exc
+    if stat.S_ISLNK(directory_stat.st_mode):
+        raise ConfigError(symlink_message)
+    if not stat.S_ISDIR(directory_stat.st_mode):
+        raise ConfigError(directory_message)
+    return True
+
+
 def discover_workflows(root: Path) -> WorkflowDiscovery:
     """Discover and parse direct repository GitHub Actions workflow files.
 
@@ -75,9 +111,16 @@ def discover_workflows(root: Path) -> WorkflowDiscovery:
             "GitHub workflow directory",
         )
         return WorkflowDiscovery(directory_exists=False, documents=())
-    try:
-        directory_stat = logical_directory.stat(follow_symlinks=False)
-    except FileNotFoundError:
+    if not _real_directory_exists(
+        logical_directory,
+        inspect_context=f"cannot inspect GitHub workflow directory {display_directory}",
+        symlink_message=(
+            f"symlink is not allowed for GitHub workflow directory {display_directory}"
+        ),
+        directory_message=(
+            f"GitHub workflow directory must be a real directory: {display_directory}"
+        ),
+    ):
         _resolve_repository_path(
             logical_directory,
             root,
@@ -86,19 +129,6 @@ def discover_workflows(root: Path) -> WorkflowDiscovery:
         )
         _workflow_parent_exists(root, display_directory)
         return WorkflowDiscovery(directory_exists=False, documents=())
-    except OSError as exc:
-        raise _filesystem_error(
-            f"cannot inspect GitHub workflow directory {display_directory}",
-            exc,
-        ) from exc
-    if stat.S_ISLNK(directory_stat.st_mode):
-        raise ConfigError(
-            f"symlink is not allowed for GitHub workflow directory {display_directory}"
-        )
-    if not stat.S_ISDIR(directory_stat.st_mode):
-        raise ConfigError(
-            f"GitHub workflow directory must be a real directory: {display_directory}"
-        )
     directory = _resolve_repository_path(
         logical_directory,
         root,
@@ -364,56 +394,107 @@ def _inspect_workflow_candidate(root: Path, name: str) -> _WorkflowCandidate | N
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _BoundedReadWording:
+    """Exact error strings for one bounded read so both call sites keep their wording."""
+
+    error_path: str | None
+    read_context: str
+    recheck_context: str
+    byte_limit: str
+    changed: str
+    size_changed: str
+    symlink: str
+    regular: str
+
+
+def _read_bounded_with_recheck(
+    open_path: Path,
+    logical_path: Path,
+    expected_size: int,
+    reresolve: Callable[[], Path],
+    wording: _BoundedReadWording,
+) -> bytes:
+    """Read one bounded file and reject containment, type, or size changes after the read.
+
+    Workflow discovery and managed artifact reads share this open, read, re-resolve, re-stat,
+    and size-recheck sequence; only their error wording and re-resolution differ.
+
+    Args:
+        open_path: Already resolved path to open, also the expected re-resolution target.
+        logical_path: Unresolved path to re-stat after the read.
+        expected_size: Size observed before the read that the recheck must still match.
+        reresolve: Re-authenticates containment and returns the freshly resolved path.
+        wording: Exact error strings for this call site.
+
+    Returns:
+        The file bytes bounded to the per-file workflow limit.
+
+    Raises:
+        ConfigError: If the read fails, exceeds the byte bound, or containment, type, or size
+            changed during the read.
+    """
+    try:
+        with open_path.open("rb") as handle:
+            data = handle.read(MAX_WORKFLOW_BYTES + 1)
+    except OSError as exc:
+        raise _filesystem_error(wording.read_context, exc, path=wording.error_path) from exc
+    if len(data) > MAX_WORKFLOW_BYTES:
+        raise ConfigError(wording.byte_limit)
+    if reresolve() != open_path:
+        raise ConfigError(wording.changed)
+    try:
+        target_stat = logical_path.stat(follow_symlinks=False)
+    except FileNotFoundError as exc:
+        raise ConfigError(wording.changed) from exc
+    except OSError as exc:
+        raise _filesystem_error(wording.recheck_context, exc, path=wording.error_path) from exc
+    if stat.S_ISLNK(target_stat.st_mode):
+        raise ConfigError(wording.symlink)
+    if not stat.S_ISREG(target_stat.st_mode):
+        raise ConfigError(wording.regular)
+    if target_stat.st_size != expected_size or len(data) != expected_size:
+        raise ConfigError(wording.size_changed)
+    return data
+
+
 def _read_workflow_candidate(root: Path, candidate: _WorkflowCandidate) -> bytes:
     """Bound one workflow read and reject containment, type, or size changes."""
     display_path = candidate.relative_path.as_posix()
-    try:
-        with candidate.resolved_path.open("rb") as handle:
-            data = handle.read(MAX_WORKFLOW_BYTES + 1)
-    except OSError as exc:
-        raise _filesystem_error(f"cannot read GitHub workflow {display_path}", exc) from exc
-    if len(data) > MAX_WORKFLOW_BYTES:
-        raise ConfigError(f"GitHub workflow exceeds the byte limit: {display_path}")
-    resolved_after_read = _resolve_repository_path(
-        candidate.logical_path,
-        root,
-        display_path,
-        "GitHub workflow",
+    changed = f"GitHub workflow changed during discovery: {display_path}"
+    wording = _BoundedReadWording(
+        error_path=None,
+        read_context=f"cannot read GitHub workflow {display_path}",
+        recheck_context=f"cannot recheck GitHub workflow {display_path}",
+        byte_limit=f"GitHub workflow exceeds the byte limit: {display_path}",
+        changed=changed,
+        size_changed=changed,
+        symlink=f"symlink is not allowed for GitHub workflow {display_path}",
+        regular=f"GitHub workflow must be a regular file: {display_path}",
     )
-    if resolved_after_read != candidate.resolved_path:
-        raise ConfigError(f"GitHub workflow changed during discovery: {display_path}")
-    try:
-        target_stat = candidate.logical_path.stat(follow_symlinks=False)
-    except FileNotFoundError as exc:
-        raise ConfigError(f"GitHub workflow changed during discovery: {display_path}") from exc
-    except OSError as exc:
-        raise _filesystem_error(f"cannot recheck GitHub workflow {display_path}", exc) from exc
-    if stat.S_ISLNK(target_stat.st_mode):
-        raise ConfigError(f"symlink is not allowed for GitHub workflow {display_path}")
-    if not stat.S_ISREG(target_stat.st_mode):
-        raise ConfigError(f"GitHub workflow must be a regular file: {display_path}")
-    if target_stat.st_size != candidate.size or len(data) != candidate.size:
-        raise ConfigError(f"GitHub workflow changed during discovery: {display_path}")
-    return data
+    return _read_bounded_with_recheck(
+        candidate.resolved_path,
+        candidate.logical_path,
+        candidate.size,
+        lambda: _resolve_repository_path(
+            candidate.logical_path,
+            root,
+            display_path,
+            "GitHub workflow",
+        ),
+        wording,
+    )
 
 
 def _workflow_parent_exists(root: Path, display_path: str) -> bool:
     """Validate the real ``.github`` parent before classifying workflows as absent."""
     logical_parent = root / _WORKFLOWS_DIRECTORY.parent
-    try:
-        parent_stat = logical_parent.stat(follow_symlinks=False)
-    except FileNotFoundError:
-        return False
-    except OSError as exc:
-        raise _filesystem_error(
-            f"cannot inspect GitHub workflow parent for {display_path}",
-            exc,
-        ) from exc
-    if stat.S_ISLNK(parent_stat.st_mode):
-        raise ConfigError(f"symlink is not allowed in GitHub workflow path {display_path}")
-    if not stat.S_ISDIR(parent_stat.st_mode):
-        raise ConfigError(f"GitHub workflow parent must be a real directory: {display_path}")
-    return True
+    return _real_directory_exists(
+        logical_parent,
+        inspect_context=f"cannot inspect GitHub workflow parent for {display_path}",
+        symlink_message=f"symlink is not allowed in GitHub workflow path {display_path}",
+        directory_message=f"GitHub workflow parent must be a real directory: {display_path}",
+    )
 
 
 def _require_real_artifact_ancestors(root: Path, relative_path: PurePosixPath) -> None:
@@ -437,19 +518,13 @@ def _require_real_artifact_ancestors(root: Path, relative_path: PurePosixPath) -
             continue
         display = ancestor.as_posix()
         logical_ancestor = root / ancestor
-        try:
-            ancestor_stat = logical_ancestor.stat(follow_symlinks=False)
-        except FileNotFoundError:
+        if not _real_directory_exists(
+            logical_ancestor,
+            inspect_context=f"cannot inspect managed artifact ancestor {display}",
+            symlink_message=f"symlink is not allowed in managed artifact path {display}",
+            directory_message=f"managed artifact ancestor must be a real directory: {display}",
+        ):
             return
-        except OSError as exc:
-            raise _filesystem_error(
-                f"cannot inspect managed artifact ancestor {display}",
-                exc,
-            ) from exc
-        if stat.S_ISLNK(ancestor_stat.st_mode):
-            raise ConfigError(f"symlink is not allowed in managed artifact path {display}")
-        if not stat.S_ISDIR(ancestor_stat.st_mode):
-            raise ConfigError(f"managed artifact ancestor must be a real directory: {display}")
 
 
 def _resolve_within_root(
@@ -655,33 +730,23 @@ def _read_bounded_artifact_bytes(
     _require_regular_not_symlink(target_stat.st_mode, path)
     if target_stat.st_size > MAX_WORKFLOW_BYTES:
         raise ConfigError(f"managed artifact exceeds the byte limit: {path}")
-    initial_size = target_stat.st_size
-    try:
-        with destination.open("rb") as handle:
-            data = handle.read(MAX_WORKFLOW_BYTES + 1)
-    except OSError as exc:
-        raise _filesystem_error("cannot read managed artifact", exc, path=path) from exc
-    if len(data) > MAX_WORKFLOW_BYTES:
-        raise ConfigError(f"managed artifact exceeds the byte limit: {path}")
-
-    resolved_after_read = _resolve_destination(
-        logical_destination,
-        root,
-        artifact,
-        "recheck",
+    wording = _BoundedReadWording(
+        error_path=path,
+        read_context="cannot read managed artifact",
+        recheck_context="cannot recheck managed artifact",
+        byte_limit=f"managed artifact exceeds the byte limit: {path}",
+        changed=f"managed artifact path changed during {phase}: {path}",
+        size_changed=f"managed artifact changed during {phase}: {path}",
+        symlink=f"symlink target is not allowed for managed artifact {path}",
+        regular=f"existing target must be a regular file for managed artifact {path}",
     )
-    if resolved_after_read != destination:
-        raise ConfigError(f"managed artifact path changed during {phase}: {path}")
-    try:
-        target_stat = logical_destination.stat(follow_symlinks=False)
-    except FileNotFoundError as exc:
-        raise ConfigError(f"managed artifact path changed during {phase}: {path}") from exc
-    except OSError as exc:
-        raise _filesystem_error("cannot recheck managed artifact", exc, path=path) from exc
-    _require_regular_not_symlink(target_stat.st_mode, path)
-    if target_stat.st_size != initial_size or len(data) != initial_size:
-        raise ConfigError(f"managed artifact changed during {phase}: {path}")
-    return data
+    return _read_bounded_with_recheck(
+        destination,
+        logical_destination,
+        target_stat.st_size,
+        lambda: _resolve_destination(logical_destination, root, artifact, "recheck"),
+        wording,
+    )
 
 
 def _require_regular_not_symlink(mode: int, path: str) -> None:

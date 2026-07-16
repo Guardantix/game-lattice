@@ -396,8 +396,7 @@ class _ShellScanner:
                 index = boundary_end
                 continue
             if self.source.startswith("((", index):
-                self._flush_command(state)
-                index = self._consume_arithmetic(index + 2, limit, depth + 1)
+                index = self._consume_arithmetic_command(index, limit, state, depth)
                 continue
             process_end = self._consume_process_substitution(index, limit, depth)
             if process_end is not None:
@@ -428,6 +427,34 @@ class _ShellScanner:
             index = next_index
         self._flush_command(state)
         return index
+
+    def _consume_arithmetic_command(
+        self,
+        index: int,
+        limit: int,
+        state: _CommandScanState,
+        depth: int,
+    ) -> int:
+        """Consume a ``(( ... ))`` arithmetic command or its subshell fallback.
+
+        Flushes any pending simple command, then either skips balanced arithmetic or, when the
+        leading ``(`` actually opened a subshell (an unbalanced region such as ``((cmd) )``),
+        rescans the region as a command group so inner invocations stay visible.
+
+        Args:
+            index: Index of the opening ``((``.
+            limit: Exclusive scan limit.
+            state: The command being accumulated, flushed before the arithmetic region.
+            depth: Current recursion depth.
+
+        Returns:
+            The index just past the consumed region.
+        """
+        self._flush_command(state)
+        arithmetic_end = self._consume_arithmetic(index + 2, limit, depth + 1)
+        if arithmetic_end is not None:
+            return arithmetic_end
+        return self._scan_commands(index + 1, limit, terminator=")", depth=depth + 1)
 
     def _consume_command_operator(
         self,
@@ -967,6 +994,15 @@ class _ShellScanner:
         end: int | None = None
         if self.source.startswith("$((", index):
             end = self._consume_arithmetic(index + 3, limit, depth + 1)
+            if end is None:
+                # Not balanced arithmetic: Bash falls back to a command substitution whose
+                # first ( opens a subshell, so scan the region for inner invocations.
+                end = self._scan_commands(
+                    index + 2,
+                    limit,
+                    terminator=")",
+                    depth=depth + 1,
+                )
         elif self.source.startswith("$(", index):
             end = self._scan_commands(
                 index + 2,
@@ -1065,7 +1101,24 @@ class _ShellScanner:
         start: int,
         limit: int,
         depth: int,
-    ) -> int:
+    ) -> int | None:
+        """Consume ``(( ... ))`` arithmetic, or report a command-substitution fallback.
+
+        Bash treats ``((`` as arithmetic only when the region closes with a balanced ``))``.
+        When a base-level ``)`` appears without a paired ``)`` the leading ``(`` opened a
+        subshell inside a command substitution (for example ``$((cmd) )`` or ``((cmd) )``), so
+        this returns ``None`` for the caller to rescan the region as command-substitution
+        content instead of silently swallowing it.
+
+        Args:
+            start: Index just past the opening ``((``.
+            limit: Exclusive scan limit.
+            depth: Current recursion depth for nested expansions.
+
+        Returns:
+            The index past the closing ``))``, the scan limit for an unterminated region, or
+            ``None`` when Bash would fall back to a command substitution containing a subshell.
+        """
         index = start
         parentheses = 1
         while index < limit:
@@ -1080,9 +1133,11 @@ class _ShellScanner:
                 index += 1
                 continue
             if character == ")":
-                if parentheses == 1 and self.source.startswith("))", index):
-                    return index + 2
-                parentheses = max(1, parentheses - 1)
+                if parentheses == 1:
+                    if self.source.startswith("))", index):
+                        return index + 2
+                    return None
+                parentheses -= 1
             index += 1
         return index
 
@@ -1161,19 +1216,13 @@ class _ShellScanner:
         return limit if line_end == -1 else line_end
 
     def _comment_end(self, index: int, limit: int) -> int:
-        """Return the end of a comment after active backslash-newline continuations."""
-        while index < limit:
-            self.budget.step()
-            line_end = self._line_end(index, limit)
-            if line_end == limit:
-                return limit
-            backslash_index = line_end
-            while backslash_index > index and self.source[backslash_index - 1] == "\\":
-                backslash_index -= 1
-            if (line_end - backslash_index) % 2 == 0:
-                return line_end
-            index = line_end + 1
-        return limit
+        """Return the newline that ends a comment.
+
+        Bash comments run to the next newline unconditionally. A trailing backslash never
+        continues a comment onto the following line, so the comment ends at the first newline,
+        or at the scan limit when none remains.
+        """
+        return self._line_end(index, limit)
 
 
 def _remove_active_line_continuations(source: str) -> str:
@@ -1233,6 +1282,12 @@ def _invocation_in_simple_command(words: list[_ShellWord]) -> _Invocation | None
     subcommand = words[subcommand_index]
     if subcommand.dynamic or not subcommand.literal:
         return None
+    if subcommand.active_argv_expansion:
+        # A brace- or glob-expanded subcommand (for example "linea{r,}") expands to a different
+        # word at runtime, so Bash may run linear/reconcile while the unexpanded literal never
+        # matches classification. The scanner cannot certify which subcommand runs, so it fails
+        # closed rather than silently approving the workflow.
+        raise _ShellScanIncomplete("subcommand word uses brace or glob expansion")
     arguments = words[subcommand_index + 1 :]
     if subcommand.literal == "reconcile":
         has_dry_run = _reconcile_has_effective_dry_run(arguments)

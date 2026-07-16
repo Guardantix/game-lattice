@@ -17,7 +17,14 @@ from .model import (
     WorkflowStep,
     WorkflowStructureEntry,
 )
-from .render import CANONICAL_ARTIFACT_TARGETS, LINEAR_WORKFLOW_PATH, render_workflows
+from .render import (
+    CANONICAL_ARTIFACT_TARGETS,
+    LINEAR_JOB_ID,
+    LINEAR_SECRET_ENV_NAME,
+    LINEAR_SECRET_ENV_VALUE,
+    LINEAR_WORKFLOW_PATH,
+    render_workflows,
+)
 from .shell_scanner import direct_doc_lattice_invocations
 from .workflow_parser import parse_workflow
 
@@ -51,9 +58,6 @@ _SECRET_NAME_RE = re.compile(
 )
 _CANONICAL_LINEAR_PATH = LINEAR_WORKFLOW_PATH.as_posix()
 _WORKFLOW_DIRECTORY = LINEAR_WORKFLOW_PATH.parent.as_posix()
-_CANONICAL_LINEAR_ENV_VALUE = (
-    "${{ secrets.DOC_LATTICE_LINEAR_API_KEY }}"  # pragma: allowlist secret
-)
 _COMMAND_BEHAVIOR_FIELDS = frozenset(
     {
         "run",
@@ -378,7 +382,13 @@ def _managed_semantic_codes(
         codes.add("MANAGED_JOB")
         return frozenset(codes)
 
-    for job, expected_job in zip(document.jobs, expected.jobs, strict=True):
+    # Classify step drift exactly once per aligned job so both the semantic step rules and the
+    # structural step comparison reuse the same result instead of each re-running it.
+    job_pairs = tuple(zip(document.jobs, expected.jobs, strict=True))
+    step_drift = [
+        _classify_step_drift(job.steps, expected_job.steps) for job, expected_job in job_pairs
+    ]
+    for drift, (job, expected_job) in zip(step_drift, job_pairs, strict=True):
         if job.permissions != expected_job.permissions:
             codes.add("MANAGED_PERMISSIONS")
         if job.if_condition != expected_job.if_condition:
@@ -387,31 +397,32 @@ def _managed_semantic_codes(
             codes.add("MANAGED_JOB")
         if job.env != expected_job.env:
             codes.add("MANAGED_COMMAND")
-        codes.update(_managed_step_codes(job, expected_job))
+        codes.update(_managed_step_codes(job, expected_job, drift))
 
     if _has_linear_secret_reference(document):
         codes.add("MANAGED_SECRET")
-    codes.update(_managed_structure_codes(document, expected))
+    codes.update(_managed_structure_codes(document, expected, step_drift))
     return frozenset(codes)
 
 
 def _classify_step_drift(
     current_steps: tuple[WorkflowStep, ...],
     desired_steps: tuple[WorkflowStep, ...],
-) -> set[str]:
+) -> tuple[set[str], tuple[WorkflowStep, ...]]:
     """Classify uses and run drift between two step sequences.
 
-    This is the single owner of the uses-sequence comparison, the run-sequence comparison, and
-    the cache-versus-action classification, so a step count mismatch and an aligned drift are
-    diagnosed by the same logic. Cache steps are excluded from the action comparison and are
-    reported through their own code.
+    This is the single owner of the cache-step exclusion, the uses-sequence comparison, the
+    run-sequence comparison, and the cache-versus-action classification, so a step count
+    mismatch and an aligned drift are diagnosed by the same logic. Cache steps are excluded
+    from the action comparison and are reported through their own code.
 
     Args:
         current_steps: Steps discovered in the installed workflow.
         desired_steps: Steps of the expected rendered workflow.
 
     Returns:
-        The managed drift codes implied by the uses and run sequences.
+        The managed drift codes implied by the uses and run sequences, together with the
+        installed steps with cache steps excluded so callers reuse that one filtered view.
     """
     codes: set[str] = set()
     current_without_cache = tuple(
@@ -423,7 +434,7 @@ def _classify_step_drift(
         codes.add("MANAGED_ACTION")
     if _run_sequence(current_steps) != _run_sequence(desired_steps):
         codes.add("MANAGED_COMMAND")
-    return codes
+    return codes, current_without_cache
 
 
 def _uses_sequence(steps: tuple[WorkflowStep, ...]) -> tuple[str, ...]:
@@ -434,11 +445,13 @@ def _run_sequence(steps: tuple[WorkflowStep, ...]) -> tuple[str, ...]:
     return tuple(step.run for step in steps if step.run is not None)
 
 
-def _managed_step_codes(job: WorkflowJob, expected: WorkflowJob) -> set[str]:
-    codes = _classify_step_drift(job.steps, expected.steps)
-    current_steps_without_cache = tuple(
-        step for step in job.steps if _action_name(step.uses) != "actions/cache"
-    )
+def _managed_step_codes(
+    job: WorkflowJob,
+    expected: WorkflowJob,
+    drift: tuple[set[str], tuple[WorkflowStep, ...]],
+) -> set[str]:
+    drift_codes, current_steps_without_cache = drift
+    codes = set(drift_codes)
     expected_kinds = tuple(_step_kind(step) for step in expected.steps)
     current_kinds = tuple(_step_kind(step) for step in current_steps_without_cache)
     if (
@@ -494,6 +507,7 @@ def _step_kind(step: WorkflowStep) -> str:
 def _managed_structure_codes(
     document: WorkflowDocument,
     expected: WorkflowDocument,
+    step_drift: list[tuple[set[str], tuple[WorkflowStep, ...]]],
 ) -> set[str]:
     codes: set[str] = set()
     all_current = _structure_map(document.structure)
@@ -504,11 +518,11 @@ def _managed_structure_codes(
         if current.get(path) != desired.get(path):
             codes.add(_structure_code(path, current, desired))
 
-    for job, expected_job in zip(document.jobs, expected.jobs, strict=True):
+    for job, expected_job, drift in zip(document.jobs, expected.jobs, step_drift, strict=True):
+        drift_codes = drift[0]
         if len(job.steps) != len(expected_job.steps):
-            step_codes = _classify_step_drift(job.steps, expected_job.steps)
-            codes.update(step_codes)
-            if not step_codes:
+            codes.update(drift_codes)
+            if not drift_codes:
                 codes.add("MANAGED_JOB")
             continue
         if tuple(_step_kind(step) for step in job.steps) != tuple(
@@ -629,13 +643,13 @@ def _structure_values_reference_secret(
 def _has_linear_secret_reference(document: WorkflowDocument) -> bool:
     exempt_path = _canonical_linear_secret_path(document)
     for scalar in document.scalars:
-        if scalar.path == exempt_path and scalar.value == _CANONICAL_LINEAR_ENV_VALUE:
+        if scalar.path == exempt_path and scalar.value == LINEAR_SECRET_ENV_VALUE:
             continue
         if _SECRET_NAME_RE.search(scalar.value) is not None:
             return True
 
     for entry in document.structure:
-        if entry.path == exempt_path and entry.value == _CANONICAL_LINEAR_ENV_VALUE:
+        if entry.path == exempt_path and entry.value == LINEAR_SECRET_ENV_VALUE:
             continue
         if entry.path and entry.path[-1].casefold() in _SECRET_NAMES_CASEFOLDED:
             return True
@@ -645,20 +659,20 @@ def _has_linear_secret_reference(document: WorkflowDocument) -> bool:
 def _canonical_linear_secret_path(document: WorkflowDocument) -> tuple[str, ...] | None:
     if document.path.as_posix() != _CANONICAL_LINEAR_PATH:
         return None
-    linear_job = next((job for job in document.jobs if job.job_id == "linear"), None)
+    linear_job = next((job for job in document.jobs if job.job_id == LINEAR_JOB_ID), None)
     if linear_job is None or not linear_job.steps:
         return None
     final_step = linear_job.steps[-1]
-    expected_pair = ("LINEAR_API_KEY", _CANONICAL_LINEAR_ENV_VALUE)
+    expected_pair = (LINEAR_SECRET_ENV_NAME, LINEAR_SECRET_ENV_VALUE)
     if expected_pair not in final_step.env:
         return None
     return (
         "jobs",
-        "linear",
+        LINEAR_JOB_ID,
         "steps",
         str(final_step.index),
         "env",
-        "LINEAR_API_KEY",
+        LINEAR_SECRET_ENV_NAME,
     )
 
 

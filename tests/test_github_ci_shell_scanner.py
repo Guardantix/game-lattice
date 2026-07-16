@@ -99,9 +99,14 @@ ACCEPTANCE_CASES = [
         CHECK,
     ),
     (
-        "continued comment remains a comment",
+        "trailing comment backslash does not continue the comment",
         "# harmless \\\ndoc-lattice linear",
-        NONE,
+        LINEAR,
+    ),
+    (
+        "even trailing comment backslashes do not continue the comment",
+        "echo before # harmless \\\\\ndoc-lattice linear",
+        LINEAR,
     ),
     # Legacy backtick substitutions.
     (
@@ -184,6 +189,41 @@ ACCEPTANCE_CASES = [
         "substitution in legacy arithmetic",
         "echo $[ $(doc-lattice check) + 1 ]",
         CHECK,
+    ),
+    (
+        "unbalanced dollar-arithmetic runs a command-substitution subshell",
+        "x=$((doc-lattice linear) )",
+        LINEAR,
+    ),
+    (
+        "unbalanced arithmetic command runs a nested subshell",
+        "((doc-lattice linear) )",
+        LINEAR,
+    ),
+    (
+        "unbalanced dollar-arithmetic subshell without an invocation",
+        "echo out $((true INNER) )",
+        NONE,
+    ),
+    (
+        "balanced dollar-arithmetic is not a command",
+        "echo $((rc_audit + 1))",
+        NONE,
+    ),
+    (
+        "balanced dollar-arithmetic assignment is not a command",
+        "x=$((1 + 2))",
+        NONE,
+    ),
+    (
+        "nested balanced dollar-arithmetic is not a command",
+        "echo $(( (rc_audit + 1) * 2 ))",
+        NONE,
+    ),
+    (
+        "unterminated dollar-arithmetic yields no command",
+        "echo $((1 + 2",
+        NONE,
     ),
     # Heredocs, here-strings, and process substitutions.
     (
@@ -598,6 +638,56 @@ def test_direct_doc_lattice_invocations_accepts_unconsumed_reconcile_dry_run_opt
 )
 def test_direct_doc_lattice_invocations_ignores_protected_or_inactive_argv_metacharacters(script):
     assert direct_doc_lattice_invocations(script) == RECONCILE_DRY
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "doc-lattice linea{r,}",
+        "doc-lattice {linear,reconcile}",
+        "doc-lattice reconcil{e,}",
+        "doc-lattice chec*",
+        "doc-lattice li[n]ear",
+    ],
+)
+def test_direct_doc_lattice_invocations_fails_closed_on_brace_or_glob_expanded_subcommand(script):
+    # A subcommand carrying active argv expansion (for example "linea{r,}") expands to a
+    # different word at runtime (Bash runs "linear"), so the scanner cannot certify which
+    # subcommand runs. Declining would silently approve the workflow, so the scan must fail
+    # closed the same way it does for an unresolved uv or root option.
+    with pytest.raises(ConfigError, match=r"shell scan.*brace or glob expansion"):
+        direct_doc_lattice_invocations(script)
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "doc-lattice linea{r,}",
+        "doc-lattice chec*",
+    ],
+)
+def test_scan_doc_lattice_invocations_reports_incomplete_on_expanded_subcommand(script):
+    result = scan_doc_lattice_invocations(script)
+
+    assert result.invocations == NONE
+    assert result.incomplete_reason == "subcommand word uses brace or glob expansion"
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("doc-lattice reconcile {a,b}", RECONCILE),
+        ("doc-lattice check {a,b}", CHECK),
+        ("doc-lattice linear pc*", LINEAR),
+    ],
+)
+def test_direct_doc_lattice_invocations_keeps_literal_subcommand_with_expanded_arguments(
+    script,
+    expected,
+):
+    # A brace or glob expansion in an argument position does not taint the literal subcommand,
+    # which is still classified as usual.
+    assert direct_doc_lattice_invocations(script) == expected
 
 
 def test_direct_doc_lattice_invocations_keeps_dry_run_scoped_to_one_command():
