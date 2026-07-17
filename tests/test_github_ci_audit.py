@@ -234,6 +234,48 @@ jobs:
         )
 
 
+@pytest.mark.parametrize(
+    "option",
+    [
+        "--s",
+        "--sp",
+        "--spl",
+        "--spli",
+        "--split",
+        "--split-",
+        "--split-s",
+        "--split-st",
+        "--split-str",
+        "--split-stri",
+        "--split-strin",
+    ],
+)
+@pytest.mark.parametrize("value_separator", [" ", "="], ids=["separate-value", "equals-value"])
+def test_repository_audit_fails_closed_on_env_split_string_long_option_abbreviation(
+    option,
+    value_separator,
+):
+    document = _workflow(
+        f"""\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          env {option}{value_separator}'doc-lattice reconcile --all'
+"""
+    )
+
+    with pytest.raises(ConfigError, match=r"shell scan.*env split-string"):
+        audit_repository(
+            WorkflowDiscovery(directory_exists=True, documents=(document,)),
+            (None,) * len(CANONICAL_ARTIFACT_TARGETS),
+            parse_repository("Guardantix/doc-lattice"),
+            "2.1.0",
+        )
+
+
 def test_global_audit_reports_target_secret_linear_and_mutating_reconcile():
     document = _workflow(
         """\

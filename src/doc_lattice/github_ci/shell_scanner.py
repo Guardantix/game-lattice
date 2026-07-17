@@ -33,6 +33,7 @@ _SHELL_ASSIGNMENT_RE = re.compile(
     re.DOTALL,
 )
 _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
+_ENV_SPLIT_STRING_LONG_OPTION = "--split-string"
 _REDIRECTION_OPERATORS = (
     "&>>",
     "<<<",
@@ -1426,7 +1427,12 @@ def _skip_exec_wrapper(words: list[_ShellWord], start: int) -> int:
 
 def _is_env_split_string_option(literal: str) -> bool:
     """Return whether one static GNU ``env`` option would construct a new command argv."""
-    if literal == "--split-string" or literal.startswith("--split-string="):
+    option, _separator, _value = literal.partition("=")
+    if (
+        option.startswith("--")
+        and option != "--"
+        and _ENV_SPLIT_STRING_LONG_OPTION.startswith(option)
+    ):
         return True
     # GNU short options may be clustered and a split-string value may attach to its ``-S``.
     return literal.startswith("-") and not literal.startswith("--") and "S" in literal[1:]

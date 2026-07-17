@@ -780,6 +780,33 @@ def test_direct_doc_lattice_invocations_fails_closed_on_env_split_string(script)
 
 
 @pytest.mark.parametrize(
+    "option",
+    [
+        "--s",
+        "--sp",
+        "--spl",
+        "--spli",
+        "--split",
+        "--split-",
+        "--split-s",
+        "--split-st",
+        "--split-str",
+        "--split-stri",
+        "--split-strin",
+    ],
+)
+@pytest.mark.parametrize("value_separator", [" ", "="], ids=["separate-value", "equals-value"])
+def test_direct_doc_lattice_invocations_fails_closed_on_env_split_string_long_option_abbreviation(
+    option,
+    value_separator,
+):
+    script = f"env {option}{value_separator}'doc-lattice linear'"
+
+    with pytest.raises(ConfigError, match=r"shell scan.*env split-string"):
+        direct_doc_lattice_invocations(script)
+
+
+@pytest.mark.parametrize(
     "script",
     [
         "command -v doc-lattice linear",
