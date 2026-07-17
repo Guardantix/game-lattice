@@ -276,6 +276,28 @@ jobs:
         )
 
 
+def test_repository_audit_fails_closed_on_dynamic_env_split_string_prefix():
+    document = _workflow(
+        """\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          env --spl"$EMPTY" 'doc-lattice reconcile --all'
+"""
+    )
+
+    with pytest.raises(ConfigError, match=r"shell scan.*env split-string"):
+        audit_repository(
+            WorkflowDiscovery(directory_exists=True, documents=(document,)),
+            (None,) * len(CANONICAL_ARTIFACT_TARGETS),
+            parse_repository("Guardantix/doc-lattice"),
+            "2.1.0",
+        )
+
+
 def test_global_audit_reports_target_secret_linear_and_mutating_reconcile():
     document = _workflow(
         """\

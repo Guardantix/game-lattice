@@ -808,6 +808,23 @@ def test_direct_doc_lattice_invocations_fails_closed_on_env_split_string_long_op
 
 @pytest.mark.parametrize(
     "script",
+    ["env -uS doc-lattice linear", "env -CS doc-lattice linear"],
+    ids=["unset", "chdir"],
+)
+def test_direct_doc_lattice_invocations_handles_env_short_option_value_attached_to_short_option(
+    script,
+):
+    assert direct_doc_lattice_invocations(script) == LINEAR
+
+
+def test_direct_doc_lattice_invocations_fails_closed_on_dynamic_env_split_string_prefix():
+    # EMPTY can be empty at runtime, turning this into the valid GNU abbreviation `--spl`.
+    with pytest.raises(ConfigError, match=r"shell scan.*env split-string"):
+        direct_doc_lattice_invocations("env --spl\"$EMPTY\" 'doc-lattice linear'")
+
+
+@pytest.mark.parametrize(
+    "script",
     [
         "command -v doc-lattice linear",
         "command -V doc-lattice linear",

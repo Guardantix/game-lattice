@@ -1425,31 +1425,43 @@ def _skip_exec_wrapper(words: list[_ShellWord], start: int) -> int:
     return index
 
 
-def _is_env_split_string_option(literal: str) -> bool:
-    """Return whether one static GNU ``env`` option would construct a new command argv."""
+def _is_env_split_string_long_option(literal: str) -> bool:
+    """Return whether static text can form GNU ``env``'s split-string long option."""
     option, _separator, _value = literal.partition("=")
-    if (
+    return (
         option.startswith("--")
         and option != "--"
         and _ENV_SPLIT_STRING_LONG_OPTION.startswith(option)
-    ):
-        return True
-    # GNU short options may be clustered and a split-string value may attach to its ``-S``.
-    return literal.startswith("-") and not literal.startswith("--") and "S" in literal[1:]
+    )
+
+
+def _is_env_split_string_short_option(literal: str) -> bool:
+    """Return whether a static GNU ``env`` short-option cluster reaches ``-S``."""
+    if not literal.startswith("-") or literal.startswith("--"):
+        return False
+    for option in literal[1:]:
+        # These options consume the rest of this word as their attached argument.
+        if option in {"u", "C"}:
+            return False
+        if option == "S":
+            return True
+    return False
 
 
 def _skip_env_prefix(words: list[_ShellWord], start: int) -> int:
     index = start
     while index < len(words):
         word = words[index]
+        if _is_env_split_string_long_option(word.literal) or _is_env_split_string_short_option(
+            word.literal
+        ):
+            raise _ShellScanIncomplete("env split-string option cannot be scanned safely")
         if word.dynamic:
             return index
         if _ENV_ASSIGNMENT_RE.fullmatch(word.literal):
             index += 1
         elif word.literal in {"-u", "--unset", "-C", "--chdir"}:
             index += 2
-        elif _is_env_split_string_option(word.literal):
-            raise _ShellScanIncomplete("env split-string option cannot be scanned safely")
         elif word.literal.startswith("-"):
             index += 1
         else:
