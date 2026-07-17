@@ -212,6 +212,30 @@ jobs:
         audit_global_workflows((document,))
 
 
+def test_global_audit_escapes_control_characters_in_incomplete_shell_scan_context():
+    document = _workflow(
+        """\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          doc-lattice linea{r,}
+""",
+        ".github/workflows/bad\nname\x1b.yml",
+    )
+
+    with pytest.raises(ConfigError) as caught:
+        audit_global_workflows((document,))
+
+    message = str(caught.value)
+    assert ".github/workflows/bad\\nname\\u001b.yml: shell scan incomplete" in message
+    assert "brace or glob expansion" in message
+    assert "\n" not in message
+    assert "\x1b" not in message
+
+
 def test_repository_audit_fails_closed_on_env_split_string():
     document = _workflow(
         """\

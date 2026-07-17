@@ -17,6 +17,7 @@ from .model import (
     WorkflowStep,
     WorkflowStructureEntry,
 )
+from .path_display import display_path
 from .render import (
     CANONICAL_ARTIFACT_TARGETS,
     LINEAR_JOB_ID,
@@ -152,7 +153,7 @@ def audit_global_workflows(
                     invocations.extend(
                         direct_doc_lattice_invocations(
                             step.run,
-                            context=document.path.as_posix(),
+                            context=display_path(document.path),
                         )
                     )
             if any(command == "linear" for command, _dry_run in invocations):
