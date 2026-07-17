@@ -1,5 +1,6 @@
 """Tests for managed GitHub CI artifact filesystem operations."""
 
+import os
 import stat
 from pathlib import Path, PurePosixPath
 
@@ -596,6 +597,106 @@ def test_apply_replace_preserves_existing_mode(tmp_path: Path):
     apply_changes(preflight_refresh(tmp_path, new_artifacts))
 
     assert stat.S_IMODE(bootstrap.stat().st_mode) == 0o751
+
+
+def test_apply_keeps_contending_refresh_from_publishing_before_outer_write(
+    tmp_path: Path,
+    monkeypatch,
+):
+    old_artifacts = render_managed_artifacts("Guardantix/doc-lattice", "2.0.0")
+    new_artifacts = render_managed_artifacts("Guardantix/doc-lattice", "2.1.0")
+    _write_artifacts(tmp_path, old_artifacts)
+    outer_changes = preflight_refresh(tmp_path, new_artifacts)
+    contending_changes = preflight_refresh(tmp_path, new_artifacts)
+    before = _artifact_bytes(tmp_path, old_artifacts)
+    real_replace = filesystem.atomic_replace_bytes
+    contended = False
+
+    def _contending_replace(path: Path, data: bytes, *, prefix: str) -> None:
+        nonlocal contended
+        if not contended:
+            contended = True
+            with pytest.raises(ConfigError, match="managed artifact refresh is in progress"):
+                apply_changes(contending_changes)
+            assert _artifact_bytes(tmp_path, old_artifacts) == before
+        real_replace(path, data, prefix=prefix)
+
+    monkeypatch.setattr(filesystem, "atomic_replace_bytes", _contending_replace)
+
+    apply_changes(outer_changes)
+
+    assert contended is True
+    assert _artifact_bytes(tmp_path, new_artifacts) == [
+        artifact.text.encode("utf-8") for artifact in new_artifacts
+    ]
+
+
+def test_apply_rejects_unsupported_locking_before_replacing_target(tmp_path: Path, monkeypatch):
+    old_artifact = render_managed_artifacts("Guardantix/doc-lattice", "2.0.0")[0]
+    new_artifact = render_managed_artifacts("Guardantix/doc-lattice", "2.1.0")[0]
+    _write_artifacts(tmp_path, (old_artifact,))
+    changes = preflight_refresh(tmp_path, (new_artifact,))
+    target = tmp_path / old_artifact.relative_path
+    before = target.read_bytes()
+    monkeypatch.setattr(filesystem, "_LOCKING_SUPPORTED", False, raising=False)
+
+    with pytest.raises(ConfigError, match="managed artifact locking is not supported"):
+        apply_changes(changes)
+
+    assert target.read_bytes() == before
+
+
+def test_apply_rejects_mutable_changes_spanning_roots_before_writing(tmp_path: Path):
+    left_root = tmp_path / "left"
+    right_root = tmp_path / "right"
+    left_root.mkdir()
+    right_root.mkdir()
+    artifacts = render_managed_artifacts("Guardantix/doc-lattice", "2.1.0")
+    left_change = preflight_create(left_root, (artifacts[0],))[0]
+    right_change = preflight_create(right_root, (artifacts[1],))[0]
+
+    with pytest.raises(ConfigError, match="multiple repository roots"):
+        apply_changes((left_change, right_change))
+
+    assert not (left_root / ".github").exists()
+    assert not (right_root / ".github").exists()
+
+
+def test_apply_lock_cleanup_failures_are_notes_on_active_operation_error(
+    tmp_path: Path,
+    monkeypatch,
+):
+    old_artifact = render_managed_artifacts("Guardantix/doc-lattice", "2.0.0")[0]
+    new_artifact = render_managed_artifacts("Guardantix/doc-lattice", "2.1.0")[0]
+    _write_artifacts(tmp_path, (old_artifact,))
+    changes = preflight_refresh(tmp_path, (new_artifact,))
+    real_close = os.close
+
+    def _fail_release(_fd: int, *, release: bool) -> None:
+        if release:
+            raise OSError("synthetic lock release failure")
+
+    def _fail_close(fd: int) -> None:
+        real_close(fd)
+        raise OSError("synthetic lock close failure")
+
+    def _fail_publish(*_args: object, **_kwargs: object) -> None:
+        raise OSError("synthetic publication failure")
+
+    monkeypatch.setattr(filesystem, "_flock", _fail_release, raising=False)
+    monkeypatch.setattr(filesystem, "os", os, raising=False)
+    monkeypatch.setattr(filesystem.os, "close", _fail_close)
+    monkeypatch.setattr(filesystem, "atomic_replace_bytes", _fail_publish)
+
+    with pytest.raises(ConfigError, match="synthetic publication failure") as caught:
+        apply_changes(changes)
+
+    notes = getattr(caught.value, "__notes__", ())
+    assert any("without rollback" in note for note in notes)
+    assert any(
+        "lock release" in note and "synthetic lock release failure" in note for note in notes
+    )
+    assert any("lock close" in note and "synthetic lock close failure" in note for note in notes)
 
 
 def test_preflight_wraps_read_oserror_with_notes_and_canonical_path(

@@ -1,8 +1,11 @@
 """Local filesystem operations for fixed managed GitHub CI artifacts."""
 
 import difflib
+import os
 import stat
-from collections.abc import Callable
+import sys
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -43,6 +46,7 @@ _PARTIAL_STATE_NOTE = (
     "managed artifacts are applied in input order without rollback; earlier changes, "
     "if any, remain in place, so inspect the reported path and rerun to converge"
 )
+_LOCKING_SUPPORTED = os.name != "nt"
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,21 +344,122 @@ def apply_changes(changes: tuple[ArtifactChange, ...]) -> None:
 
     Raises:
         ConfigError: If containment, path type, or prior bytes changed after preflight, or
-            if a durable create or replacement fails. Earlier successful writes are not
-            rolled back and a later rerun can converge them.
+            if a durable create or replacement fails, or advisory locking is unavailable.
+            Earlier successful writes are not rolled back and a later rerun can converge them.
     """
-    for change in changes:
-        if change.action == "current":
-            continue
+    root = _mutable_changes_root(changes)
+    if root is None:
+        return
+    with _managed_artifact_lock(root):
+        for change in changes:
+            if change.action == "current":
+                continue
+            try:
+                if change.action == "create":
+                    _apply_create(change)
+                else:
+                    _apply_replace(change)
+            except ConfigError as error:
+                if _PARTIAL_STATE_NOTE not in getattr(error, "__notes__", ()):
+                    error.add_note(_PARTIAL_STATE_NOTE)
+                raise
+
+
+def _mutable_changes_root(changes: tuple[ArtifactChange, ...]) -> Path | None:
+    """Return the one root for mutable changes, rejecting cross-root publication batches."""
+    mutable_changes = tuple(change for change in changes if change.action != "current")
+    if not mutable_changes:
+        return None
+    root = mutable_changes[0].root
+    if any(change.root != root for change in mutable_changes[1:]):
+        raise ConfigError("managed artifact changes span multiple repository roots")
+    return root
+
+
+@contextmanager
+def _managed_artifact_lock(root: Path) -> Iterator[None]:
+    """Hold the root directory's nonblocking advisory lock through publication."""
+    if not _LOCKING_SUPPORTED:
+        raise _unsupported_lock_error()
+    fd = _open_lock_directory(root)
+    acquired = False
+    try:
+        _claim_lock(fd)
+        acquired = True
+        yield
+    finally:
+        active_error = sys.exception()
+        cleanup_errors: list[tuple[str, BaseException]] = []
         try:
-            if change.action == "create":
-                _apply_create(change)
+            if acquired:
+                _flock(fd, release=True)
+        except (ConfigError, OSError) as cause:
+            cleanup_errors.append(("lock release", cause))
+        try:
+            os.close(fd)
+        except OSError as cause:
+            cleanup_errors.append(("lock close", cause))
+        if cleanup_errors:
+            details = "; ".join(
+                f"{phase} failed: {_lock_error_detail(cause)}" for phase, cause in cleanup_errors
+            )
+            if active_error is not None:
+                active_error.add_note(f"managed artifact {details}")
             else:
-                _apply_replace(change)
-        except ConfigError as error:
-            if _PARTIAL_STATE_NOTE not in getattr(error, "__notes__", ()):
-                error.add_note(_PARTIAL_STATE_NOTE)
-            raise
+                error = ConfigError(f"managed artifact {details}")
+                copy_exception_notes(error, cleanup_errors[0][1])
+                raise error from cleanup_errors[0][1]
+
+
+def _open_lock_directory(root: Path) -> int:
+    """Open one repository root directory for an advisory publication lock."""
+    try:
+        return os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError as cause:
+        raise _lock_setup_error("opening repository root", cause) from cause
+
+
+def _claim_lock(fd: int) -> None:
+    """Acquire one nonblocking advisory lock or describe why publication cannot begin."""
+    try:
+        _flock(fd, release=False)
+    except BlockingIOError:
+        raise ConfigError("managed artifact refresh is in progress; retry after it exits") from None
+    except OSError as cause:
+        raise _lock_setup_error("acquiring managed artifact lock", cause) from cause
+
+
+def _flock(fd: int, *, release: bool) -> None:
+    """Apply the POSIX advisory lock operation without importing fcntl at module load."""
+    try:
+        import fcntl  # noqa: PLC0415 - non-mutating commands must work without POSIX locking
+    except ImportError as cause:
+        raise _unsupported_lock_error() from cause
+    operation = fcntl.LOCK_UN if release else fcntl.LOCK_EX | fcntl.LOCK_NB
+    fcntl.flock(fd, operation)
+
+
+def _unsupported_lock_error() -> ConfigError:
+    """Return the fail-closed error for unsupported advisory locking platforms."""
+    return ConfigError(
+        f"managed artifact locking is not supported on this platform ({sys.platform})"
+    )
+
+
+def _lock_setup_error(operation: str, cause: OSError) -> ConfigError:
+    """Wrap one directory-lock setup failure without leaking a local root path."""
+    error = ConfigError(
+        f"managed artifact lock setup failed while {operation}: {_stable_error_detail(cause)}"
+    )
+    copy_exception_notes(error, cause)
+    return error
+
+
+def _lock_error_detail(cause: BaseException) -> str:
+    """Render cleanup failures without exposing an incidental absolute filename."""
+    if isinstance(cause, (OSError, RuntimeError)):
+        return _stable_error_detail(cause)
+    return str(cause)
 
 
 def _inspect_workflow_candidate(root: Path, name: str) -> _WorkflowCandidate | None:
