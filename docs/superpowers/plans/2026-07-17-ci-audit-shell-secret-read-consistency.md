@@ -87,8 +87,9 @@ body only if `_supports_bash_run_body(shell)` accepts exact `bash`/`sh` or a par
 final argument is exactly `{0}` and whose preceding options are a narrow non-command-string
 allowlist. Reject `-c`, dynamic expressions, multiple/missing placeholders, and other interpreters.
 
-For no explicit shell, accept the default only when literal `runs-on` starts with `ubuntu-` or
-`macos-`. Otherwise raise:
+For no explicit shell, accept the default only when literal `runs-on` exactly matches the reviewed
+GitHub-hosted allowlist (`ubuntu-latest` or `macos-latest`). Prefix-sharing custom labels and
+dynamic expressions are not proof of runner semantics and must fail closed. Otherwise raise:
 
 ```python
 raise ConfigError(f"{context}: unsupported shell semantics for pull-request run step")

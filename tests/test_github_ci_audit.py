@@ -951,6 +951,150 @@ jobs:
     }
 
 
+@pytest.mark.parametrize(
+    "workflow",
+    [
+        """\
+on: pull_request
+defaults:
+  run:
+    shell: pwsh
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: python {0}
+    steps:
+      - shell: doc-lattice linear --config {0}
+        run: |
+          team: engineering
+""",
+        """\
+on: pull_request
+defaults:
+  run:
+    shell: pwsh
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: doc-lattice linear --config {0}
+    steps:
+      - run: |
+          team: engineering
+""",
+        """\
+on: pull_request
+defaults:
+  run:
+    shell: doc-lattice linear --config {0}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          team: engineering
+""",
+    ],
+    ids=["step", "job-default", "workflow-default"],
+)
+def test_global_audit_scans_effective_shell_template(workflow: str):
+    document = _workflow(workflow)
+
+    assert _finding_codes(audit_global_workflows((document,))) == {"PR_LINEAR_INVOCATION"}
+
+
+@pytest.mark.parametrize(
+    "shell",
+    [
+        "bash",
+        "bash --noprofile --norc -eo pipefail {0}",
+        "/bin/sh -eu {0}",
+    ],
+    ids=["builtin-bash", "custom-bash", "custom-sh"],
+)
+def test_global_audit_scans_supported_bash_shell_bodies(shell: str):
+    document = _workflow(
+        f"""\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - shell: {shell}
+        run: doc-lattice linear
+"""
+    )
+
+    assert _finding_codes(audit_global_workflows((document,))) == {"PR_LINEAR_INVOCATION"}
+
+
+@pytest.mark.parametrize("shell", ["bash -c {0}", "bash --init-file {0}"])
+def test_global_audit_rejects_command_string_or_startup_file_shells(shell: str):
+    document = _workflow(
+        f"""\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - shell: {shell}
+        run: echo safe
+"""
+    )
+
+    with pytest.raises(ConfigError, match=r"unsupported shell semantics.*pull-request run step"):
+        audit_global_workflows((document,))
+
+
+@pytest.mark.parametrize(
+    "workflow",
+    [
+        """\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - shell: pwsh
+        run: Write-Output safe
+""",
+        """\
+on: pull_request
+jobs:
+  audit:
+    runs-on: windows-latest
+    steps:
+      - run: Write-Output safe
+""",
+        """\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-${{ matrix.version }}
+    steps:
+      - run: Write-Output safe
+""",
+        """\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-private
+    steps:
+      - run: Write-Output safe
+""",
+    ],
+    ids=["explicit-pwsh", "windows-default", "dynamic-runner", "custom-runner-prefix"],
+)
+def test_global_audit_fails_closed_on_unsupported_shell_semantics(workflow: str):
+    document = _workflow(workflow)
+
+    with pytest.raises(ConfigError, match=r"unsupported shell semantics.*pull-request run step"):
+        audit_global_workflows((document,))
+
+
 def test_global_audit_allows_pr_dry_run_reconcile():
     document = _workflow(
         """\
@@ -1184,6 +1328,74 @@ jobs:
     )
 
     assert _finding_codes(audit_global_workflows((document,))) == {"LINEAR_SECRET_REFERENCE"}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "${{ toJSON(secrets) }}",
+        "${{ secrets }}",
+        "${{ secrets.* }}",
+        "${{ secrets[*] }}",
+        "${{ secrets.RELEASE_TOKEN.* }}",
+        "${{ secrets['RELEASE_TOKEN'].* }}",
+        "${{ secrets.RELEASE_TOKEN* }}",
+        "${{ secrets",
+    ],
+    ids=[
+        "function",
+        "whole-context",
+        "dot-wildcard",
+        "index-wildcard",
+        "chained-dot",
+        "chained-index",
+        "adjacent-wildcard",
+        "unterminated",
+    ],
+)
+def test_global_audit_rejects_unbounded_secret_context_access(value: str):
+    document = _workflow(
+        f"""\
+on: push
+jobs:
+  unrelated:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          TOKEN: {value}
+        run: true
+"""
+    )
+
+    assert _finding_codes(audit_global_workflows((document,))) == {"LINEAR_SECRET_REFERENCE"}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "${{ secrets.RELEASE_TOKEN }}",
+        "${{ secrets . RELEASE_TOKEN }}",
+        "${{ secrets['RELEASE_TOKEN'] }}",
+        "${{ 'secrets' }}",
+        "${{ format('it''s secrets', secrets.RELEASE_TOKEN) }}",
+    ],
+    ids=["dot", "spaced-dot", "index", "quoted-literal", "escaped-quote"],
+)
+def test_global_audit_allows_static_unrelated_secret_access(value: str):
+    document = _workflow(
+        f"""\
+on: push
+jobs:
+  unrelated:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          TOKEN: {value}
+        run: true
+"""
+    )
+
+    assert audit_global_workflows((document,)) == ()
 
 
 def test_global_audit_allows_static_unrelated_secret_index():
@@ -1561,6 +1773,40 @@ def test_discover_workflows_rejects_file_growth_between_stat_and_read(
 
     with pytest.raises(ConfigError, match=r"changed during discovery.*growing\.yml"):
         discover_workflows(tmp_path)
+
+
+def test_discover_workflows_rejects_same_size_replacement_after_open(
+    tmp_path: Path,
+    monkeypatch,
+):
+    workflows = tmp_path / ".github/workflows"
+    workflows.mkdir(parents=True)
+    unsafe = b"on: pull_request_target\njobs: {}\n"
+    safe_prefix = b"on: push\njobs: {}\n"
+    safe = safe_prefix + b"#" + (b"x" * (len(unsafe) - len(safe_prefix) - 2)) + b"\n"
+    assert len(safe) == len(unsafe)
+    target = workflows / "replaced.yml"
+    target.write_bytes(safe)
+    replacement = workflows / "replaced.pending"
+    replacement.write_bytes(unsafe)
+    real_open = Path.open
+    replaced = False
+
+    def _replace_after_open(path: Path, *args, **kwargs):
+        nonlocal replaced
+        handle = real_open(path, *args, **kwargs)
+        if path == target and not replaced and "r" in args[0]:
+            replaced = True
+            replacement.replace(target)
+        return handle
+
+    monkeypatch.setattr(Path, "open", _replace_after_open)
+
+    with pytest.raises(ConfigError, match=r"changed during discovery.*replaced\.yml"):
+        discover_workflows(tmp_path)
+
+    assert replaced is True
+    assert target.read_bytes() == unsafe
 
 
 def test_inspect_installed_artifacts_returns_exact_text_and_parsed_markers(tmp_path: Path):

@@ -57,8 +57,22 @@ _SECRET_NAME_RE = re.compile(
     rf"(?<![A-Za-z0-9_])(?:{_SECRET_NAME_ALTERNATION})(?![A-Za-z0-9_])",
     re.IGNORECASE,
 )
-_SECRETS_INDEX_RE = re.compile(r"(?<![A-Za-z0-9_])secrets\s*\[\s*", re.IGNORECASE)
-_STATIC_SECRET_INDEX_RE = re.compile(r"'[A-Za-z_][A-Za-z0-9_]*'\s*\]")
+_SECRETS_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_])secrets(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
+_STATIC_SECRET_DOT_RE = re.compile(r"\s*\.\s*[A-Za-z_][A-Za-z0-9_]*")
+_STATIC_SECRET_INDEX_RE = re.compile(r"\s*\[\s*'[A-Za-z_][A-Za-z0-9_]*'\s*\]")
+_STATIC_SHELL_TEMPLATE_RE = re.compile(r"[A-Za-z0-9_./{} \t-]+")
+_BASH_SHELL_EXECUTABLES = frozenset(
+    {"bash", "sh", "/bin/bash", "/bin/sh", "/usr/bin/bash", "/usr/bin/sh"}
+)
+_BASH_LONG_FLAGS = frozenset({"--noprofile", "--norc"})
+_BASH_SHORT_FLAGS = frozenset({"e", "n", "u", "v", "x"})
+_BASH_O_OPTIONS = frozenset({"errexit", "nounset", "pipefail", "xtrace"})
+_BASH_DEFAULT_RUNNERS = frozenset({"ubuntu-latest", "macos-latest"})
+_SCRIPT_PLACEHOLDER = "{0}"
+_SCRIPT_SENTINEL = "__doc_lattice_script__"
 _CANONICAL_LINEAR_PATH = LINEAR_WORKFLOW_PATH.as_posix()
 _WORKFLOW_DIRECTORY = LINEAR_WORKFLOW_PATH.parent.as_posix()
 _COMMAND_BEHAVIOR_FIELDS = frozenset(
@@ -152,12 +166,7 @@ def audit_global_workflows(
                 for step in job.steps:
                     if step.run is None:
                         continue
-                    invocations.extend(
-                        direct_doc_lattice_invocations(
-                            step.run,
-                            context=display_path(document.path),
-                        )
-                    )
+                    invocations.extend(_pr_step_invocations(document, job, step))
             if any(command == "linear" for command, _dry_run in invocations):
                 findings.append(
                     _finding(
@@ -183,6 +192,92 @@ def audit_global_workflows(
                 )
             )
     return _sorted_unique(findings)
+
+
+def _pr_step_invocations(
+    document: WorkflowDocument,
+    job: WorkflowJob,
+    step: WorkflowStep,
+) -> tuple[tuple[str, bool], ...]:
+    """Return direct invocations under the effective shell for one PR run step."""
+    context = (
+        f"{display_path(document.path)} job {job.job_id!r} step {step.index}: "
+        "unsupported shell semantics for pull-request run step"
+    )
+    shell = step.shell or job.default_shell or document.default_shell
+    if shell is None:
+        if not _default_run_shell_is_bash(job.runs_on):
+            raise ConfigError(context)
+        return direct_doc_lattice_invocations(
+            step.run or "",
+            context=display_path(document.path),
+        )
+
+    template = shell.replace(_SCRIPT_PLACEHOLDER, _SCRIPT_SENTINEL)
+    template_invocations = direct_doc_lattice_invocations(
+        template,
+        context=display_path(document.path),
+    )
+    if _supports_bash_run_body(shell):
+        return (
+            *template_invocations,
+            *direct_doc_lattice_invocations(
+                step.run or "",
+                context=display_path(document.path),
+            ),
+        )
+    if template_invocations:
+        return template_invocations
+    raise ConfigError(context)
+
+
+def _default_run_shell_is_bash(runs_on: str | None) -> bool:
+    if runs_on is None:
+        return False
+    return runs_on.casefold() in _BASH_DEFAULT_RUNNERS
+
+
+def _supports_bash_run_body(shell: str) -> bool:
+    stripped = shell.strip()
+    if stripped in {"bash", "sh"}:
+        return True
+    if _STATIC_SHELL_TEMPLATE_RE.fullmatch(stripped) is None:
+        return False
+    words = stripped.split()
+    if (
+        not words
+        or words[0] not in _BASH_SHELL_EXECUTABLES
+        or words[-1] != _SCRIPT_PLACEHOLDER
+        or words.count(_SCRIPT_PLACEHOLDER) != 1
+    ):
+        return False
+    return _supports_bash_options(words[0], words[1:-1])
+
+
+def _supports_bash_options(executable: str, options: list[str]) -> bool:
+    bash = executable.endswith("bash")
+    index = 0
+    while index < len(options):
+        option = options[index]
+        if bash and option in _BASH_LONG_FLAGS:
+            index += 1
+            continue
+        if not option.startswith("-") or option.startswith("--") or option == "-":
+            return False
+        cluster = option[1:]
+        if "o" not in cluster:
+            if not set(cluster) <= _BASH_SHORT_FLAGS:
+                return False
+            index += 1
+            continue
+        if not bash or cluster.count("o") != 1 or not cluster.endswith("o"):
+            return False
+        if not set(cluster[:-1]) <= _BASH_SHORT_FLAGS or index + 1 >= len(options):
+            return False
+        if options[index + 1] not in _BASH_O_OPTIONS:
+            return False
+        index += 2
+    return True
 
 
 def audit_managed_installation(
@@ -648,7 +743,7 @@ def _has_linear_secret_reference(document: WorkflowDocument) -> bool:
     for scalar in document.scalars:
         if scalar.path == exempt_path and scalar.value == LINEAR_SECRET_ENV_VALUE:
             continue
-        if _SECRET_NAME_RE.search(scalar.value) is not None or _has_computed_secret_index(
+        if _SECRET_NAME_RE.search(scalar.value) is not None or _has_unsafe_secret_context_access(
             scalar.value
         ):
             return True
@@ -661,12 +756,56 @@ def _has_linear_secret_reference(document: WorkflowDocument) -> bool:
     return False
 
 
-def _has_computed_secret_index(value: str) -> bool:
-    """Return whether a secrets-context index has no provably static secret name."""
-    return any(
-        _STATIC_SECRET_INDEX_RE.match(value, match.end()) is None
-        for match in _SECRETS_INDEX_RE.finditer(value)
-    )
+def _has_unsafe_secret_context_access(value: str) -> bool:
+    """Return whether an expression can access more than one static unrelated secret."""
+    cursor = 0
+    while True:
+        expression_start = value.find("${{", cursor)
+        if expression_start < 0:
+            return False
+        index = expression_start + len("${{")
+        while index < len(value):
+            if value.startswith("}}", index):
+                cursor = index + len("}}")
+                break
+            if value[index] == "'":
+                index = _quoted_expression_string_end(value, index)
+                continue
+            token = _SECRETS_TOKEN_RE.match(value, index)
+            if token is None:
+                index += 1
+                continue
+            access_end = _static_secret_access_end(value, token.end())
+            if access_end is None:
+                return True
+            trailing = access_end
+            while trailing < len(value) and value[trailing].isspace():
+                trailing += 1
+            if trailing < len(value) and value[trailing] in ".[*":
+                return True
+            index = access_end
+        else:
+            return False
+
+
+def _quoted_expression_string_end(value: str, start: int) -> int:
+    index = start + 1
+    while index < len(value):
+        if value[index] != "'":
+            index += 1
+            continue
+        if index + 1 < len(value) and value[index + 1] == "'":
+            index += 2
+            continue
+        return index + 1
+    return len(value)
+
+
+def _static_secret_access_end(value: str, start: int) -> int | None:
+    for pattern in (_STATIC_SECRET_DOT_RE, _STATIC_SECRET_INDEX_RE):
+        if match := pattern.match(value, start):
+            return match.end()
+    return None
 
 
 def _canonical_linear_secret_path(document: WorkflowDocument) -> tuple[str, ...] | None:

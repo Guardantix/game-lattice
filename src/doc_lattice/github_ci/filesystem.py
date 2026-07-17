@@ -55,7 +55,7 @@ class _WorkflowCandidate:
     relative_path: Path
     logical_path: Path
     resolved_path: Path
-    size: int
+    stat_result: os.stat_result
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,7 +166,7 @@ def discover_workflows(root: Path) -> WorkflowDiscovery:
         for name in names
         if (candidate := _inspect_workflow_candidate(root, name)) is not None
     )
-    declared_total = sum(candidate.size for candidate in candidates)
+    declared_total = sum(candidate.stat_result.st_size for candidate in candidates)
     if declared_total > MAX_CUMULATIVE_WORKFLOW_BYTES:
         raise ConfigError(
             f"GitHub workflows exceed the cumulative byte limit in {display_directory}"
@@ -570,7 +570,7 @@ def _inspect_workflow_candidate(root: Path, name: str) -> _WorkflowCandidate | N
         relative_path=relative_path,
         logical_path=logical_path,
         resolved_path=resolved_path,
-        size=target_stat.st_size,
+        stat_result=target_stat,
     )
 
 
@@ -591,11 +591,11 @@ class _BoundedReadWording:
 def _read_bounded_with_recheck(
     open_path: Path,
     logical_path: Path,
-    expected_size: int,
+    expected_stat: os.stat_result,
     reresolve: Callable[[], Path],
     wording: _BoundedReadWording,
 ) -> bytes:
-    """Read one bounded file and reject containment, type, or size changes after the read.
+    """Read one bounded file and reject descriptor or path changes during the read.
 
     Workflow discovery and managed artifact reads share this open, read, re-resolve, re-stat,
     and size-recheck sequence; only their error wording and re-resolution differ.
@@ -603,7 +603,7 @@ def _read_bounded_with_recheck(
     Args:
         open_path: Already resolved path to open, also the expected re-resolution target.
         logical_path: Unresolved path to re-stat after the read.
-        expected_size: Size observed before the read that the recheck must still match.
+        expected_stat: Path metadata observed before the open that every recheck must match.
         reresolve: Re-authenticates containment and returns the freshly resolved path.
         wording: Exact error strings for this call site.
 
@@ -611,12 +611,16 @@ def _read_bounded_with_recheck(
         The file bytes bounded to the per-file workflow limit.
 
     Raises:
-        ConfigError: If the read fails, exceeds the byte bound, or containment, type, or size
-            changed during the read.
+        ConfigError: If the read fails, exceeds the byte bound, or containment, identity, type,
+            or metadata changed during the read.
     """
     try:
         with open_path.open("rb") as handle:
+            opened_before = os.fstat(handle.fileno())
+            _require_expected_file(opened_before, expected_stat, wording)
             data = handle.read(MAX_WORKFLOW_BYTES + 1)
+            opened_after = os.fstat(handle.fileno())
+            _require_expected_file(opened_after, expected_stat, wording)
     except OSError as exc:
         raise _filesystem_error(wording.read_context, exc, path=wording.error_path) from exc
     if len(data) > MAX_WORKFLOW_BYTES:
@@ -633,9 +637,35 @@ def _read_bounded_with_recheck(
         raise ConfigError(wording.symlink)
     if not stat.S_ISREG(target_stat.st_mode):
         raise ConfigError(wording.regular)
-    if target_stat.st_size != expected_size or len(data) != expected_size:
+    _require_expected_file(target_stat, expected_stat, wording)
+    if len(data) != expected_stat.st_size:
         raise ConfigError(wording.size_changed)
     return data
+
+
+def _require_expected_file(
+    current: os.stat_result,
+    expected: os.stat_result,
+    wording: _BoundedReadWording,
+) -> None:
+    """Require one descriptor or path stat to match the pre-open file snapshot."""
+    if (current.st_dev, current.st_ino) != (expected.st_dev, expected.st_ino):
+        raise ConfigError(wording.changed)
+    if _file_snapshot(current) != _file_snapshot(expected):
+        raise ConfigError(wording.size_changed)
+
+
+def _file_snapshot(result: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+    """Return stable identity and mutation metadata for one regular file."""
+    return (
+        result.st_dev,
+        result.st_ino,
+        result.st_mode,
+        result.st_nlink,
+        result.st_size,
+        result.st_mtime_ns,
+        result.st_ctime_ns,
+    )
 
 
 def _read_workflow_candidate(root: Path, candidate: _WorkflowCandidate) -> bytes:
@@ -655,7 +685,7 @@ def _read_workflow_candidate(root: Path, candidate: _WorkflowCandidate) -> bytes
     return _read_bounded_with_recheck(
         candidate.resolved_path,
         candidate.logical_path,
-        candidate.size,
+        candidate.stat_result,
         lambda: _resolve_repository_path(
             candidate.logical_path,
             root,
@@ -923,7 +953,7 @@ def _read_bounded_artifact_bytes(
     return _read_bounded_with_recheck(
         destination,
         logical_destination,
-        target_stat.st_size,
+        target_stat,
         lambda: _resolve_destination(logical_destination, root, artifact, "recheck"),
         wording,
     )
