@@ -1104,6 +1104,25 @@ def _close_unowned_artifact_descriptor(
         )
 
 
+def _close_replacement_target_descriptor(
+    target_fd: int,
+    active_error: BaseException | None,
+    path: str,
+) -> None:
+    """Close one replacement target, preserving any active read-validation error."""
+    if active_error is not None:
+        _close_unowned_artifact_descriptor(target_fd, active_error, phase="target")
+        return
+    try:
+        os.close(target_fd)
+    except OSError as cause:
+        raise _filesystem_error(
+            "cannot close replacement destination",
+            cause,
+            path=path,
+        ) from cause
+
+
 def _transfer_locked_artifact_parent(
     parent_fd: int,
     child_fd: int,
@@ -1329,13 +1348,13 @@ def _read_apply_bytes_at(parent_fd: int, artifact: ManagedArtifact) -> bytes:
         if opened_stat.st_size > MAX_WORKFLOW_BYTES:
             raise ConfigError(f"managed artifact exceeds the byte limit: {path}")
         with os.fdopen(target_fd, "rb") as handle:
-            target_fd = -1
+            target_fd = _NO_DESCRIPTOR
             data = handle.read(MAX_WORKFLOW_BYTES + 1)
     except OSError as exc:
         raise _filesystem_error("cannot read replacement destination", exc, path=path) from exc
     finally:
-        if target_fd != -1:
-            os.close(target_fd)
+        if target_fd != _NO_DESCRIPTOR:
+            _close_replacement_target_descriptor(target_fd, sys.exception(), path)
     if len(data) > MAX_WORKFLOW_BYTES:
         raise ConfigError(f"managed artifact exceeds the byte limit: {path}")
     return data

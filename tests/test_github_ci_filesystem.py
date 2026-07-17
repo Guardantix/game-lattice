@@ -901,6 +901,72 @@ def test_apply_wraps_parent_handoff_close_failure_and_closes_child_descriptor(
                 real_close(child_fd)
 
 
+def test_apply_preserves_post_open_target_validation_error_when_target_close_fails(
+    tmp_path: Path,
+    monkeypatch,
+):
+    old_artifact = render_managed_artifacts("Guardantix/doc-lattice", "2.0.0")[0]
+    new_artifact = render_managed_artifacts("Guardantix/doc-lattice", "2.1.0")[0]
+    _write_artifacts(tmp_path, (old_artifact,))
+    changes = preflight_refresh(tmp_path, (new_artifact,))
+    real_open = os.open
+    real_fstat = os.fstat
+    real_close = os.close
+    target_fds: list[int] = []
+    target_close_attempts = 0
+
+    def _capture_target_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        fd = real_open(path, flags, mode, dir_fd=dir_fd)
+        if path == old_artifact.relative_path.name and dir_fd is not None:
+            target_fds.append(fd)
+        return fd
+
+    def _report_directory_for_target(fd: int) -> os.stat_result:
+        if fd in target_fds:
+            return tmp_path.stat()
+        return real_fstat(fd)
+
+    def _close_target_then_fail(fd: int) -> None:
+        nonlocal target_close_attempts
+        if fd in target_fds:
+            target_close_attempts += 1
+            real_close(fd)
+            raise OSError(errno.EIO, "synthetic target close failure")
+        real_close(fd)
+
+    monkeypatch.setattr(filesystem.os, "open", _capture_target_open)
+    monkeypatch.setattr(filesystem.os, "fstat", _report_directory_for_target)
+    monkeypatch.setattr(filesystem.os, "close", _close_target_then_fail)
+
+    try:
+        with pytest.raises(
+            ConfigError,
+            match=r"existing target must be a regular file.*doc-lattice\.yml",
+        ) as caught:
+            apply_changes(changes)
+
+        assert str(tmp_path) not in str(caught.value)
+        assert target_fds
+        assert target_close_attempts == len(target_fds)
+        assert any(
+            "managed artifact target close failed: synthetic target close failure" in note
+            for note in getattr(caught.value, "__notes__", ())
+        )
+        for target_fd in target_fds:
+            with pytest.raises(OSError, match="Bad file descriptor"):
+                real_fstat(target_fd)
+    finally:
+        for target_fd in target_fds:
+            with suppress(OSError):
+                real_close(target_fd)
+
+
 def test_preflight_wraps_read_oserror_with_notes_and_canonical_path(
     tmp_path: Path,
     monkeypatch,
