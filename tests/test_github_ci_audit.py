@@ -235,6 +235,37 @@ jobs:
 
 
 @pytest.mark.parametrize(
+    "script",
+    [
+        "command env -S 'doc-lattice linear'",
+        "exec env -S 'doc-lattice linear'",
+        "/usr/bin/env -S 'doc-lattice linear'",
+    ],
+    ids=["command-wrapper", "exec-wrapper", "path-qualified"],
+)
+def test_repository_audit_fails_closed_on_wrapped_env_split_string(script):
+    document = _workflow(
+        f"""\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          {script}
+"""
+    )
+
+    with pytest.raises(ConfigError, match=r"shell scan.*env split-string"):
+        audit_repository(
+            WorkflowDiscovery(directory_exists=True, documents=(document,)),
+            (None,) * len(CANONICAL_ARTIFACT_TARGETS),
+            parse_repository("Guardantix/doc-lattice"),
+            "2.1.0",
+        )
+
+
+@pytest.mark.parametrize(
     "option",
     [
         "--s",

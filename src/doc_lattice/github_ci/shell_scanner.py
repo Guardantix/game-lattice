@@ -1397,13 +1397,15 @@ def _skip_shell_prefixes(words: list[_ShellWord], start: int) -> int:
             if index < len(words) and not words[index].dynamic and words[index].literal == "-p":
                 index += 1
             continue
-        if word.literal == "env":
+        if _basename(word.literal) == "env":
             index = _skip_env_prefix(words, index + 1)
             continue
         if word.literal == "command":
-            return _skip_command_builtin(words, index + 1)
+            index = _skip_command_builtin(words, index + 1)
+            continue
         if word.literal == "exec":
-            return _skip_exec_wrapper(words, index + 1)
+            index = _skip_exec_wrapper(words, index + 1)
+            continue
         return index
     return index
 

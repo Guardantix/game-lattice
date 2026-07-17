@@ -780,6 +780,20 @@ def test_direct_doc_lattice_invocations_fails_closed_on_env_split_string(script)
 
 
 @pytest.mark.parametrize(
+    "script",
+    [
+        "command env -S 'doc-lattice linear'",
+        "exec env -S 'doc-lattice linear'",
+        "/usr/bin/env -S 'doc-lattice linear'",
+    ],
+    ids=["command-wrapper", "exec-wrapper", "path-qualified"],
+)
+def test_direct_doc_lattice_invocations_fails_closed_on_wrapped_env_split_string(script):
+    with pytest.raises(ConfigError, match=r"shell scan.*env split-string"):
+        direct_doc_lattice_invocations(script)
+
+
+@pytest.mark.parametrize(
     "option",
     [
         "--s",
