@@ -196,7 +196,7 @@ def test_init_github_exact_rerun_preserves_all_bytes(tmp_path: Path, monkeypatch
     def unexpected_artifact_create(*_args, **_kwargs) -> None:
         raise AssertionError("exact managed artifacts must not be created again")
 
-    monkeypatch.setattr(filesystem, "atomic_create_bytes", unexpected_artifact_create)
+    monkeypatch.setattr(filesystem, "atomic_create_bytes_at", unexpected_artifact_create)
     second = runner.invoke(app, ["init", "--github", "--repository", repository])
 
     assert second.exit_code == 0
@@ -218,18 +218,30 @@ def test_init_github_rerun_creates_only_missing_managed_artifact(
     bootstrap = tmp_path / artifacts[2].relative_path
     preserved = [config.read_bytes(), offline.read_bytes(), bootstrap.read_bytes()]
     missing.unlink()
-    created: list[Path] = []
-    real_create = filesystem.atomic_create_bytes
+    created: list[tuple[str, bytes, str]] = []
+    real_create = filesystem.atomic_create_bytes_at
 
-    def capture_create(path: Path, data: bytes, *, prefix: str) -> None:
-        created.append(path)
-        real_create(path, data, prefix=prefix)
+    def capture_create(
+        directory_fd: int,
+        destination_name: str,
+        data: bytes,
+        *,
+        prefix: str,
+    ) -> None:
+        created.append((destination_name, data, prefix))
+        real_create(directory_fd, destination_name, data, prefix=prefix)
 
-    monkeypatch.setattr(filesystem, "atomic_create_bytes", capture_create)
+    monkeypatch.setattr(filesystem, "atomic_create_bytes_at", capture_create)
     second = runner.invoke(app, ["init", "--github", "--repository", repository])
 
     assert second.exit_code == 0
-    assert created == [missing]
+    assert created == [
+        (
+            missing.name,
+            artifacts[1].text.encode("utf-8"),
+            f".{missing.name}.doc-lattice-create.",
+        )
+    ]
     assert [config.read_bytes(), offline.read_bytes(), bootstrap.read_bytes()] == preserved
     assert missing.read_bytes() == artifacts[1].text.encode("utf-8")
 
@@ -264,17 +276,23 @@ def test_init_github_create_race_preserves_winner_and_error_notes(
     artifacts = render_managed_artifacts(repository, __version__)
     winner_path = tmp_path / artifacts[0].relative_path
     winner = b"concurrent workflow winner\n"
-    real_create = filesystem.atomic_create_bytes
+    real_create = filesystem.atomic_create_bytes_at
 
-    def collide(path: Path, data: bytes, *, prefix: str) -> None:
-        path.write_bytes(winner)
+    def collide(
+        directory_fd: int,
+        destination_name: str,
+        data: bytes,
+        *,
+        prefix: str,
+    ) -> None:
+        winner_path.write_bytes(winner)
         try:
-            real_create(path, data, prefix=prefix)
+            real_create(directory_fd, destination_name, data, prefix=prefix)
         except FileExistsError as error:
             error.add_note("concurrent winner must remain untouched")
             raise
 
-    monkeypatch.setattr(filesystem, "atomic_create_bytes", collide)
+    monkeypatch.setattr(filesystem, "atomic_create_bytes_at", collide)
     monkeypatch.chdir(tmp_path)
 
     result = runner.invoke(app, ["init", "--github", "--repository", repository])
