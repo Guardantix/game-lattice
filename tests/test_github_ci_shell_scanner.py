@@ -474,6 +474,19 @@ def test_direct_doc_lattice_invocations_handles_documented_forms(script, expecte
         ("coproc uv run doc-lattice reconcile --all", RECONCILE),
         ("coproc env X=1 doc-lattice linear", LINEAR),
         ("coproc command doc-lattice reconcile --all", RECONCILE),
+        ("uv run env X=1 doc-lattice linear", LINEAR),
+        ("uv tool run env X=1 doc-lattice reconcile --all", RECONCILE),
+        ("uv run time doc-lattice linear", LINEAR),
+        ("uvx /usr/bin/time -p doc-lattice linear", LINEAR),
+        ("uv run env X=1 time doc-lattice linear", LINEAR),
+        ("uv run uvx doc-lattice linear", LINEAR),
+        ("/usr/bin/time doc-lattice linear", LINEAR),
+        ("env /usr/bin/time -p doc-lattice linear", LINEAR),
+        ("env time -- doc-lattice linear", LINEAR),
+        ("command env time -- doc-lattice linear", LINEAR),
+        ("exec env time -- doc-lattice linear", LINEAR),
+        ("time env time -- doc-lattice linear", LINEAR),
+        ("env env time -- doc-lattice linear", LINEAR),
     ],
 )
 def test_direct_doc_lattice_invocations_handles_root_options_and_compound_grammar(
@@ -586,7 +599,6 @@ def test_direct_doc_lattice_invocations_ignores_indirect_or_similarly_named_comm
     "script",
     [
         "{doc-lattice linear",
-        'coproc "$NAME" doc-lattice linear',
         "doc-lattice --version linear",
         "doc-lattice --no-color --version linear",
     ],
@@ -786,11 +798,42 @@ def test_direct_doc_lattice_invocations_fails_closed_on_env_split_string(script)
         "command env -S 'doc-lattice linear'",
         "exec env -S 'doc-lattice linear'",
         "/usr/bin/env -S 'doc-lattice linear'",
+        "uv run env -S 'doc-lattice linear'",
+        "uvx env -S 'doc-lattice linear'",
     ],
-    ids=["command-wrapper", "exec-wrapper", "path-qualified"],
+    ids=["command-wrapper", "exec-wrapper", "path-qualified", "uv-run", "uvx"],
 )
 def test_direct_doc_lattice_invocations_fails_closed_on_wrapped_env_split_string(script):
     with pytest.raises(ConfigError, match=r"shell scan.*env split-string"):
+        direct_doc_lattice_invocations(script)
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "uv run /usr/bin/time -f '%e' doc-lattice linear",
+        "/usr/bin/time -f '%e' doc-lattice linear",
+        "env time -f '%e' doc-lattice linear",
+    ],
+    ids=["nested", "path-qualified", "env-prefix"],
+)
+def test_direct_doc_lattice_fails_closed_on_unknown_external_time_option(script):
+    with pytest.raises(ConfigError, match=r"shell scan.*external time option"):
+        direct_doc_lattice_invocations(script)
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        'uv run time "$*" doc-lattice linear',
+        'uv run /usr/bin/time "$(printf -- -p)" doc-lattice linear',
+        '/usr/bin/time "$*" doc-lattice linear',
+        'env time "$*" doc-lattice linear',
+    ],
+    ids=["nested-time", "nested-path", "path-qualified", "env-prefix"],
+)
+def test_direct_doc_lattice_fails_closed_on_dynamic_external_time_prefix(script):
+    with pytest.raises(ConfigError, match=r"shell scan.*dynamic external time prefix"):
         direct_doc_lattice_invocations(script)
 
 
@@ -844,6 +887,42 @@ def test_direct_doc_lattice_fails_closed_on_erasable_boundary_before_env_split_s
 @pytest.mark.parametrize(
     "script",
     [
+        "\"$@\" env -S 'doc-lattice linear'",
+        "\"${@}\" env -S 'doc-lattice linear'",
+        "\"${@:1}\" env -S 'doc-lattice linear'",
+        "\"${items[@]}\" env -S 'doc-lattice linear'",
+        "\"${!DOES_NOT_EXIST@}\" env -S 'doc-lattice linear'",
+        "declare -a items=(); declare -n VALUE='items[@]'; \"$VALUE\" env -S 'doc-lattice linear'",
+        "command \"$@\" env -S 'doc-lattice linear'",
+        "exec \"${@}\" env -S 'doc-lattice linear'",
+        "time \"${@:1}\" env -S 'doc-lattice linear'",
+        "coproc \"${items[@]}\" env -S 'doc-lattice linear'",
+        "\"$@\" /usr/bin/env -S 'doc-lattice linear'",
+    ],
+    ids=[
+        "positional-at",
+        "braced-positional-at",
+        "positional-at-offset",
+        "array-at",
+        "indirect-name-at",
+        "unbraced-nameref",
+        "command-wrapper",
+        "exec-wrapper",
+        "time-prefix",
+        "coproc-prefix",
+        "path-qualified-env",
+    ],
+)
+def test_direct_doc_lattice_fails_closed_on_quoted_zero_field_boundary_before_env_split_string(
+    script,
+):
+    with pytest.raises(ConfigError, match=r"shell scan.*env split-string"):
+        direct_doc_lattice_invocations(script)
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
         "$(true) doc-lattice linear",
         "command $(true) doc-lattice linear",
         "exec $(true) doc-lattice linear",
@@ -855,6 +934,197 @@ def test_direct_doc_lattice_fails_closed_on_erasable_boundary_before_env_split_s
 def test_direct_doc_lattice_invocations_fails_closed_on_erasable_command_boundary_before_payload(
     script,
 ):
+    with pytest.raises(ConfigError, match=r"shell scan.*command-position expansion"):
+        direct_doc_lattice_invocations(script)
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        '"$@" doc-lattice linear',
+        'command "${@}" doc-lattice linear',
+        'exec "${items[@]}" doc-lattice linear',
+        'time "${@:1}" doc-lattice linear',
+        'coproc "${!DOES_NOT_EXIST@}" doc-lattice linear',
+        "declare -a items=(); declare -n VALUE='items[@]'; \"$VALUE\" doc-lattice linear",
+        "declare -a items=(); declare -n NAME='items[@]'; coproc \"$NAME\" doc-lattice linear",
+    ],
+    ids=[
+        "top-level",
+        "command-wrapper",
+        "exec-wrapper",
+        "time-prefix",
+        "coproc-prefix",
+        "unbraced-nameref",
+        "coproc-unbraced-nameref",
+    ],
+)
+def test_direct_doc_lattice_fails_closed_on_quoted_zero_field_boundary_before_payload(script):
+    with pytest.raises(ConfigError, match=r"shell scan.*command-position expansion"):
+        direct_doc_lattice_invocations(script)
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        '"$(true)" doc-lattice linear',
+        '"$*" doc-lattice linear',
+        '"${items[*]}" doc-lattice linear',
+        "declare -a items=(); declare -n VALUE='items[@]'; \"${VALUE}\" doc-lattice linear",
+        "declare -a items=(); declare -n VALUE='items[@]'; \"prefix$VALUE\" doc-lattice linear",
+    ],
+    ids=[
+        "command-substitution",
+        "positional-star",
+        "array-star",
+        "braced-nameref",
+        "static-literal-with-nameref",
+    ],
+)
+def test_direct_doc_lattice_does_not_treat_quoted_single_field_expansion_as_erasable(script):
+    assert direct_doc_lattice_invocations(script) == NONE
+
+
+@pytest.mark.parametrize(
+    ("script", "reason"),
+    [
+        ("command \"$OPT\" env -S 'doc-lattice linear'", "env split-string"),
+        ("exec \"$OPT\" env -S 'doc-lattice linear'", "env split-string"),
+        ("command -p \"$OPT\" env -S 'doc-lattice linear'", "env split-string"),
+        ("exec -a label \"$OPT\" env -S 'doc-lattice linear'", "env split-string"),
+        ('command "$OPT" doc-lattice linear', "command-position expansion"),
+        ('exec "$OPT" doc-lattice linear', "command-position expansion"),
+        ('command -p "$OPT" doc-lattice linear', "command-position expansion"),
+        ('exec -a label "$OPT" doc-lattice linear', "command-position expansion"),
+    ],
+    ids=[
+        "command-env",
+        "exec-env",
+        "command-option-env",
+        "exec-option-env",
+        "command-payload",
+        "exec-payload",
+        "command-option-payload",
+        "exec-option-payload",
+    ],
+)
+def test_direct_doc_lattice_fails_closed_on_dynamic_command_or_exec_wrapper_option(
+    script,
+    reason,
+):
+    with pytest.raises(ConfigError, match=rf"shell scan.*{reason}"):
+        direct_doc_lattice_invocations(script)
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        'uv "$OPT" run doc-lattice linear',
+        'uv "$OPT" tool run doc-lattice linear',
+        'uv "$SUBCOMMAND" doc-lattice linear',
+        "uv $OPT doc-lattice linear",
+        'uv "$OPT" -- doc-lattice linear',
+        'uv "$OPT" --offline doc-lattice linear',
+        'uv "$OPT" --group dev doc-lattice linear',
+        'uv "$OPT" run --from doc-lattice==2.1.0 doc-lattice linear',
+        'uv "$GLOBAL" "$SUBCOMMAND" doc-lattice linear',
+        'uv "$GLOBAL" tool "$RUN" doc-lattice linear',
+        'uv run "$OPT" doc-lattice linear',
+        'uvx "$OPT" doc-lattice linear',
+        'uv tool "$OPT" doc-lattice linear',
+        'doc-lattice "$OPT" linear',
+    ],
+    ids=[
+        "uv-global-run",
+        "uv-global-tool-run",
+        "uv-dynamic-run",
+        "uv-unquoted-dynamic-run-or-tool-run",
+        "uv-dynamic-run-with-terminator",
+        "uv-dynamic-run-with-flag",
+        "uv-dynamic-run-with-option",
+        "uv-dynamic-tool-run-with-option",
+        "uv-dynamic-global-and-run",
+        "uv-dynamic-global-and-tool-run",
+        "uv-run",
+        "uvx",
+        "uv-tool-run",
+        "root",
+    ],
+)
+def test_direct_doc_lattice_fails_closed_on_dynamic_prefix_grammar_before_payload(script):
+    with pytest.raises(ConfigError, match=r"shell scan.*command-position expansion"):
+        direct_doc_lattice_invocations(script)
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "uv --directory $OPT doc-lattice linear",
+        "uv --project $OPT doc-lattice linear",
+        "uv --cache-dir $OPT doc-lattice linear",
+        'uv --directory "${@:1}" doc-lattice linear',
+        "uv --directory $OPT -- doc-lattice linear",
+        "uv --directory $OPT --from doc-lattice==2.1.0 doc-lattice linear",
+    ],
+    ids=[
+        "directory-unquoted",
+        "project-unquoted",
+        "cache-dir-unquoted",
+        "directory-quoted-zero-field",
+        "directory-run-terminator",
+        "directory-tool-run-option",
+    ],
+)
+def test_direct_doc_lattice_fails_closed_when_dynamic_uv_global_option_value_can_supply_launcher(
+    script,
+):
+    with pytest.raises(ConfigError, match=r"shell scan.*command-position expansion"):
+        direct_doc_lattice_invocations(script)
+
+
+def test_direct_doc_lattice_fails_closed_on_dynamic_uv_value_exposing_env_split_string():
+    with pytest.raises(
+        ConfigError,
+        match=r"shell scan.*(?:env split-string|command-position expansion)",
+    ):
+        direct_doc_lattice_invocations("uv --directory $OPT env -S 'doc-lattice linear'")
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ('uv run --group "${GROUP}" doc-lattice linear', LINEAR),
+        ('uv --directory "${GROUP}" run doc-lattice linear', LINEAR),
+        ('doc-lattice linear "$VALUE"', LINEAR),
+        ('doc-lattice check "$(true)"', CHECK),
+        ('uv run doc-lattice linear "$*"', LINEAR),
+        ('uvx doc-lattice check "${items[*]}"', CHECK),
+    ],
+    ids=[
+        "quoted-option-value",
+        "quoted-global-option-value",
+        "scalar-argument",
+        "substitution-argument",
+        "positional-star-argument",
+        "array-star-argument",
+    ],
+)
+def test_direct_doc_lattice_keeps_single_field_option_values_and_post_subcommand_arguments(
+    script,
+    expected,
+):
+    assert direct_doc_lattice_invocations(script) == expected
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        'uv run --group "${@:1}" doc-lattice linear',
+        'uv --directory "${@:1}" run doc-lattice linear',
+    ],
+    ids=["launcher-option-value", "global-option-value"],
+)
+def test_direct_doc_lattice_fails_closed_on_zero_field_option_value_before_payload(script):
     with pytest.raises(ConfigError, match=r"shell scan.*command-position expansion"):
         direct_doc_lattice_invocations(script)
 
@@ -1095,6 +1365,7 @@ def test_direct_doc_lattice_invocations_recognizes_uv_launcher_spellings(script,
         "uv sync",
         "uv pip install doc-lattice",
         "uv run doc-lattice@2.0.0 linear",
+        "uv run command doc-lattice linear",
     ],
 )
 def test_direct_doc_lattice_invocations_ignores_uv_non_launcher_forms(script):

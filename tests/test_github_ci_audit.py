@@ -76,6 +76,18 @@ def test_secret_name_regex_single_sources_from_secret_names():
             "coproc DL command doc-lattice reconcile --all",
             "PR_MUTATING_RECONCILE",
         ),
+        ("uv run env X=1 doc-lattice linear", "PR_LINEAR_INVOCATION"),
+        ("uv run time doc-lattice linear", "PR_LINEAR_INVOCATION"),
+        ("uvx /usr/bin/time -p doc-lattice linear", "PR_LINEAR_INVOCATION"),
+        ("uv run env X=1 time doc-lattice linear", "PR_LINEAR_INVOCATION"),
+        ("uv run uvx doc-lattice linear", "PR_LINEAR_INVOCATION"),
+        ("/usr/bin/time doc-lattice linear", "PR_LINEAR_INVOCATION"),
+        ("env /usr/bin/time -p doc-lattice linear", "PR_LINEAR_INVOCATION"),
+        ("env time -- doc-lattice linear", "PR_LINEAR_INVOCATION"),
+        ("command env time -- doc-lattice linear", "PR_LINEAR_INVOCATION"),
+        ("exec env time -- doc-lattice linear", "PR_LINEAR_INVOCATION"),
+        ("time env time -- doc-lattice linear", "PR_LINEAR_INVOCATION"),
+        ("env env time -- doc-lattice linear", "PR_LINEAR_INVOCATION"),
     ],
 )
 def test_global_audit_rejects_root_options_and_compound_grammar_on_pr(
@@ -264,8 +276,10 @@ jobs:
         "command env -S 'doc-lattice linear'",
         "exec env -S 'doc-lattice linear'",
         "/usr/bin/env -S 'doc-lattice linear'",
+        "uv run env -S 'doc-lattice linear'",
+        "uvx env -S 'doc-lattice linear'",
     ],
-    ids=["command-wrapper", "exec-wrapper", "path-qualified"],
+    ids=["command-wrapper", "exec-wrapper", "path-qualified", "uv-run", "uvx"],
 )
 def test_repository_audit_fails_closed_on_wrapped_env_split_string(script):
     document = _workflow(
@@ -342,6 +356,212 @@ jobs:
 
     with pytest.raises(ConfigError, match=r"shell scan.*env split-string"):
         audit_global_workflows((document,))
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "\"$@\" env -S 'doc-lattice linear'",
+        "\"${@}\" env -S 'doc-lattice linear'",
+        "declare -a items=(); declare -n VALUE='items[@]'; \"$VALUE\" env -S 'doc-lattice linear'",
+        "command \"$@\" env -S 'doc-lattice linear'",
+        "exec \"${@}\" env -S 'doc-lattice linear'",
+        "time \"${@:1}\" env -S 'doc-lattice linear'",
+        "coproc \"${items[@]}\" env -S 'doc-lattice linear'",
+        "\"$@\" /usr/bin/env -S 'doc-lattice linear'",
+    ],
+    ids=[
+        "positional-at",
+        "braced-positional-at",
+        "unbraced-nameref",
+        "command-wrapper",
+        "exec-wrapper",
+        "time-prefix",
+        "coproc-prefix",
+        "path-qualified-env",
+    ],
+)
+def test_global_audit_fails_closed_on_quoted_zero_field_boundary_before_env_split_string(
+    script,
+):
+    document = _workflow(
+        f"""\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          {script}
+"""
+    )
+
+    with pytest.raises(ConfigError, match=r"shell scan.*env split-string"):
+        audit_global_workflows((document,))
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        'command "$OPT" doc-lattice linear',
+        'exec "$OPT" doc-lattice linear',
+        'command -p "$OPT" doc-lattice linear',
+        'exec -a label "$OPT" doc-lattice linear',
+        'uv "$OPT" run doc-lattice linear',
+        'uv "$SUBCOMMAND" doc-lattice linear',
+        "uv $OPT doc-lattice linear",
+        'uv "$OPT" -- doc-lattice linear',
+        'uv "$OPT" --group dev doc-lattice linear',
+        'uv "$OPT" run --from doc-lattice==2.1.0 doc-lattice linear',
+        'uv "$GLOBAL" tool "$RUN" doc-lattice linear',
+        "uv --directory $OPT doc-lattice linear",
+        "uv --project $OPT doc-lattice linear",
+        "uv --cache-dir $OPT doc-lattice linear",
+        'uv --directory "${@:1}" doc-lattice linear',
+        "uv --directory $OPT -- doc-lattice linear",
+        "uv --directory $OPT --from doc-lattice==2.1.0 doc-lattice linear",
+        'uv run "$OPT" doc-lattice linear',
+        'uvx "$OPT" doc-lattice linear',
+        'uv tool "$OPT" doc-lattice linear',
+        'doc-lattice "$OPT" linear',
+        "declare -a items=(); declare -n VALUE='items[@]'; \"$VALUE\" doc-lattice linear",
+    ],
+    ids=[
+        "command",
+        "exec",
+        "command-option",
+        "exec-option",
+        "uv-global",
+        "uv-dynamic-run",
+        "uv-unquoted-dynamic-run-or-tool-run",
+        "uv-dynamic-run-with-terminator",
+        "uv-dynamic-run-with-option",
+        "uv-dynamic-tool-run-with-option",
+        "uv-dynamic-global-and-tool-run",
+        "uv-directory-value",
+        "uv-project-value",
+        "uv-cache-dir-value",
+        "uv-directory-zero-field-value",
+        "uv-directory-value-run-terminator",
+        "uv-directory-value-tool-run-option",
+        "uv-run",
+        "uvx",
+        "uv-tool-run",
+        "root",
+        "unbraced-nameref",
+    ],
+)
+def test_global_audit_fails_closed_on_dynamic_prefix_grammar_before_payload(script):
+    document = _workflow(
+        f"""\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          {script}
+"""
+    )
+
+    with pytest.raises(ConfigError, match=r"shell scan.*command-position expansion"):
+        audit_global_workflows((document,))
+
+
+def test_global_audit_fails_closed_when_dynamic_uv_global_option_value_exposes_env_split_string():
+    document = _workflow(
+        """\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          uv --directory $OPT env -S 'doc-lattice linear'
+"""
+    )
+
+    with pytest.raises(
+        ConfigError,
+        match=r"shell scan.*(?:env split-string|command-position expansion)",
+    ):
+        audit_global_workflows((document,))
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        'uv run time "$*" doc-lattice linear',
+        '/usr/bin/time "$(printf -- -p)" doc-lattice linear',
+        'env time "$*" doc-lattice linear',
+    ],
+    ids=["nested", "path-qualified", "env-prefix"],
+)
+def test_global_audit_fails_closed_on_dynamic_external_time_prefix(script):
+    document = _workflow(
+        f"""\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          {script}
+"""
+    )
+
+    with pytest.raises(ConfigError, match=r"shell scan.*dynamic external time prefix"):
+        audit_global_workflows((document,))
+
+
+def test_global_audit_fails_closed_on_unknown_external_time_option_after_env():
+    document = _workflow(
+        """\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          env time -f '%e' doc-lattice linear
+"""
+    )
+
+    with pytest.raises(ConfigError, match=r"shell scan.*external time option"):
+        audit_global_workflows((document,))
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        '"$(true)" doc-lattice linear',
+        '"$*" doc-lattice linear',
+        '"${items[*]}" doc-lattice linear',
+        "declare -a items=(); declare -n VALUE='items[@]'; \"${VALUE}\" doc-lattice linear",
+        "declare -a items=(); declare -n VALUE='items[@]'; \"prefix$VALUE\" doc-lattice linear",
+    ],
+    ids=[
+        "command-substitution",
+        "positional-star",
+        "array-star",
+        "braced-nameref",
+        "static-literal-with-nameref",
+    ],
+)
+def test_global_audit_does_not_treat_quoted_single_field_expansion_as_erasable(script):
+    document = _workflow(
+        f"""\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          {script}
+"""
+    )
+
+    assert _finding_codes(audit_global_workflows((document,))) == set()
 
 
 @pytest.mark.parametrize(
