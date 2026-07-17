@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
 from typing import TYPE_CHECKING, Annotated, TextIO
 
@@ -23,6 +22,7 @@ from ...github_ci.identity import (
     parse_origin_repository,
     parse_repository,
 )
+from ...github_ci.path_display import display_path
 from ...github_ci.render import CANONICAL_ARTIFACT_TARGETS, render_managed_artifacts
 from ..errors import EXIT_FINDING, exit_on_project_error
 from ..runtime import CliRuntime, get_runtime
@@ -124,7 +124,7 @@ def register_ci(app: typer.Typer) -> None:
 
 def _display_finding_path(path: str) -> str:
     """Escape repository-controlled path text without changing ordinary path output."""
-    return json.dumps(path, ensure_ascii=True)[1:-1]
+    return display_path(path)
 
 
 def require_repository_confirmation(stream: TextIO, runtime: CliRuntime, repository: str) -> None:

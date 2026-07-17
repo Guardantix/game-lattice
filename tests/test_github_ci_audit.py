@@ -1010,6 +1010,34 @@ def test_discover_workflows_rejects_symlinked_or_nonregular_yaml_files(tmp_path:
         discover_workflows(tmp_path)
 
 
+@pytest.mark.parametrize("kind", ["symlink", "fifo", "oversized", "non_utf8"])
+def test_discover_workflows_escapes_control_characters_in_candidate_diagnostics(
+    tmp_path: Path,
+    kind: str,
+):
+    workflows = tmp_path / ".github/workflows"
+    workflows.mkdir(parents=True)
+    target = workflows / "bad\nname\x1b.yml"
+    if kind == "symlink":
+        source = tmp_path / "source.yml"
+        source.write_text("on: push\njobs: {}\n", encoding="utf-8")
+        target.symlink_to(source)
+    elif kind == "fifo":
+        os.mkfifo(target)
+    elif kind == "oversized":
+        target.write_bytes(b"x" * (MAX_WORKFLOW_BYTES + 1))
+    else:
+        target.write_bytes(b"\xff\xfe")
+
+    with pytest.raises(ConfigError) as caught:
+        discover_workflows(tmp_path)
+
+    message = str(caught.value)
+    assert ".github/workflows/bad\\nname\\u001b.yml" in message
+    assert "\n" not in message
+    assert "\x1b" not in message
+
+
 def test_discover_workflows_skips_subdirectory_entries(tmp_path: Path):
     workflows = tmp_path / ".github/workflows"
     workflows.mkdir(parents=True)

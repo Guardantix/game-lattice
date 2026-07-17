@@ -25,6 +25,7 @@ from .model import (
     WorkflowDiscovery,
     WorkflowDocument,
 )
+from .path_display import display_path
 from .render import CANONICAL_ARTIFACT_TARGETS
 from .workflow_parser import parse_workflow
 
@@ -165,7 +166,7 @@ def discover_workflows(root: Path) -> WorkflowDiscovery:
         try:
             text = data.decode("utf-8")
         except UnicodeDecodeError as exc:
-            path = candidate.relative_path.as_posix()
+            path = display_path(candidate.relative_path)
             raise ConfigError(f"UTF-8 text is required for GitHub workflow {path}") from exc
         documents.append(parse_workflow(candidate.relative_path, text))
     return WorkflowDiscovery(directory_exists=True, documents=tuple(documents))
@@ -363,31 +364,31 @@ def _inspect_workflow_candidate(root: Path, name: str) -> _WorkflowCandidate | N
     ignores, so a benign directory named like a workflow does not make the repository
     unauditable. Symlinks and every other non-regular type stay fail-closed errors.
     """
-    relative_path = _WORKFLOWS_DIRECTORY / name
-    display_path = relative_path.as_posix()
+    relative_path = Path(_WORKFLOWS_DIRECTORY / name)
+    display = display_path(relative_path)
     logical_path = root / relative_path
     try:
         target_stat = logical_path.stat(follow_symlinks=False)
     except FileNotFoundError as exc:
-        raise ConfigError(f"GitHub workflow changed during discovery: {display_path}") from exc
+        raise ConfigError(f"GitHub workflow changed during discovery: {display}") from exc
     except OSError as exc:
-        raise _filesystem_error(f"cannot inspect GitHub workflow {display_path}", exc) from exc
+        raise _filesystem_error(f"cannot inspect GitHub workflow {display}", exc) from exc
     if stat.S_ISLNK(target_stat.st_mode):
-        raise ConfigError(f"symlink is not allowed for GitHub workflow {display_path}")
+        raise ConfigError(f"symlink is not allowed for GitHub workflow {display}")
     if stat.S_ISDIR(target_stat.st_mode):
         return None
     if not stat.S_ISREG(target_stat.st_mode):
-        raise ConfigError(f"GitHub workflow must be a regular file: {display_path}")
+        raise ConfigError(f"GitHub workflow must be a regular file: {display}")
     if target_stat.st_size > MAX_WORKFLOW_BYTES:
-        raise ConfigError(f"GitHub workflow exceeds the byte limit: {display_path}")
+        raise ConfigError(f"GitHub workflow exceeds the byte limit: {display}")
     resolved_path = _resolve_repository_path(
         logical_path,
         root,
-        display_path,
+        display,
         "GitHub workflow",
     )
     return _WorkflowCandidate(
-        relative_path=Path(display_path),
+        relative_path=relative_path,
         logical_path=logical_path,
         resolved_path=resolved_path,
         size=target_stat.st_size,
@@ -460,17 +461,17 @@ def _read_bounded_with_recheck(
 
 def _read_workflow_candidate(root: Path, candidate: _WorkflowCandidate) -> bytes:
     """Bound one workflow read and reject containment, type, or size changes."""
-    display_path = candidate.relative_path.as_posix()
-    changed = f"GitHub workflow changed during discovery: {display_path}"
+    display = display_path(candidate.relative_path)
+    changed = f"GitHub workflow changed during discovery: {display}"
     wording = _BoundedReadWording(
         error_path=None,
-        read_context=f"cannot read GitHub workflow {display_path}",
-        recheck_context=f"cannot recheck GitHub workflow {display_path}",
-        byte_limit=f"GitHub workflow exceeds the byte limit: {display_path}",
+        read_context=f"cannot read GitHub workflow {display}",
+        recheck_context=f"cannot recheck GitHub workflow {display}",
+        byte_limit=f"GitHub workflow exceeds the byte limit: {display}",
         changed=changed,
         size_changed=changed,
-        symlink=f"symlink is not allowed for GitHub workflow {display_path}",
-        regular=f"GitHub workflow must be a regular file: {display_path}",
+        symlink=f"symlink is not allowed for GitHub workflow {display}",
+        regular=f"GitHub workflow must be a regular file: {display}",
     )
     return _read_bounded_with_recheck(
         candidate.resolved_path,
@@ -479,7 +480,7 @@ def _read_workflow_candidate(root: Path, candidate: _WorkflowCandidate) -> bytes
         lambda: _resolve_repository_path(
             candidate.logical_path,
             root,
-            display_path,
+            display,
             "GitHub workflow",
         ),
         wording,

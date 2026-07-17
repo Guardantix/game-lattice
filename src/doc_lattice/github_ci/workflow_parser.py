@@ -21,6 +21,7 @@ from .model import (
     WorkflowStructureEntry,
     WorkflowTrigger,
 )
+from .path_display import display_path
 
 _YAML_MERGE_TAG = "tag:yaml.org,2002:merge"
 _YAML_1_2 = (1, 2)
@@ -493,7 +494,7 @@ def _exceeds_utf8_input_budget(text: str) -> bool:
 
 
 def _display_path(workflow_path: Path) -> str:
-    return json.dumps(str(workflow_path), ensure_ascii=True)
+    return display_path(workflow_path, quoted=True)
 
 
 def _display_yaml_path(yaml_path: tuple[str, ...]) -> str:
