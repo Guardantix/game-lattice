@@ -368,7 +368,7 @@ git diff HEAD -- src/doc_lattice/github_ci/shell_scanner.py \
 git status --short
 ```
 
-- [ ] **Step 4: Commit the implementation**
+- [x] **Step 4: Commit the implementation**
 
 ```bash
 git add docs/superpowers/plans/2026-07-17-ci-audit-time-array-date-review-fixes.md \
@@ -380,7 +380,7 @@ git commit -m "fix: close time array and date audit gaps"
 
 Expected: commit succeeds and all configured pre-commit hooks pass.
 
-- [ ] **Step 5: Push the current branch without force**
+- [x] **Step 5: Push the current branch without force**
 
 ```bash
 git push origin feature/github-linear-ci-bootstrap-impl
