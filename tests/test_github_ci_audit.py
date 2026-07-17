@@ -353,19 +353,32 @@ jobs:
 @pytest.mark.parametrize(
     "command",
     [
+        'env FOO="$VALUE" doc-lattice linear',
+        'env FOO="${VALUE}" doc-lattice linear',
+        # REF can be a nameref targeting an array reference such as `items[@]`.
+        'env FOO="$REF" harmless',
+        'env FOO="$(printf value)" doc-lattice linear',
         'env FOO="$@" harmless',
         'env FOO="${@:1}" harmless',
         'env FOO="${@#x}" harmless',
         'env FOO="${!@}" harmless',
+        'env FOO="${!REF}" harmless',
+        'env FOO="${VAR:+$@}" harmless',
     ],
     ids=[
+        "scalar-reference",
+        "braced-scalar-reference",
+        "potential-nameref",
+        "command-substitution",
         "positional-at",
         "positional-slice",
         "positional-prefix-removal",
         "indirect-positional-at",
+        "indirect-reference",
+        "nested-positional-at",
     ],
 )
-def test_repository_audit_fails_closed_on_quoted_multiword_env_assignment(command):
+def test_repository_audit_fails_closed_on_quoted_dynamic_env_assignment(command):
     document = _workflow(
         f"""\
 on: pull_request
@@ -378,7 +391,7 @@ jobs:
 """
     )
 
-    with pytest.raises(ConfigError, match=r"shell scan.*quoted multiword env assignment"):
+    with pytest.raises(ConfigError, match=r"shell scan.*quoted dynamic env assignment"):
         audit_repository(
             WorkflowDiscovery(directory_exists=True, documents=(document,)),
             (None,) * len(CANONICAL_ARTIFACT_TARGETS),
