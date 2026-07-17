@@ -237,11 +237,47 @@ def test_ci_audit_omitted_repository_resolves_supported_origin(
     assert result.stdout == "doc-lattice ci audit: ok\n"
     assert calls == [
         (
-            ["git", "config", "--local", "--get", "remote.origin.url"],
+            ["git", "config", "--local", "--get-all", "remote.origin.url"],
             tmp_path,
             5,
         )
     ]
+
+
+def test_ci_audit_omitted_repository_rejects_multiple_local_origin_urls(
+    tmp_path: Path,
+    monkeypatch,
+):
+    _install(tmp_path)
+    subprocess.run(
+        ["git", "init", "--quiet"],  # noqa: S607 - test requires the local git executable
+        cwd=tmp_path,
+        check=True,
+    )
+    for origin in (
+        "https://github.com/unrelated/first-origin.git",
+        "https://github.com/Guardantix/doc-lattice.git",
+    ):
+        subprocess.run(  # noqa: S603 - origins are fixed test fixtures
+            [  # noqa: S607 - test requires the local git executable
+                "git",
+                "config",
+                "--local",
+                "--add",
+                "remote.origin.url",
+                origin,
+            ],
+            cwd=tmp_path,
+            check=True,
+        )
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["ci", "audit"])
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert "cannot resolve repository from git origin" in result.stderr
+    assert "CONFIG_ERROR" in result.stderr
 
 
 def test_ci_audit_omitted_repository_ignores_global_origin(tmp_path: Path, monkeypatch):
@@ -272,6 +308,7 @@ def test_ci_audit_omitted_repository_ignores_global_origin(tmp_path: Path, monke
     [
         (subprocess.CompletedProcess([], 1, b"", b"ignored"), "cannot resolve"),
         (subprocess.CompletedProcess([], 0, b"", b""), "cannot resolve"),
+        (subprocess.CompletedProcess([], 0, b" \t\n", b""), "cannot resolve"),
         (
             subprocess.CompletedProcess(
                 [], 0, b"https://github.com/a/b\nhttps://github.com/c/d\n", b""

@@ -155,7 +155,7 @@ def _resolve_repository(
                 "git",
                 "config",
                 "--local",
-                "--get",
+                "--get-all",
                 "remote.origin.url",
             ],
             cwd=runtime.cwd,
@@ -176,7 +176,7 @@ def _resolve_repository(
     except UnicodeDecodeError as exc:
         raise ConfigError("cannot decode repository from git origin as UTF-8") from exc
     lines = stdout.splitlines()
-    if len(lines) != 1 or not lines[0]:
+    if len(lines) != 1 or not lines[0].strip():
         raise ConfigError("cannot resolve repository from git origin")
     return parse_origin_repository(lines[0])
 
