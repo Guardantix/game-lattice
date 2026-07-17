@@ -831,6 +831,55 @@ def test_direct_doc_lattice_invocations_handles_env_short_option_value_attached_
     assert direct_doc_lattice_invocations(script) == LINEAR
 
 
+@pytest.mark.parametrize(
+    "script",
+    [
+        "env -u NAME doc-lattice linear",
+        "env --unset NAME doc-lattice linear",
+        "env -C /tmp doc-lattice linear",
+        "env --chdir /tmp doc-lattice linear",
+    ],
+    ids=["short-unset", "long-unset", "short-chdir", "long-chdir"],
+)
+def test_direct_doc_lattice_invocations_handles_static_env_option_values(script):
+    assert direct_doc_lattice_invocations(script) == LINEAR
+
+
+@pytest.mark.parametrize(
+    "script",
+    ["env -u", "env --unset", "env -C", "env --chdir"],
+    ids=["short-unset", "long-unset", "short-chdir", "long-chdir"],
+)
+def test_direct_doc_lattice_invocations_fails_closed_on_missing_env_option_value(script):
+    with pytest.raises(ConfigError, match=r"shell scan.*env option value"):
+        direct_doc_lattice_invocations(script)
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "env -u $OPTIONS harmless",
+        'env --unset "$REF" harmless',
+        'env -C "${OPTIONS[@]}" harmless',
+        'env --chdir "${!REF}" harmless',
+    ],
+    ids=["unquoted", "quoted-reference", "quoted-array", "quoted-indirect"],
+)
+def test_direct_doc_lattice_invocations_fails_closed_on_dynamic_env_option_value(script):
+    with pytest.raises(ConfigError, match=r"shell scan.*env option value"):
+        direct_doc_lattice_invocations(script)
+
+
+@pytest.mark.parametrize(
+    "script",
+    ["env -{u,S} ignored 'doc-lattice linear'", "env -? ignored 'doc-lattice linear'"],
+    ids=["brace-expansion", "glob"],
+)
+def test_direct_doc_lattice_invocations_fails_closed_on_expandable_env_prefix(script):
+    with pytest.raises(ConfigError, match=r"shell scan.*expandable env prefix"):
+        direct_doc_lattice_invocations(script)
+
+
 def test_direct_doc_lattice_invocations_fails_closed_on_dynamic_env_split_string_prefix():
     # EMPTY can be empty at runtime, turning this into the valid GNU abbreviation `--spl`.
     with pytest.raises(ConfigError, match=r"shell scan.*env split-string"):

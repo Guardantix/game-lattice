@@ -1484,10 +1484,15 @@ def _skip_env_prefix(words: list[_ShellWord], start: int) -> int:
                     )
                 raise _ShellScanIncomplete("quoted dynamic env assignment cannot be scanned safely")
             raise _ShellScanIncomplete("dynamic env prefix cannot be scanned safely")
+        if _word_may_change_argv(word):
+            raise _ShellScanIncomplete("expandable env prefix cannot be scanned safely")
         if _ENV_ASSIGNMENT_RE.fullmatch(word.literal):
             index += 1
         elif word.literal in {"-u", "--unset", "-C", "--chdir"}:
-            index += 2
+            value_index = index + 1
+            if value_index >= len(words) or _word_may_change_argv(words[value_index]):
+                raise _ShellScanIncomplete("env option value cannot be scanned safely")
+            index = value_index + 1
         elif word.literal.startswith("-"):
             index += 1
         else:

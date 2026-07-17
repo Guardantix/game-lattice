@@ -330,6 +330,55 @@ jobs:
 
 
 @pytest.mark.parametrize(
+    ("script", "reason"),
+    [
+        ("env -u", "env option value"),
+        ("env --unset", "env option value"),
+        ("env -C", "env option value"),
+        ("env --chdir", "env option value"),
+        ("env -u $OPTIONS harmless", "env option value"),
+        ('env --unset "$REF" harmless', "env option value"),
+        ('env -C "${OPTIONS[@]}" harmless', "env option value"),
+        ('env --chdir "${!REF}" harmless', "env option value"),
+        ("env -{u,S} ignored 'doc-lattice linear'", "expandable env prefix"),
+        ("env -? ignored 'doc-lattice linear'", "expandable env prefix"),
+    ],
+    ids=[
+        "short-unset-missing",
+        "long-unset-missing",
+        "short-chdir-missing",
+        "long-chdir-missing",
+        "unquoted-value",
+        "quoted-reference-value",
+        "quoted-array-value",
+        "quoted-indirect-value",
+        "brace-prefix",
+        "glob-prefix",
+    ],
+)
+def test_repository_audit_fails_closed_on_unresolved_env_prefix(script, reason):
+    document = _workflow(
+        f"""\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          {script}
+"""
+    )
+
+    with pytest.raises(ConfigError, match=rf"shell scan.*{reason}"):
+        audit_repository(
+            WorkflowDiscovery(directory_exists=True, documents=(document,)),
+            (None,) * len(CANONICAL_ARTIFACT_TARGETS),
+            parse_repository("Guardantix/doc-lattice"),
+            "2.1.0",
+        )
+
+
+@pytest.mark.parametrize(
     "script",
     [
         "env -i\"$OPTION\" 'doc-lattice linear'",
