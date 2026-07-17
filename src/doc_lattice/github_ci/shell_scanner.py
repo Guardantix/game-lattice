@@ -2297,7 +2297,7 @@ def _nested_launcher_payload_index(
         return _ResolvedIndex(None, payload_resolution.ambiguous)
     basename = _basename(payload.literal)
     executable_name = basename.split("@", 1)[0] if strip_version else basename
-    if executable_name == "doc-lattice":
+    if _is_doc_lattice_executable_basename(executable_name):
         return _ResolvedIndex(payload_index, payload_resolution.ambiguous)
     if launcher_depth >= _MAX_LAUNCHER_NESTING_DEPTH:
         raise _ShellScanIncomplete("launcher nesting limit exceeded")
@@ -2750,7 +2750,11 @@ def _basename(token: str) -> str:
     return token.rsplit("/", 1)[-1]
 
 
+def _is_doc_lattice_executable_basename(value: str) -> bool:
+    return value in ("doc-lattice", "doc-lattice.exe")
+
+
 def _is_doc_lattice_executable(word: _ShellWord) -> bool:
-    if _basename(word.literal) != "doc-lattice":
+    if not _is_doc_lattice_executable_basename(_basename(word.literal)):
         return False
     return not word.dynamic or word.literal.startswith("/")

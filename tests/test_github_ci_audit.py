@@ -1107,6 +1107,40 @@ jobs:
     assert _finding_codes(audit_global_workflows((document,))) == {"PR_LINEAR_INVOCATION"}
 
 
+@pytest.mark.parametrize(
+    ("script", "expected_code"),
+    [
+        (".venv/Scripts/doc-lattice.exe linear", "PR_LINEAR_INVOCATION"),
+        (".venv/Scripts/doc-lattice.exe reconcile --all", "PR_MUTATING_RECONCILE"),
+        ("uv run doc-lattice.exe linear", "PR_LINEAR_INVOCATION"),
+        ("uv run doc-lattice.exe reconcile --all", "PR_MUTATING_RECONCILE"),
+    ],
+    ids=[
+        "direct-linear",
+        "direct-mutating-reconcile",
+        "nested-linear",
+        "nested-mutating-reconcile",
+    ],
+)
+def test_global_audit_rejects_windows_console_script_launchers_on_pr(
+    script: str,
+    expected_code: str,
+):
+    document = _workflow(
+        f"""\
+on: pull_request
+jobs:
+  audit:
+    runs-on: windows-latest
+    steps:
+      - shell: bash
+        run: {script}
+"""
+    )
+
+    assert _finding_codes(audit_global_workflows((document,))) == {expected_code}
+
+
 @pytest.mark.parametrize("shell", ["bash -c {0}", "bash --init-file {0}"])
 def test_global_audit_rejects_command_string_or_startup_file_shells(shell: str):
     document = _workflow(
