@@ -840,6 +840,15 @@ def test_direct_doc_lattice_invocations_handles_dynamic_env_assignment_prefix():
     assert direct_doc_lattice_invocations('env FOO="$VALUE" doc-lattice linear') == LINEAR
 
 
+def test_direct_doc_lattice_invocations_fails_closed_on_unquoted_dynamic_env_assignment():
+    with pytest.raises(ConfigError, match=r"shell scan.*unquoted dynamic env assignment"):
+        direct_doc_lattice_invocations("env FOO=$OPTIONS doc-lattice linear")
+
+
+def test_direct_doc_lattice_invocations_honors_env_option_terminator():
+    assert direct_doc_lattice_invocations("env -- -S doc-lattice linear") == NONE
+
+
 @pytest.mark.parametrize(
     "script",
     [

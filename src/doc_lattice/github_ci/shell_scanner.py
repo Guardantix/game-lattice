@@ -264,6 +264,7 @@ _ANSI_C_SIMPLE_ESCAPES = {
 class _ShellWord:
     literal: str
     dynamic: bool = False
+    unquoted_dynamic: bool = False
     active_argv_expansion: bool = False
 
 
@@ -272,12 +273,20 @@ class _ShellWordBuilder:
     characters: list[str]
     active_syntax: list[str]
     dynamic: bool = False
+    unquoted_dynamic: bool = False
 
-    def append_protected(self, segment: str | list[str], *, dynamic: bool = False) -> None:
+    def append_protected(
+        self,
+        segment: str | list[str],
+        *,
+        dynamic: bool = False,
+        unquoted_dynamic: bool = False,
+    ) -> None:
         """Append text protected from literal argv expansion."""
         self.characters.extend(segment)
         self.active_syntax.append(" ")
         self.dynamic = self.dynamic or dynamic
+        self.unquoted_dynamic = self.unquoted_dynamic or unquoted_dynamic
 
     def append_active(self, character: str) -> None:
         """Append one unquoted, unescaped literal character."""
@@ -289,6 +298,7 @@ class _ShellWordBuilder:
         return _ShellWord(
             "".join(self.characters),
             self.dynamic,
+            self.unquoted_dynamic,
             _has_active_argv_expansion("".join(self.active_syntax)),
         )
 
@@ -932,7 +942,7 @@ class _ShellScanner:
                 continue
             expansion_end = self._consume_active_expansion(index, limit, depth)
             if expansion_end is not None:
-                builder.append_protected("", dynamic=True)
+                builder.append_protected("", dynamic=True, unquoted_dynamic=True)
                 index = expansion_end
                 continue
             process_end = self._consume_process_substitution(index, limit, depth)
@@ -1452,12 +1462,18 @@ def _skip_env_prefix(words: list[_ShellWord], start: int) -> int:
     index = start
     while index < len(words):
         word = words[index]
+        if not word.dynamic and word.literal == "--":
+            return index + 1
         if _is_env_split_string_long_option(word.literal) or _is_env_split_string_short_option(
             word.literal
         ):
             raise _ShellScanIncomplete("env split-string option cannot be scanned safely")
         if word.dynamic:
             if _ENV_ASSIGNMENT_RE.fullmatch(word.literal):
+                if word.unquoted_dynamic:
+                    raise _ShellScanIncomplete(
+                        "unquoted dynamic env assignment cannot be scanned safely"
+                    )
                 index += 1
                 continue
             raise _ShellScanIncomplete("dynamic env prefix cannot be scanned safely")
