@@ -22,7 +22,7 @@
 - Modify: `tests/test_github_ci_shell_scanner.py:1200`
 - Modify: `tests/test_github_ci_audit.py:550`
 
-- [ ] **Step 1: Write the failing scanner regression and static controls**
+- [x] **Step 1: Write the failing scanner regression and static controls**
 
 Add:
 
@@ -49,7 +49,7 @@ def test_direct_doc_lattice_allows_static_missing_or_nonexecuting_subcommand(scr
     assert direct_doc_lattice_invocations(script) == NONE
 ```
 
-- [ ] **Step 2: Write the failing PR-audit regression**
+- [x] **Step 2: Write the failing PR-audit regression**
 
 Add:
 
@@ -79,7 +79,7 @@ jobs:
         audit_global_workflows((document,))
 ```
 
-- [ ] **Step 3: Run RED and confirm the bypass**
+- [x] **Step 3: Run RED and confirm the bypass**
 
 Run:
 
@@ -98,7 +98,7 @@ three static controls pass.
 **Files:**
 - Modify: `src/doc_lattice/github_ci/shell_scanner.py:1468-1477`
 
-- [ ] **Step 1: Move the existing ambiguity guard**
+- [x] **Step 1: Move the existing ambiguity guard**
 
 Change `_invocation_in_simple_command` to check provenance before index absence or exhaustion:
 
@@ -114,13 +114,13 @@ def _invocation_in_simple_command(words: list[_ShellWord]) -> _Invocation | None
         return None
 ```
 
-- [ ] **Step 2: Run GREEN**
+- [x] **Step 2: Run GREEN**
 
 Run the focused command from Task 1 Step 3.
 
 Expected: all seven parameters pass.
 
-- [ ] **Step 3: Run focused regression modules**
+- [x] **Step 3: Run focused regression modules**
 
 Run:
 
@@ -136,7 +136,7 @@ Expected: both modules pass without failures or warnings.
 **Files:**
 - Verify: the complete repository and all changed files
 
-- [ ] **Step 1: Run the full test suite with coverage**
+- [x] **Step 1: Run the full test suite with coverage**
 
 ```bash
 env UV_CACHE_DIR=/tmp/doc-lattice-review-uv-cache uv run --offline --group dev pytest -q
@@ -144,7 +144,7 @@ env UV_CACHE_DIR=/tmp/doc-lattice-review-uv-cache uv run --offline --group dev p
 
 Expected: all tests pass and coverage meets the configured 80% minimum.
 
-- [ ] **Step 2: Run static and repository checks**
+- [x] **Step 2: Run static and repository checks**
 
 ```bash
 env UV_CACHE_DIR=/tmp/doc-lattice-review-uv-cache uv run --offline --group dev ruff check src tests
@@ -158,7 +158,7 @@ git diff --check
 
 Expected: every command exits 0 with no findings or formatting changes.
 
-- [ ] **Step 3: Review the implementation diff**
+- [x] **Step 3: Review the implementation diff**
 
 ```bash
 git diff --stat HEAD

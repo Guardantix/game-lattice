@@ -1470,10 +1470,10 @@ def _invocation_in_simple_command(words: list[_ShellWord]) -> _Invocation | None
     if executable.index is None:
         return None
     subcommand_resolution = _doc_lattice_subcommand_index(words, executable.index + 1)
-    if subcommand_resolution.index is None or subcommand_resolution.index >= len(words):
-        return None
     if executable.ambiguous or subcommand_resolution.ambiguous:
         raise _ShellScanIncomplete("command-position expansion cannot be scanned safely")
+    if subcommand_resolution.index is None or subcommand_resolution.index >= len(words):
+        return None
     subcommand_index = subcommand_resolution.index
     subcommand = words[subcommand_index]
     if subcommand.dynamic or not subcommand.literal:

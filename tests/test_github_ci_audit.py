@@ -557,6 +557,31 @@ jobs:
         audit_global_workflows((document,))
 
 
+@pytest.mark.parametrize(
+    "script",
+    [
+        'CMD=linear; doc-lattice "$CMD"',
+        "CMD='reconcile --all'; doc-lattice $CMD",
+    ],
+    ids=["quoted-scalar", "unquoted-multiple-fields"],
+)
+def test_global_audit_fails_closed_on_exhausted_dynamic_subcommand(script):
+    document = _workflow(
+        f"""\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          {script}
+"""
+    )
+
+    with pytest.raises(ConfigError, match=r"shell scan.*command-position expansion"):
+        audit_global_workflows((document,))
+
+
 def test_global_audit_fails_closed_when_dynamic_uv_global_option_value_exposes_env_split_string():
     document = _workflow(
         """\

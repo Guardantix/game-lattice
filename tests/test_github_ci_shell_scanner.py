@@ -1203,6 +1203,28 @@ def test_direct_doc_lattice_fails_closed_on_dynamic_prefix_grammar_before_payloa
 @pytest.mark.parametrize(
     "script",
     [
+        'CMD=linear; doc-lattice "$CMD"',
+        "CMD='reconcile --all'; doc-lattice $CMD",
+    ],
+    ids=["quoted-scalar", "unquoted-multiple-fields"],
+)
+def test_direct_doc_lattice_fails_closed_on_exhausted_dynamic_subcommand(script):
+    with pytest.raises(ConfigError, match=r"shell scan.*command-position expansion"):
+        direct_doc_lattice_invocations(script)
+
+
+@pytest.mark.parametrize(
+    "script",
+    ["doc-lattice", "doc-lattice --help", "doc-lattice --version"],
+    ids=["bare", "root-help", "root-version"],
+)
+def test_direct_doc_lattice_allows_static_missing_or_nonexecuting_subcommand(script):
+    assert direct_doc_lattice_invocations(script) == NONE
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
         "uv --directory $OPT doc-lattice linear",
         "uv --project $OPT doc-lattice linear",
         "uv --cache-dir $OPT doc-lattice linear",
