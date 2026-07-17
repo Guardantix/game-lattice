@@ -826,6 +826,23 @@ def test_direct_doc_lattice_invocations_fails_closed_on_dynamic_env_split_string
 @pytest.mark.parametrize(
     "script",
     [
+        "env -i\"$OPTION\" 'doc-lattice linear'",
+        "env --\"$OPTION\" 'doc-lattice reconcile --all'",
+    ],
+    ids=["short-option", "long-option"],
+)
+def test_direct_doc_lattice_invocations_fails_closed_on_dynamic_env_option_prefix(script):
+    with pytest.raises(ConfigError, match=r"shell scan.*dynamic env"):
+        direct_doc_lattice_invocations(script)
+
+
+def test_direct_doc_lattice_invocations_handles_dynamic_env_assignment_prefix():
+    assert direct_doc_lattice_invocations('env FOO="$VALUE" doc-lattice linear') == LINEAR
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
         "command -v doc-lattice linear",
         "command -V doc-lattice linear",
         "command -pv doc-lattice linear",
