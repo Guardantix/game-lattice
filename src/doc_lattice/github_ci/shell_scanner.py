@@ -28,10 +28,7 @@ _COMMAND_PREFIXES = frozenset(
         "while",
     }
 )
-_SHELL_ASSIGNMENT_RE = re.compile(
-    r"[A-Za-z_][A-Za-z0-9_]*(?:\+=|=).*",
-    re.DOTALL,
-)
+_SHELL_ASSIGNMENT_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
 _ENV_SPLIT_STRING_LONG_OPTION = "--split-string"
 _REDIRECTION_OPERATORS = (
@@ -266,6 +263,7 @@ class _ShellWord:
     dynamic: bool = False
     unquoted_dynamic: bool = False
     active_argv_expansion: bool = False
+    shell_assignment: bool = False
 
 
 @dataclass(slots=True)
@@ -274,6 +272,9 @@ class _ShellWordBuilder:
     active_syntax: list[str]
     dynamic: bool = False
     unquoted_dynamic: bool = False
+    assignment_name_is_literal: bool = True
+    assignment_name: str = ""
+    shell_assignment: bool = False
 
     def append_protected(
         self,
@@ -287,11 +288,21 @@ class _ShellWordBuilder:
         self.active_syntax.append(" ")
         self.dynamic = self.dynamic or dynamic
         self.unquoted_dynamic = self.unquoted_dynamic or unquoted_dynamic
+        if not self.shell_assignment:
+            self.assignment_name_is_literal = False
 
     def append_active(self, character: str) -> None:
         """Append one unquoted, unescaped literal character."""
         self.characters.append(character)
         self.active_syntax.append(character)
+        if not self.assignment_name_is_literal or self.shell_assignment:
+            return
+        if character == "=":
+            assignment_name = self.assignment_name.removesuffix("+")
+            self.shell_assignment = bool(_SHELL_ASSIGNMENT_NAME_RE.fullmatch(assignment_name))
+            self.assignment_name_is_literal = False
+            return
+        self.assignment_name += character
 
     def build(self) -> _ShellWord:
         """Build the immutable decoded word and its expansion provenance."""
@@ -300,6 +311,7 @@ class _ShellWordBuilder:
             self.dynamic,
             self.unquoted_dynamic,
             _has_active_argv_expansion("".join(self.active_syntax)),
+            self.shell_assignment,
         )
 
 
@@ -513,8 +525,10 @@ class _ShellScanner:
     def _advance_prefix_scan(self, state: _CommandScanState, word: _ShellWord) -> None:
         """Track incrementally whether the next word sits at the simple-command position.
 
-        This mirrors ``_skip_shell_prefixes`` one word at a time so ``_record_word`` avoids a
-        full left-to-right rescan of the accumulated words on every append. Once the running
+        This tracks deterministic portions of ``_skip_shell_prefixes`` one word at a time so
+        ``_record_word`` avoids a full left-to-right rescan of the accumulated words on every
+        append. Ambiguous command-position expansions end incremental tracking; final prefix
+        resolution revisits them to fail closed if they could expose a payload. Once the running
         scan leaves the prefix region it stays there until the command is reset.
 
         Args:
@@ -544,7 +558,11 @@ class _ShellScanner:
         mode = state.prefix_mode
         if mode == "command_v":
             return True
-        if mode in {"command_dashdash", "exec_dashdash"} or word.dynamic:
+        if (
+            mode in {"command_dashdash", "exec_dashdash"}
+            or word.dynamic
+            or _command_boundary_word_may_disappear(word)
+        ):
             self._prefix_stop(state)
             return True
         literal = word.literal
@@ -591,11 +609,16 @@ class _ShellScanner:
         return True
 
     def _advance_prefix_normal(self, state: _CommandScanState, word: _ShellWord) -> None:
+        literal = word.literal
+        if word.shell_assignment:
+            return
+        if _command_boundary_word_may_disappear(word):
+            self._prefix_stop(state)
+            return
         if word.dynamic:
             self._prefix_stop(state)
             return
-        literal = word.literal
-        if literal in _COMMAND_PREFIXES or _SHELL_ASSIGNMENT_RE.fullmatch(literal):
+        if literal in _COMMAND_PREFIXES:
             return
         if literal in {"time", "env", "command", "exec"}:
             state.prefix_mode = literal
@@ -1358,6 +1381,18 @@ def _word_may_change_argv(word: _ShellWord) -> bool:
     return word.dynamic or word.active_argv_expansion
 
 
+def _command_boundary_word_may_disappear(word: _ShellWord) -> bool:
+    """Return whether a word can expose a later command-position payload.
+
+    A dynamic word with decoded static text (for example
+    ``$RUNNER_TEMP/doc-lattice-helper``) always retains that text and cannot make its successor
+    executable. In contrast, an unquoted dynamic word with no decoded text can disappear after
+    expansion, and brace/glob expansion can alter the number of argv words. Either form can
+    shift a later wrapper or payload into command position.
+    """
+    return word.active_argv_expansion or (word.unquoted_dynamic and not word.literal)
+
+
 def _has_active_argv_expansion(syntax: str) -> bool:
     """Return whether unquoted word syntax can expand into a different argv shape."""
     if any(marker in syntax for marker in "*?["):
@@ -1383,64 +1418,91 @@ def _has_active_argv_expansion(syntax: str) -> bool:
     return False
 
 
-def _skip_shell_prefixes(words: list[_ShellWord], start: int) -> int:
+def _skip_shell_prefixes(words: list[_ShellWord], start: int) -> tuple[int, bool]:
+    """Skip literal shell prefixes and report an erasable command-position boundary."""
     index = start
+    has_erasable_boundary = False
     while index < len(words):
         word = words[index]
+        if word.shell_assignment:
+            index += 1
+            continue
+        if _command_boundary_word_may_disappear(word):
+            has_erasable_boundary = True
+            index += 1
+            continue
         if word.dynamic:
-            return index
-        if word.literal in _COMMAND_PREFIXES or _SHELL_ASSIGNMENT_RE.fullmatch(word.literal):
+            return index, has_erasable_boundary
+        if word.literal in _COMMAND_PREFIXES:
             index += 1
             continue
         if word.literal == "time":
             index += 1
-            if index < len(words) and not words[index].dynamic and words[index].literal == "-p":
+            if (
+                index < len(words)
+                and not _word_may_change_argv(words[index])
+                and words[index].literal == "-p"
+            ):
                 index += 1
             continue
         if _basename(word.literal) == "env":
             index = _skip_env_prefix(words, index + 1)
             continue
         if word.literal == "command":
-            index = _skip_command_builtin(words, index + 1)
+            index, wrapper_has_erasable_boundary = _skip_command_builtin(words, index + 1)
+            has_erasable_boundary = has_erasable_boundary or wrapper_has_erasable_boundary
             continue
         if word.literal == "exec":
-            index = _skip_exec_wrapper(words, index + 1)
+            index, wrapper_has_erasable_boundary = _skip_exec_wrapper(words, index + 1)
+            has_erasable_boundary = has_erasable_boundary or wrapper_has_erasable_boundary
             continue
-        return index
-    return index
+        return index, has_erasable_boundary
+    return index, has_erasable_boundary
 
 
-def _skip_command_builtin(words: list[_ShellWord], start: int) -> int:
+def _skip_command_builtin(words: list[_ShellWord], start: int) -> tuple[int, bool]:
+    """Skip ``command`` options and report an erasable executable boundary."""
     index = start
+    has_erasable_boundary = False
     while index < len(words):
         word = words[index]
+        if _command_boundary_word_may_disappear(word):
+            has_erasable_boundary = True
+            index += 1
+            continue
         if word.dynamic:
-            return index
+            return index, has_erasable_boundary
         if word.literal == "--":
-            return index + 1
+            return index + 1, has_erasable_boundary
         if not word.literal.startswith("-"):
-            return index
+            return index, has_erasable_boundary
         if "v" in word.literal[1:] or "V" in word.literal[1:]:
-            return len(words)
+            return len(words), has_erasable_boundary
         index += 1
-    return index
+    return index, has_erasable_boundary
 
 
-def _skip_exec_wrapper(words: list[_ShellWord], start: int) -> int:
+def _skip_exec_wrapper(words: list[_ShellWord], start: int) -> tuple[int, bool]:
+    """Skip ``exec`` options and report an erasable executable boundary."""
     index = start
+    has_erasable_boundary = False
     while index < len(words):
         word = words[index]
+        if _command_boundary_word_may_disappear(word):
+            has_erasable_boundary = True
+            index += 1
+            continue
         if word.dynamic:
-            return index
+            return index, has_erasable_boundary
         if word.literal == "--":
-            return index + 1
+            return index + 1, has_erasable_boundary
         if word.literal == "-a":
             index += 2
         elif word.literal.startswith("-"):
             index += 1
         else:
-            return index
-    return index
+            return index, has_erasable_boundary
+    return index, has_erasable_boundary
 
 
 def _is_env_split_string_long_option(literal: str) -> bool:
@@ -1505,14 +1567,18 @@ def _doc_lattice_command_index(
     start: int,
 ) -> int | None:
     """Resolve one direct command, including an optional named Bash coprocess."""
-    command_index = _skip_shell_prefixes(words, start)
+    command_index, has_erasable_boundary = _skip_shell_prefixes(words, start)
     if (
         command_index < len(words)
         and not words[command_index].dynamic
         and words[command_index].literal == "coproc"
     ):
-        return _coproc_doc_lattice_command_index(words, command_index + 1)
-    return _doc_lattice_payload_index(words, command_index)
+        payload_index = _coproc_doc_lattice_command_index(words, command_index + 1)
+    else:
+        payload_index = _doc_lattice_payload_index(words, command_index)
+    if has_erasable_boundary and payload_index is not None:
+        raise _ShellScanIncomplete("command-position expansion cannot be scanned safely")
+    return payload_index
 
 
 def _coproc_doc_lattice_command_index(
@@ -1536,8 +1602,11 @@ def _doc_lattice_command_after_prefixes(
     start: int,
 ) -> int | None:
     """Reuse normal prefix, wrapper, and payload resolution from one command start."""
-    executable_index = _skip_shell_prefixes(words, start)
-    return _doc_lattice_payload_index(words, executable_index)
+    executable_index, has_erasable_boundary = _skip_shell_prefixes(words, start)
+    payload_index = _doc_lattice_payload_index(words, executable_index)
+    if has_erasable_boundary and payload_index is not None:
+        raise _ShellScanIncomplete("command-position expansion cannot be scanned safely")
+    return payload_index
 
 
 def _doc_lattice_payload_index(

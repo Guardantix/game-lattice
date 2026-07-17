@@ -290,6 +290,61 @@ jobs:
 
 
 @pytest.mark.parametrize(
+    "script",
+    [
+        "FOO=\"$VALUE\" env -S 'doc-lattice linear'",
+        "FOO=\"$VALUE\" command env -S 'doc-lattice linear'",
+        "FOO=\"$VALUE\" exec env -S 'doc-lattice linear'",
+        "FOO=\"$VALUE\" /usr/bin/env -S 'doc-lattice linear'",
+    ],
+    ids=["bare-env", "command-wrapper", "exec-wrapper", "path-qualified"],
+)
+def test_global_audit_fails_closed_on_dynamic_shell_assignment_before_env_split_string(script):
+    document = _workflow(
+        f"""\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          {script}
+"""
+    )
+
+    with pytest.raises(ConfigError, match=r"shell scan.*env split-string"):
+        audit_global_workflows((document,))
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "$(true) env -S 'doc-lattice linear'",
+        "command $(true) env -S 'doc-lattice linear'",
+        "exec $(true) env -S 'doc-lattice linear'",
+        "time $(true) env -S 'doc-lattice linear'",
+        "shopt -s nullglob; no-match-* env -S 'doc-lattice linear'",
+    ],
+    ids=["top-level", "command-wrapper", "exec-wrapper", "time-prefix", "active-glob"],
+)
+def test_global_audit_fails_closed_on_erasable_command_boundary_before_env_split_string(script):
+    document = _workflow(
+        f"""\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          {script}
+"""
+    )
+
+    with pytest.raises(ConfigError, match=r"shell scan.*env split-string"):
+        audit_global_workflows((document,))
+
+
+@pytest.mark.parametrize(
     "option",
     [
         "--s",

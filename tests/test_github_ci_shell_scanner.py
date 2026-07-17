@@ -541,6 +541,7 @@ def test_direct_doc_lattice_invocations_does_not_continue_after_escaped_backslas
     ("script", "expected"),
     [
         ("PATH+=:/tools doc-lattice linear --exit-code", (("linear", False),)),
+        ('PATH+="$PATH_SUFFIX" doc-lattice linear', (("linear", False),)),
         (
             "FLAGS+=x uv run doc-lattice reconcile --all",
             (("reconcile", False),),
@@ -791,6 +792,91 @@ def test_direct_doc_lattice_invocations_fails_closed_on_env_split_string(script)
 def test_direct_doc_lattice_invocations_fails_closed_on_wrapped_env_split_string(script):
     with pytest.raises(ConfigError, match=r"shell scan.*env split-string"):
         direct_doc_lattice_invocations(script)
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "FOO=\"$VALUE\" env -S 'doc-lattice linear'",
+        "FOO=\"$VALUE\" command env -S 'doc-lattice linear'",
+        "FOO=\"$VALUE\" exec env -S 'doc-lattice linear'",
+        "FOO=\"$VALUE\" /usr/bin/env -S 'doc-lattice linear'",
+    ],
+    ids=["bare-env", "command-wrapper", "exec-wrapper", "path-qualified"],
+)
+def test_direct_doc_lattice_fails_closed_on_dynamic_assignment_before_env_split_string(
+    script,
+):
+    with pytest.raises(ConfigError, match=r"shell scan.*env split-string"):
+        direct_doc_lattice_invocations(script)
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "$(true) env -S 'doc-lattice linear'",
+        "$EMPTY env -S 'doc-lattice linear'",
+        "$@ env -S 'doc-lattice linear'",
+        "command $(true) env -S 'doc-lattice linear'",
+        "exec $(true) env -S 'doc-lattice linear'",
+        "time $(true) env -S 'doc-lattice linear'",
+        "shopt -s nullglob; no-match-* env -S 'doc-lattice linear'",
+        "{$EMPTY,} env -S 'doc-lattice linear'",
+    ],
+    ids=[
+        "top-level-command-substitution",
+        "top-level-empty-variable",
+        "top-level-positional-at",
+        "command-wrapper",
+        "exec-wrapper",
+        "time-prefix",
+        "active-glob",
+        "active-brace",
+    ],
+)
+def test_direct_doc_lattice_fails_closed_on_erasable_boundary_before_env_split_string(
+    script,
+):
+    with pytest.raises(ConfigError, match=r"shell scan.*env split-string"):
+        direct_doc_lattice_invocations(script)
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "$(true) doc-lattice linear",
+        "command $(true) doc-lattice linear",
+        "exec $(true) doc-lattice linear",
+        "time $(true) doc-lattice linear",
+        "shopt -s nullglob; no-match-* doc-lattice linear",
+    ],
+    ids=["top-level", "command-wrapper", "exec-wrapper", "time-prefix", "active-glob"],
+)
+def test_direct_doc_lattice_invocations_fails_closed_on_erasable_command_boundary_before_payload(
+    script,
+):
+    with pytest.raises(ConfigError, match=r"shell scan.*command-position expansion"):
+        direct_doc_lattice_invocations(script)
+
+
+def test_direct_doc_lattice_invocations_skips_dynamic_shell_assignment_before_command():
+    assert direct_doc_lattice_invocations('FOO="$VALUE" doc-lattice linear') == LINEAR
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        'FOO"$X"=bar doc-lattice linear',
+        "FOO$X=bar doc-lattice linear",
+    ],
+    ids=["quoted-name-fragment", "unquoted-name-fragment"],
+)
+def test_direct_doc_lattice_invocations_does_not_treat_dynamic_assignment_name_as_prefix(script):
+    assert direct_doc_lattice_invocations(script) == NONE
+
+
+def test_direct_doc_lattice_invocations_keeps_dynamic_argument_after_static_command():
+    assert direct_doc_lattice_invocations("doc-lattice linear $(true)") == LINEAR
 
 
 @pytest.mark.parametrize(
