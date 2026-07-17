@@ -844,10 +844,20 @@ def test_direct_doc_lattice_invocations_handles_dynamic_env_assignment_prefix():
     "script",
     [
         'env FOO="$@" harmless',
+        'env FOO="${@:1}" harmless',
+        'env FOO="${@#x}" harmless',
+        'env FOO="${!@}" harmless',
         'env FOO="${OPTIONS[@]}" harmless',
         'env FOO="${!OPTION_PREFIX@}" harmless',
     ],
-    ids=["positional-at", "array-at", "named-parameter-at"],
+    ids=[
+        "positional-at",
+        "positional-slice",
+        "positional-prefix-removal",
+        "indirect-positional-at",
+        "array-at",
+        "named-parameter-at",
+    ],
 )
 def test_direct_doc_lattice_invocations_fails_closed_on_quoted_multiword_env_assignment(script):
     with pytest.raises(ConfigError, match=r"shell scan.*quoted multiword env assignment"):

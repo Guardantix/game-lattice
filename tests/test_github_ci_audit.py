@@ -350,16 +350,31 @@ jobs:
         )
 
 
-def test_repository_audit_fails_closed_on_quoted_multiword_env_assignment():
+@pytest.mark.parametrize(
+    "command",
+    [
+        'env FOO="$@" harmless',
+        'env FOO="${@:1}" harmless',
+        'env FOO="${@#x}" harmless',
+        'env FOO="${!@}" harmless',
+    ],
+    ids=[
+        "positional-at",
+        "positional-slice",
+        "positional-prefix-removal",
+        "indirect-positional-at",
+    ],
+)
+def test_repository_audit_fails_closed_on_quoted_multiword_env_assignment(command):
     document = _workflow(
-        """\
+        f"""\
 on: pull_request
 jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
       - run: |
-          env FOO="$@" harmless
+          {command}
 """
     )
 

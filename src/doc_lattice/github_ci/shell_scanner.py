@@ -1034,7 +1034,7 @@ class _ShellScanner:
         ):
             return False
         parameter = self.source[start + 2 : end - 1]
-        if parameter == "@":
+        if parameter.startswith(("@", "!@")):
             return True
         if parameter.startswith("!"):
             parameter = parameter[1:]
