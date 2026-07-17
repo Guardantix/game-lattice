@@ -170,7 +170,7 @@ git status --short
 Expected: only the planned tests, scanner guard ordering, and completed plan checkboxes are
 uncommitted.
 
-- [ ] **Step 4: Commit the implementation**
+- [x] **Step 4: Commit the implementation**
 
 ```bash
 git add docs/superpowers/plans/2026-07-17-ci-audit-dynamic-subcommand.md \
@@ -181,7 +181,7 @@ git commit -m "fix: reject dynamic doc-lattice subcommands"
 
 Expected: commit succeeds and all configured pre-commit hooks pass.
 
-- [ ] **Step 5: Push the current branch without force**
+- [x] **Step 5: Push the current branch without force**
 
 ```bash
 git push origin feature/github-linear-ci-bootstrap-impl
