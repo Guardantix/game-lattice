@@ -219,6 +219,28 @@ _UV_LAUNCHER_FLAGS = frozenset(
         "-v",
     }
 )
+_UV_RUN_FLAGS = _UV_LAUNCHER_FLAGS | frozenset(
+    {
+        "--all-extras",
+        "--all-groups",
+        "--all-packages",
+        "--compile-bytecode",
+        "--exact",
+        "--no-binary",
+        "--no-build",
+        "--no-build-isolation",
+        "--no-default-groups",
+        "--no-index",
+        "--no-sources",
+        "--only-dev",
+        "--refresh",
+        "--reinstall",
+        "--system-certs",
+        "--upgrade",
+        "-U",
+        "-n",
+    }
+)
 _DOC_LATTICE_ROOT_OPTIONS = frozenset({"--no-color"})
 # --help and --version are eager Typer options that exit before any subcommand runs.
 _DOC_LATTICE_NON_COMMAND_ROOT_OPTIONS = frozenset({"--version", "--help"})
@@ -281,7 +303,7 @@ _UV_TOOL_RUN_LAUNCHER = _LauncherOptions.build(
 )
 _UV_RUN_LAUNCHER = _LauncherOptions.build(
     _UV_RUN_OPTIONS_WITH_ARGUMENTS,
-    _UV_LAUNCHER_FLAGS,
+    _UV_RUN_FLAGS,
     _UV_RUN_NON_COMMAND_OPTIONS | _UV_HELP_OPTIONS,
 )
 _ANSI_C_SIMPLE_ESCAPES = {

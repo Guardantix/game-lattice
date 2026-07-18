@@ -79,6 +79,10 @@ def test_secret_name_regex_single_sources_from_secret_names():
             "uv tool run doc-lattice==2.0.0 reconcile --all",
             "PR_MUTATING_RECONCILE",
         ),
+        (
+            "uv run --exact doc-lattice reconcile --all",
+            "PR_MUTATING_RECONCILE",
+        ),
         ("{ doc-lattice linear; }", "PR_LINEAR_INVOCATION"),
         ("{ doc-lattice reconcile --all; }", "PR_MUTATING_RECONCILE"),
         ("time -p doc-lattice linear", "PR_LINEAR_INVOCATION"),
@@ -1214,15 +1218,23 @@ def test_global_audit_fails_closed_on_unsupported_shell_semantics(workflow: str)
         audit_global_workflows((document,))
 
 
-def test_global_audit_allows_pr_dry_run_reconcile():
+@pytest.mark.parametrize(
+    "script",
+    [
+        "doc-lattice reconcile --all --dry-run",
+        "uv run --all-extras doc-lattice reconcile --dry-run",
+    ],
+    ids=["direct", "uv-run-all-extras"],
+)
+def test_global_audit_allows_pr_dry_run_reconcile(script):
     document = _workflow(
-        """\
+        f"""\
 on: pull_request
 jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - run: doc-lattice reconcile --all --dry-run
+      - run: {script}
 """
     )
 
