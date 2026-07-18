@@ -74,6 +74,11 @@ def test_secret_name_regex_single_sources_from_secret_names():
             "uvx --from doc-lattice==2.1.0 doc-lattice --no-color linear",
             "PR_LINEAR_INVOCATION",
         ),
+        ("uvx doc-lattice==2.0.0 linear", "PR_LINEAR_INVOCATION"),
+        (
+            "uv tool run doc-lattice==2.0.0 reconcile --all",
+            "PR_MUTATING_RECONCILE",
+        ),
         ("{ doc-lattice linear; }", "PR_LINEAR_INVOCATION"),
         ("{ doc-lattice reconcile --all; }", "PR_MUTATING_RECONCILE"),
         ("time -p doc-lattice linear", "PR_LINEAR_INVOCATION"),

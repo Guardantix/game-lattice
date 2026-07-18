@@ -31,6 +31,9 @@ _COMMAND_PREFIXES = frozenset(
     }
 )
 _SHELL_ASSIGNMENT_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_PYTHON_DISTRIBUTION_NAME_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
+_PYTHON_DISTRIBUTION_SEPARATOR_RE = re.compile(r"[-_.]+")
+_UV_REQUIREMENT_SUFFIX_STARTS = frozenset("([<>=!~@;")
 _ENV_SPLIT_STRING_LONG_OPTION = "--split-string"
 _ENV_LONG_OPTION_KINDS = {
     "--argv0": "required",
@@ -2430,8 +2433,12 @@ def _nested_launcher_payload_index(
     if payload.dynamic:
         return _ResolvedIndex(None, payload_resolution.ambiguous)
     basename = _basename(payload.literal)
-    executable_name = basename.split("@", 1)[0] if strip_version else basename
-    if _is_doc_lattice_executable_basename(executable_name):
+    is_doc_lattice = (
+        _is_doc_lattice_uv_tool_payload(payload.literal)
+        if strip_version
+        else _is_doc_lattice_executable_basename(basename)
+    )
+    if is_doc_lattice:
         return _ResolvedIndex(payload_index, payload_resolution.ambiguous)
     if launcher_depth >= _MAX_LAUNCHER_NESTING_DEPTH:
         raise _ShellScanIncomplete("launcher nesting limit exceeded")
@@ -2897,6 +2904,25 @@ def _basename(token: str) -> str:
 
 def _is_doc_lattice_executable_basename(value: str) -> bool:
     return value.casefold() in ("doc-lattice", "doc-lattice.exe")
+
+
+def _is_doc_lattice_uv_tool_payload(value: str) -> bool:
+    """Return whether a uv tool payload names the doc-lattice executable or distribution."""
+    value = value.lstrip()
+    executable_name = _basename(value).split("@", 1)[0]
+    if _is_doc_lattice_executable_basename(executable_name):
+        return True
+    match = _PYTHON_DISTRIBUTION_NAME_RE.match(value)
+    if match is None:
+        return False
+    normalized_name = _PYTHON_DISTRIBUTION_SEPARATOR_RE.sub("-", match.group()).casefold()
+    if normalized_name != "doc-lattice":
+        return False
+    suffix = value[match.end() :]
+    if not suffix:
+        return True
+    suffix = suffix.lstrip()
+    return not suffix or suffix[0] in _UV_REQUIREMENT_SUFFIX_STARTS
 
 
 def _is_doc_lattice_executable(word: _ShellWord) -> bool:
