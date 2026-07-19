@@ -324,7 +324,8 @@ restarts from a new checkpoint commit and prior results are discarded.
 ## Evaluation corpora and gates
 
 All gates are pytest-enforced in PR A and run under both supported Python versions (3.13 and
-3.14) in CI. Runtime audit behavior is unchanged in PR A.
+3.14) in CI, except the wall-clock half of gate 9, which is the trusted fleetyard-only
+decision gate defined in checkpoint item 7. Runtime audit behavior is unchanged in PR A.
 
 1. **Corpus relabel.** Every one of the 78 `ACCEPTANCE_CASES`
    (`tests/test_github_ci_shell_scanner.py:28`) gets its checkpoint label as a checked-in
@@ -398,8 +399,9 @@ All gates are pytest-enforced in PR A and run under both supported Python versio
    invocation), oversized sources, pathological token streams, and malformed tails produce
    deterministic `uninspectable` results within bounds.
 9. **Complexity and performance.** The work counter increments per character examined and per
-   token, statement, and policy step emitted; a gate asserts `work <= 4 * input_length + 4,096`
-   for every input in the replay inventory, tiers, and adversarial suite, including
+   token, statement, and policy step emitted; a gate asserts
+   `work <= min(4,194,304, 4 * input_length + 4,096)` for every input in the replay
+   inventory, tiers, and adversarial suite, including
    marker-heavy and worst-case sources (the repository audit is mostly marker-gated and
    therefore not representative). The work-counter assertion is the CI-enforced half of this
    gate; wall-clock timing follows the checkpoint benchmark protocol as a trusted
