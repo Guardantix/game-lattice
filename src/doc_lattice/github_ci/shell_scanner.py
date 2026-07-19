@@ -219,6 +219,23 @@ _UV_LAUNCHER_FLAGS = frozenset(
         "-v",
     }
 )
+_UV_TOOL_RUN_FLAGS = _UV_LAUNCHER_FLAGS | frozenset(
+    {
+        "--compile-bytecode",
+        "--lfs",
+        "--no-binary",
+        "--no-build",
+        "--no-build-isolation",
+        "--no-index",
+        "--no-sources",
+        "--refresh",
+        "--reinstall",
+        "--system-certs",
+        "--upgrade",
+        "-U",
+        "-n",
+    }
+)
 _UV_RUN_FLAGS = _UV_LAUNCHER_FLAGS | frozenset(
     {
         "--all-extras",
@@ -293,12 +310,12 @@ class _LauncherOptions:
 
 _UVX_LAUNCHER = _LauncherOptions.build(
     _UVX_OPTIONS_WITH_ARGUMENTS,
-    _UV_LAUNCHER_FLAGS,
+    _UV_TOOL_RUN_FLAGS,
     _UV_HELP_OPTIONS | _UV_VERSION_OPTIONS,
 )
 _UV_TOOL_RUN_LAUNCHER = _LauncherOptions.build(
     _UVX_OPTIONS_WITH_ARGUMENTS,
-    _UV_LAUNCHER_FLAGS,
+    _UV_TOOL_RUN_FLAGS,
     _UV_HELP_OPTIONS,
 )
 _UV_RUN_LAUNCHER = _LauncherOptions.build(

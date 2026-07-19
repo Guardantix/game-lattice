@@ -1704,6 +1704,35 @@ def test_direct_doc_lattice_invocations_recognizes_documented_uv_run_flags(flag)
     )
 
 
+@pytest.mark.parametrize("launcher", ["uvx", "uv tool run"])
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "--compile-bytecode",
+        "--lfs",
+        "--no-binary",
+        "--no-build",
+        "--no-build-isolation",
+        "--no-index",
+        "--no-sources",
+        "--refresh",
+        "--reinstall",
+        "--system-certs",
+        "--upgrade",
+        "-U",
+        "-n",
+    ],
+)
+def test_direct_doc_lattice_invocations_recognizes_documented_uv_tool_run_flags(
+    launcher,
+    flag,
+):
+    assert (
+        direct_doc_lattice_invocations(f"{launcher} {flag} doc-lattice reconcile --dry-run")
+        == RECONCILE_DRY
+    )
+
+
 @pytest.mark.parametrize(
     "script",
     [

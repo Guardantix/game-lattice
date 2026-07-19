@@ -83,6 +83,10 @@ def test_secret_name_regex_single_sources_from_secret_names():
             "uv run --exact doc-lattice reconcile --all",
             "PR_MUTATING_RECONCILE",
         ),
+        (
+            "uv tool run --refresh doc-lattice reconcile --all",
+            "PR_MUTATING_RECONCILE",
+        ),
         ("{ doc-lattice linear; }", "PR_LINEAR_INVOCATION"),
         ("{ doc-lattice reconcile --all; }", "PR_MUTATING_RECONCILE"),
         ("time -p doc-lattice linear", "PR_LINEAR_INVOCATION"),
@@ -1270,8 +1274,9 @@ jobs:
     [
         "doc-lattice reconcile --all --dry-run",
         "uv run --all-extras doc-lattice reconcile --dry-run",
+        "uvx --no-index --find-links dist doc-lattice reconcile --dry-run",
     ],
-    ids=["direct", "uv-run-all-extras"],
+    ids=["direct", "uv-run-all-extras", "uvx-no-index"],
 )
 def test_global_audit_allows_pr_dry_run_reconcile(script):
     document = _workflow(
