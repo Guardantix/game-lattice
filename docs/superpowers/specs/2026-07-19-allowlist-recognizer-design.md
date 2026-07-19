@@ -1,6 +1,6 @@
 # Allowlist recognizer for the direct-invocation audit (issue #100)
 
-Date: 2026-07-19 (revised same day after review round 1)
+Date: 2026-07-19 (revised same day after review rounds 1 and 2)
 Status: approved evaluation spec. This document is non-authoritative: it directs the issue #100
 evaluation and the two stacked PRs below. Durable user behavior transfers to
 [README.md](../../../README.md), durable decisions to [ARCHITECTURE.md](../../../ARCHITECTURE.md),
@@ -94,8 +94,10 @@ every metacharacter and marker in this grammar is ASCII.
 **Tokens and operators.** Statements are separated by unquoted newlines or `;`. Within a
 statement, commands are joined by `&&` or `||`. Any unquoted occurrence of the following makes
 the block uninspectable at that offset: `|` (other than in `||`), `&` (other than in `&&`), `<`,
-`>`, `(`, `)`, backtick, backslash (including line continuations), `{` or `}` as brace
-expansion, `#` inside a word (see comments), and `$` not forming a permitted parameter form.
+`>`, `(`, `)`, backtick, backslash (including line continuations), any unquoted brace outside
+a permitted `${NAME}` form, `#` inside a word (see comments), and `$` not forming a permitted
+parameter form. The recognizer never decides whether braces constitute brace expansion; any
+live unquoted brace refuses.
 Heredoc introducers, redirections, control-flow keywords in command position (`if`, `then`,
 `elif`, `else`, `fi`, `while`, `until`, `do`, `done`, `for`, `case`, `esac`, `function`, `!`,
 `time`, `coproc`), and function definitions are uninspectable.
@@ -214,9 +216,9 @@ Composition table (T = marker in template, B = marker in body):
 | no | yes | BASH | Scan body; template not applicable. |
 | no | yes | NON_BASH or UNKNOWN | No body scan. One diagnostic, code `UNSUPPORTED_EXECUTION_SEMANTICS`, source kind `run_body`, no offset. |
 | yes | no | BASH | Scan template; body not applicable. |
-| yes | no | NON_BASH or UNKNOWN | Scan template; template findings retained. One `UNSUPPORTED_EXECUTION_SEMANTICS` diagnostic for the body: a marker-relevant step is executing under semantics the audit cannot inspect. |
+| yes | no | NON_BASH or UNKNOWN | Scan template; template findings retained. One `UNSUPPORTED_EXECUTION_SEMANTICS` diagnostic attributed to `shell_template` (the marker-bearing source executes under semantics the audit cannot inspect). The marker-free body remains not applicable and is never claimed to require inspection. |
 | yes | yes | BASH | Scan both sources independently; results aggregate per D4/D5. |
-| yes | yes | NON_BASH or UNKNOWN | Scan template; findings retained. One `UNSUPPORTED_EXECUTION_SEMANTICS` diagnostic for the body. |
+| yes | yes | NON_BASH or UNKNOWN | Scan template; findings retained. Per-source diagnostics: one `UNSUPPORTED_EXECUTION_SEMANTICS` for `shell_template` and one for `run_body`. |
 
 An uncertifiable template additionally contributes its own diagnostic with source kind
 `shell_template` and an offset. Template evidence is always retained (monotonic rule); the
@@ -251,9 +253,14 @@ ambiguity state (`shell_scanner.py:1643`); it is adapted, not copied.
 Bounds, all explicit, predeclared, and tested:
 
 - source cap: 1,048,576 characters (inherited, `shell_scanner.py:10`);
-- work cap: 4,194,304 steps (inherited `_MAX_SHELL_SCAN_STEPS`, `shell_scanner.py:11`);
 - invocation cap: 10,000 (inherited, `shell_scanner.py:13`);
-- token cap: 262,144; statement cap: 65,536 (new; exceeding either is uninspectable).
+- token cap: 262,144; statement cap: 65,536 (new; exceeding either is uninspectable);
+- work limit: `min(4,194,304, 4 * source_length + 4,096)` conceptual charges; exceeding it is
+  uninspectable. The constants are baseline-inspired, not inherited: the old scanner's
+  `_MAX_SHELL_SCAN_STEPS` (4,194,304, `shell_scanner.py:11`) uses different charge units.
+  Charges are defined as: the marker pass charges `source_length` once; the tokenizer charges
+  one per character examined; and one charge per token emitted, per statement closed, and per
+  policy step taken.
 
 Scanning is iterative (no recursion) and linear in source length, enforced by the work counter
 (see gate 9).
@@ -290,15 +297,26 @@ are. The checkpoint contains:
 2. The frozen replay-inventory manifest (gate 2) with stable IDs, count, and content hash.
 3. The Tier 3B fixtures, their provenance manifest, the exact selection query, and each
    fixture's independently assigned expected policy outcome.
-4. The grammar-boundary mutation set for the semantic differential (gate 7).
-5. The numeric caps above and the work-bound constants `k = 4`, `c = 4,096` (aligned with the
-   inherited step cap: 4,194,304 = 4 x 1,048,576).
-6. The benchmark protocol: machine (fleetyard-VM, Linux Mint 22.3), CPython 3.13 and 3.14 via
-   uv, 30 repetitions, median statistic, ceiling 250 ms for a full replay-inventory scan.
-   Exceeding the ceiling rejects the candidate.
-7. Any prelabeled exceptions for replay divergence category (d); absent an entry here, the
+4. The grammar-boundary mutation set for the semantic differential (gate 7), each mutation
+   carrying a predeclared active insertion site (an offset in live executable syntax, not
+   inside a comment, quoted literal, or other context where the construct is inert) and its
+   expected outcome.
+5. The gate 7 probe inputs: the per-fixture inventory of certified candidate-command spans,
+   the probe synthesis rules, the predefined environment values, and the Bash pin (exact
+   version plus binary or container digest).
+6. The numeric caps and the work limit `min(4,194,304, 4 * source_length + 4,096)` with its
+   charge definitions (baseline-inspired constants; see Architecture).
+7. The benchmark protocol: fleetyard-VM (Linux Mint 22.3) with no concurrent workload,
+   CPython 3.13 and 3.14 via uv, timed scope of one full replay-inventory scan through the
+   harness entry point, 3 discarded warm-up runs, 30 measured repetitions per Python version,
+   median statistic per version, ceiling 250 ms for each version's median, candidate runs
+   interleaved with current-scanner baseline runs and the ratio reported. Exceeding the
+   ceiling rejects the candidate. This is a trusted fleetyard-only decision gate recorded in
+   the decision record; it is not CI-enforced, and the workstation is never attached as a
+   self-hosted runner. Deterministic work and corpus gates remain CI-enforced.
+8. Any prelabeled exceptions for replay divergence category (d); absent an entry here, the
    category must be empty.
-8. A SHA-256 manifest over items 1 through 7.
+9. A SHA-256 manifest over items 1 through 8.
 
 Checkpoint files are immutable for the remainder of PR A. If any must change, the evaluation
 restarts from a new checkpoint commit and prior results are discarded.
@@ -350,21 +368,30 @@ All gates are pytest-enforced in PR A and run under both supported Python versio
 7. **Semantic differential (independent oracle).** Fail-closed-by-construction is a design
    intent, not a verified property: a recognizer bug could return `certified` wrongly, and the
    archived July benchmark neither contains this implementation nor is independently
-   reproducible. Therefore a checked-in, candidate-specific differential harness runs over
-   every certifiable fixture (corpus, tiers, and boundary fixtures):
-   - **Bash argv oracle.** Each certifiable fixture executes under pinned real Bash in a
-     scratch directory whose PATH contains only argv-recording stubs (`doc-lattice`, `uvx`,
-     `uv`); fixture-referenced environment variables are predefined to known values. The
-     recognizer's normalized argv for each certified command must equal the argv Bash actually
-     produced. External commands beyond the stubs simply fail to resolve; builtins behave
-     normally. Tier 3B envelopes are never executed outside this PATH-isolated sandbox. The
-     Bash version is recorded in the results.
-   - **shfmt parse oracle.** Each certifiable fixture must parse cleanly under `shfmt-py==4.0.0`
-     (bundled shfmt 3.13.1, matching the archived benchmark pins, dev-group dependency only)
-     with matching command and word-boundary structure.
-   - **Boundary mutations.** Every mutation in the checkpoint's grammar-boundary set (for
-     example inserted backslash-newline, backticks, `$(`, unquoted expansions, heredoc
-     introducers) applied to certifiable fixtures must yield `uninspectable`.
+   reproducible. Therefore a checked-in, candidate-specific differential harness runs three
+   layers. Original fixture text, including every Tier 3B public-derived envelope, is never
+   executed: PATH isolation is not a sandbox (builtins precede PATH lookup and
+   slash-containing commands bypass it), so no whole-fixture execution claim is made at all.
+   - **Static layer, whole fixtures, no execution.** Every certifiable fixture must pass
+     `bash -n` under the pinned Bash (exact version plus binary or container digest from the
+     checkpoint) and must parse cleanly under `shfmt-py==4.0.0` (bundled shfmt 3.13.1,
+     matching the archived benchmark pins, dev-group dependency only) with matching command
+     and word-boundary structure.
+   - **Probe layer, per command.** For each certified candidate-command span predeclared in
+     the checkpoint, the harness synthesizes a recorder probe containing exactly that one
+     simple command: one probe per `&&`/`||` arm, evaluated independently, because the
+     recognizer scans both sides while Bash short-circuits (the corpus's
+     "runtime-unreachable command remains conservative" case,
+     `tests/test_github_ci_shell_scanner.py:55`, is exactly this divergence). Probes execute
+     under the pinned Bash with argv-recording stubs and the checkpoint's predefined
+     environment values; only stub-resolved candidate executables ever run. The comparison is
+     the literal stable argv prefix through the first unstable word plus the resulting policy
+     verdict, never complete expanded argv: unstable words deliberately stay abstract in the
+     recognizer while Bash expands them to concrete values.
+   - **Boundary mutations.** Every mutation in the checkpoint's set, applied at its
+     predeclared active insertion site, must yield `uninspectable` at that site. Sites are
+     predeclared precisely because mutations inside comments or quoted contexts can be inert
+     rather than uninspectable.
    Any mismatch is a gate failure. The current-scanner replay (gate 2) remains a compatibility
    check, not a semantic oracle; this gate is the semantic one.
 8. **Adversarial and bounds tests.** Cap exhaustion (source, work, token, statement,
@@ -374,8 +401,9 @@ All gates are pytest-enforced in PR A and run under both supported Python versio
    token, statement, and policy step emitted; a gate asserts `work <= 4 * input_length + 4,096`
    for every input in the replay inventory, tiers, and adversarial suite, including
    marker-heavy and worst-case sources (the repository audit is mostly marker-gated and
-   therefore not representative). Wall-clock timing follows the checkpoint benchmark protocol;
-   exceeding the predeclared ceiling rejects the candidate.
+   therefore not representative). The work-counter assertion is the CI-enforced half of this
+   gate; wall-clock timing follows the checkpoint benchmark protocol as a trusted
+   fleetyard-only decision gate, and exceeding the predeclared ceiling rejects the candidate.
 
 ## Delivery
 
