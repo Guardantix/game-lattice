@@ -1,6 +1,6 @@
 # Allowlist recognizer for the direct-invocation audit (issue #100)
 
-Date: 2026-07-19
+Date: 2026-07-19 (revised same day after review round 1)
 Status: approved evaluation spec. This document is non-authoritative: it directs the issue #100
 evaluation and the two stacked PRs below. Durable user behavior transfers to
 [README.md](../../../README.md), durable decisions to [ARCHITECTURE.md](../../../ARCHITECTURE.md),
@@ -9,15 +9,20 @@ removes completed specs once their durable decisions are captured.
 
 Issue: <https://github.com/Guardantix/doc-lattice/issues/100>
 
+Baseline for all measurements and accounting in this spec: commit `00737ca`. At that commit
+`src/doc_lattice/github_ci/shell_scanner.py` is 2,997 lines and
+`tests/test_github_ci_shell_scanner.py` is 2,116 lines. All source references below are against
+this baseline.
+
 ## Goal
 
-Replace the generic Bash syntax layer of `src/doc_lattice/github_ci/shell_scanner.py` (2,905
-lines) with a conservative allowlist recognizer that certifies only a frozen floor grammar,
-plus two audit-contract changes (PR-reachability pruning and direct-marker gating) that keep
-the audit usable without growing that grammar. The allowlist is a proof system, not a
-compatibility parser. If it misses its predeclared budgets, the evaluation rejects it and
-advances the parser-backed candidate (`mvdan/sh` family first, per the issue thread); it does
-not grow the grammar ad hoc.
+Replace the generic Bash syntax layer of `shell_scanner.py` with a conservative allowlist
+recognizer that certifies only a frozen floor grammar, plus audit-contract changes
+(PR-reachability pruning, direct-marker gating, and effective-shell composition) that keep the
+audit usable without growing that grammar. The allowlist is a proof system, not a compatibility
+parser. If it misses its predeclared budgets, the evaluation rejects it and advances the
+parser-backed candidate (`mvdan/sh` family first, per the issue thread); it does not grow the
+grammar ad hoc.
 
 ## Contract decisions
 
@@ -49,19 +54,17 @@ the audit simply ignores them today (`audit.py:212`).
 ### D2. Direct-marker gating
 
 Before grammar certification, both execution sources of a step (the effective shell template and
-the `run:` body; see `audit.py:265` for why templates can carry invocations) are searched for the
-direct marker: an ASCII-case-insensitive `doc[-_.]+lattice` substring match with no word
-boundaries. This overapproximates paths, `doc-lattice.exe`, requirement strings, and the PEP 503
-spelling variants that uv normalizes to the same distribution (for example `doc_lattice`).
+the `run:` body) are searched for the direct marker: an ASCII-case-insensitive `doc[-_.]+lattice`
+substring match with no word boundaries, compiled with `re.ASCII | re.IGNORECASE` (Python's
+`re.IGNORECASE` alone also matches Unicode dotted and dotless I variants). This overapproximates
+paths, `doc-lattice.exe`, requirement strings, and the PEP 503 spelling variants that uv
+normalizes to the same distribution (for example `doc_lattice`).
 
 - No marker in either source: the step is "not applicable under the direct-marker contract".
   No grammar check runs and no safety is asserted; the audit still cannot prove that variables,
   aliases, scripts, or constructed words do not invoke the tool.
 - A marker anywhere in a source (comments, quoted data, and heredoc text included) requires
-  whole-block certification of that source.
-- Unsupported shell semantics: if neither source carries a marker, the step is not applicable;
-  if either does, the unsupported shell becomes an aggregated diagnostic rather than an
-  immediate error.
+  certification of the marker-bearing sources per the D6 composition table.
 - No standalone `uv` or `uvx` markers: they would penalize unrelated Python CI, and marker-free
   dynamically selected launcher payloads are excluded below.
 
@@ -80,24 +83,72 @@ every benchmark result (never silently reclassified as safe):
 
 The grammar is frozen by this spec, before the 78-case corpus is labeled and before any
 recognizer code runs. It certifies exactly the floor evidenced by the generated PR workflow
-(`render.py:64`) and the documented invocation shapes, and nothing else.
+(`render.py:64`) and the documented invocation shapes, and nothing else. The lexical productions
+below are the frozen definition; the 78 labels derive mechanically from them.
 
-Certifiable statement forms:
+**Source preconditions.** The source must be at most 1,048,576 characters (inherited from
+`shell_scanner.py:10`). Any carriage return, or any C0 control character other than newline and
+tab, makes the source uninspectable. Non-ASCII code points are ordinary literal word characters;
+every metacharacter and marker in this grammar is ASCII.
+
+**Tokens and operators.** Statements are separated by unquoted newlines or `;`. Within a
+statement, commands are joined by `&&` or `||`. Any unquoted occurrence of the following makes
+the block uninspectable at that offset: `|` (other than in `||`), `&` (other than in `&&`), `<`,
+`>`, `(`, `)`, backtick, backslash (including line continuations), `{` or `}` as brace
+expansion, `#` inside a word (see comments), and `$` not forming a permitted parameter form.
+Heredoc introducers, redirections, control-flow keywords in command position (`if`, `then`,
+`elif`, `else`, `fi`, `while`, `until`, `do`, `done`, `for`, `case`, `esac`, `function`, `!`,
+`time`, `coproc`), and function definitions are uninspectable.
+
+**Words.** A word is a maximal run of: unquoted literal characters (excluding the
+metacharacters above, whitespace, and quotes); single-quoted strings (no expansions inside, may
+not span a newline); double-quoted strings (literal characters plus permitted parameter forms;
+may not span a newline; an interior backslash, backtick, or non-permitted `$` sequence is
+uninspectable); and permitted parameter forms. Empty quoted words (`""`, `''`) are ordinary
+literal words with empty text; they never match a launcher or candidate table.
+
+**Permitted parameter forms.** Exactly `$?`, `$NAME`, and `${NAME}` with `NAME` matching
+`[A-Za-z_][A-Za-z0-9_]*`. Every other `$` sequence (positional and special parameters,
+parameter operators, arithmetic, command substitution) is uninspectable. In command words,
+permitted forms are certifiable only inside double quotes; an unquoted expansion in a command
+word is uninspectable because word splitting and globbing can change the argv shape. In
+assignment values, permitted forms are certifiable quoted or unquoted (assignments do not
+field-split).
+
+**Unstable words.** A word containing an unquoted `*`, `?`, `[`, or `]`, or starting with an
+unquoted `~`, is glob- or tilde-unstable, except that a word consisting exactly of `[` or `]`
+is literal (bracket-test evidence, `render.py:75`). A word containing a permitted expansion is
+expansion-unstable. Unstable words are permitted in non-candidate argument positions. A command
+whose first word is unstable or non-literal is uninspectable.
+
+**Comments.** An unquoted `#` at the start of a line, or immediately after unquoted whitespace
+or an operator, begins a comment that runs to end of line and is certifiable. A `#` appearing
+inside a word does not start a comment and is uninspectable (divergence from Bash word rules is
+not risked either way: Bash also treats mid-word `#` as literal, but the floor refuses rather
+than reasons).
+
+**Statement forms.**
 
 1. Blank lines and comment lines.
 2. Simple commands: a sequence of words. The first word, and every launcher, executable,
    subcommand, and policy-significant option word, must be fully literal. Other argument words
-   may be literal, quoted literal, a permitted parameter form, or concatenations of those.
-3. Assignment statements: `NAME=value` where the value is literal, quoted literal, or a
-   permitted parameter form (covers `rc=$?`).
-4. Lists: forms 2 and 3 joined by `&&` or `||`, and statements separated by newlines or `;`.
-   Both sides of every list are scanned conservatively; no short-circuit reachability reasoning.
+   may be literal, quoted literal, permitted parameter forms inside double quotes, unstable
+   words, or concatenations of those.
+3. Assignment statements: `NAME=value` (NAME per the identifier rule) as the entire statement,
+   where the value is a literal word, quoted literal, or permitted parameter form. An
+   assignment prefix followed by further words in the same command (`FOO=bar cmd ...`) is
+   uninspectable.
+4. Lists: forms 2 and 3 joined by `&&` or `||`. Both sides of every list are scanned
+   conservatively; no short-circuit reachability reasoning.
 
-Permitted parameter forms are exactly `$NAME`, `${NAME}`, and `$?` (non-executing). Everything
-else is unsupported and makes the block uninspectable: parameter operators, arithmetic, command
-and process substitution, backticks, pipelines, redirections, heredocs, control flow, function
-definitions, subshells, brace groups, backslash escapes and line continuations, and any other
-construct not listed above. Malformed syntax is uninspectable by construction.
+**Policy rule for unstable argv.** When candidate resolution (launcher, executable, subcommand,
+or option processing) encounters an unstable word at an argv-sensitive position, resolution
+terminates while retaining the disposition established so far; later words are never credited.
+This mirrors current behavior (`shell_scanner.py:1700`, exercised at
+`tests/test_github_ci_shell_scanner.py:681`): `doc-lattice reconcile pc-design "$OPTION"
+--dry-run` keeps its mutating verdict because the trailing `--dry-run` is not provably an
+effective option. If the unstable word appears before the subcommand is established, the
+invocation is unresolvable and the block is uninspectable at that offset.
 
 ### D4. Block-level certification with monotonic evidence
 
@@ -121,17 +172,56 @@ policy-layer refusal.
 
 `audit_repository` returns an `AuditResult(findings, diagnostics)` instead of findings alone
 (`audit.py:128`). Aggregation applies after discovery and workflow validation succeed; fatal
-filesystem, malformed-YAML, or model-alignment errors still terminate immediately as tool
-errors. Within a successful audit:
+filesystem, malformed-YAML, or model-alignment errors still terminate immediately through the
+existing project-error path (`cli/commands/ci.py:62`). Within a successful audit:
 
 - Findings and uninspectability diagnostics aggregate across the whole repository. No
   first-failure stop; output is independent of workflow, job, and step ordering. The same
   aggregation applies to definite non-shell findings elsewhere in the audit.
 - Each uninspectable source contributes one contextual diagnostic.
 - Exit precedence: exit 2 (`EXIT_TOOL_ERROR`) if any diagnostic exists, else exit 1
-  (`EXIT_FINDING`) if any finding exists, else exit 0. Findings and diagnostics render
-  together, so a user can see both a concrete violation and the uninspectability that
-  accompanies it.
+  (`EXIT_FINDING`) if any finding exists, else exit 0.
+
+Rendering contract: findings and diagnostics both render to stdout through
+`runtime.write_stdout`. Findings render first, in their existing sorted order and existing
+format (`{path}: {code}: {message}`). Diagnostics render after all findings, sorted by
+(path, job id, step index, source kind, code, offset), in the format
+`{path} job {job_id!r} step {step_index} [{source_kind}] {code}: {reason}`. The
+`doc-lattice ci audit: ok` line renders only when both lists are empty. Fatal errors keep the
+current stderr project-error path.
+
+### D6. Effective-shell composition
+
+Whether a `run:` body may be interpreted as Bash depends on the step's effective shell. Body
+shell classes, reusing the frozen recognition sets already in the audit
+(`_supports_bash_run_body`, `_BASH_DEFAULT_RUNNERS`, `audit.py:283`):
+
+- **BASH**: an explicitly declared supported bash-family shell, or no declared shell on a
+  runner in the bash-default set.
+- **NON_BASH**: any other explicitly declared shell (for example `pwsh`, `python`, `cmd`).
+- **UNKNOWN**: no declared shell and the runner is not recognized as bash-default.
+
+The shell template is always runner-parsed command-line text: when present it is scanned with
+the recognizer regardless of body class, with the `{0}` placeholder replaced by the existing
+literal sentinel. A non-BASH body is never scanned with the recognizer; resembling a Bash
+simple command certifies nothing.
+
+Composition table (T = marker in template, B = marker in body):
+
+| T | B | Body class | Behavior |
+|---|---|------------|----------|
+| no | no | any | Step not applicable, including under NON_BASH and UNKNOWN shells. |
+| no | yes | BASH | Scan body; template not applicable. |
+| no | yes | NON_BASH or UNKNOWN | No body scan. One diagnostic, code `UNSUPPORTED_EXECUTION_SEMANTICS`, source kind `run_body`, no offset. |
+| yes | no | BASH | Scan template; body not applicable. |
+| yes | no | NON_BASH or UNKNOWN | Scan template; template findings retained. One `UNSUPPORTED_EXECUTION_SEMANTICS` diagnostic for the body: a marker-relevant step is executing under semantics the audit cannot inspect. |
+| yes | yes | BASH | Scan both sources independently; results aggregate per D4/D5. |
+| yes | yes | NON_BASH or UNKNOWN | Scan template; findings retained. One `UNSUPPORTED_EXECUTION_SEMANTICS` diagnostic for the body. |
+
+An uncertifiable template additionally contributes its own diagnostic with source kind
+`shell_template` and an offset. Template evidence is always retained (monotonic rule); the
+current behavior of returning template invocations while discarding the body context
+(`audit.py:246`) is replaced by this table.
 
 ## Architecture
 
@@ -143,42 +233,75 @@ module:
 - `src/doc_lattice/github_ci/direct_marker_scanner.py`
   (tests: `tests/test_github_ci_direct_marker_scanner.py`): the marker gate and floor-grammar
   recognizer. One public function, `scan_execution_source(source) -> BlockScan`, called once per
-  execution source; `audit.py` supplies source kind and context. Two public entry points would
-  invite semantic drift between templates and bodies.
+  execution source; `audit.py` supplies source kind and context per the D6 table. Two public
+  entry points would invite semantic drift between templates and bodies.
 - `src/doc_lattice/github_ci/launcher_policy.py`
   (tests: `tests/test_github_ci_launcher_policy.py`): doc-lattice launcher and option policy
   (`doc-lattice`, `uvx`, `uv run`, wrapper forms, root options, subcommand and effective
-  `--dry-run` extraction), re-founded on the word IR below.
+  `--dry-run` extraction), re-founded on the word IR below and implementing the D3 policy rule
+  for unstable argv.
 
 Shared word IR: the tokenizer produces span-carrying words that preserve normalized text,
-whether a permitted expansion occurred, and source offsets. `launcher_policy.py` consumes this
-IR; `direct_marker_scanner.py` imports policy, never the reverse. Offsets let the scanner report
-the earliest syntax-or-policy failure. The current policy layer cannot move intact because it
-depends on `_ShellWord`, `_ScanBudget`, and ambiguity state (`shell_scanner.py:1643`); it is
-adapted, not copied.
+whether the word is unstable (expansion, glob, or tilde), and source offsets.
+`launcher_policy.py` consumes this IR; `direct_marker_scanner.py` imports policy, never the
+reverse. Offsets let the scanner report the earliest syntax-or-policy failure. The current
+policy layer cannot move intact because it depends on `_ShellWord`, `_ScanBudget`, and
+ambiguity state (`shell_scanner.py:1643`); it is adapted, not copied.
 
-Bounds, all explicit and tested: the shared source cap is a character cap (value inherited from
-`shell_scanner.py:10`), the invocation cap stays at 10,000, and token and statement collection
-are bounded. Scanning is iterative (no recursion) and linear in source length, enforced by a
-work counter (see gates).
+Bounds, all explicit, predeclared, and tested:
+
+- source cap: 1,048,576 characters (inherited, `shell_scanner.py:10`);
+- work cap: 4,194,304 steps (inherited `_MAX_SHELL_SCAN_STEPS`, `shell_scanner.py:11`);
+- invocation cap: 10,000 (inherited, `shell_scanner.py:13`);
+- token cap: 262,144; statement cap: 65,536 (new; exceeding either is uninspectable).
+
+Scanning is iterative (no recursion) and linear in source length, enforced by the work counter
+(see gate 9).
 
 Model and orchestration: `model.py` gains `AuditDiagnostic` with a fixed diagnostic code, path,
-job id, step index, `source_kind` (`shell_template` or `run_body`), reason, and offset,
-deterministically sortable, plus `AuditResult`. Status and code domains use the `Literal` plus
-`get_args()` plus `frozenset` pattern in `constants.py`. `audit.py` keeps orchestration:
-reachability pruning before step iteration, both-source marker gating, repository-wide
-aggregation. `cli/commands/ci.py` renders findings plus diagnostics and derives the exit code.
+job id, step index, `source_kind` (`shell_template` or `run_body`), reason, and optional offset
+(required for scan-level diagnostics, absent for D6 composition diagnostics), deterministically
+sortable, plus `AuditResult`. Status and code domains use the `Literal` plus `get_args()` plus
+`frozenset` pattern in `constants.py`. `audit.py` keeps orchestration: reachability pruning
+before step iteration, D6 composition, repository-wide aggregation. `cli/commands/ci.py`
+renders per the D5 rendering contract and derives the exit code.
 
 Documentation ownership: PR A lands only this spec's decision record. Accepted
 [ARCHITECTURE.md](../../../ARCHITECTURE.md) and [README.md](../../../README.md) text changes in
 PR B only, so authoritative docs never describe behavior while the old scanner remains the
 runtime.
 
-Replacement-surface accounting: the working estimate (roughly 1,600 syntax-machinery lines
-deleted, policy retained and adapted, 600 to 800 new lines) is explicitly provisional. Syntax
-and policy are interleaved (for example syntax helpers continue at `shell_scanner.py:2778` while
-policy tables sit near the top of the file), so the decision record must report final
-symbol-based and diff-based accounting, not line-range arithmetic.
+Replacement-surface accounting: frozen against baseline `00737ca` (2,997 production lines,
+2,116 focused test lines). The working estimate (roughly 1,600 syntax-machinery lines deleted,
+policy retained and adapted, 600 to 800 new lines) is explicitly provisional. Syntax and policy
+are interleaved (for example syntax helpers continue at `shell_scanner.py:2778` while policy
+tables sit near the top of the file), so the decision record must report final symbol-based and
+diff-based accounting against the baseline, not line-range arithmetic.
+
+## Predeclaration checkpoint
+
+PR A's first reviewed commit is a predeclaration checkpoint containing every frozen evaluation
+input, landing before any recognizer implementation commit. Same-PR prose claiming inputs were
+chosen first is not independently auditable; the commit boundary and a content-hash manifest
+are. The checkpoint contains:
+
+1. The 78 `ACCEPTANCE_CASES` labels (`must certify`, `intentional exit 2`,
+   `outside direct-marker contract`) with expected `BlockScan` outcomes, derived from D2/D3.
+2. The frozen replay-inventory manifest (gate 2) with stable IDs, count, and content hash.
+3. The Tier 3B fixtures, their provenance manifest, the exact selection query, and each
+   fixture's independently assigned expected policy outcome.
+4. The grammar-boundary mutation set for the semantic differential (gate 7).
+5. The numeric caps above and the work-bound constants `k = 4`, `c = 4,096` (aligned with the
+   inherited step cap: 4,194,304 = 4 x 1,048,576).
+6. The benchmark protocol: machine (fleetyard-VM, Linux Mint 22.3), CPython 3.13 and 3.14 via
+   uv, 30 repetitions, median statistic, ceiling 250 ms for a full replay-inventory scan.
+   Exceeding the ceiling rejects the candidate.
+7. Any prelabeled exceptions for replay divergence category (d); absent an entry here, the
+   category must be empty.
+8. A SHA-256 manifest over items 1 through 7.
+
+Checkpoint files are immutable for the remainder of PR A. If any must change, the evaluation
+restarts from a new checkpoint commit and prior results are discarded.
 
 ## Evaluation corpora and gates
 
@@ -186,19 +309,20 @@ All gates are pytest-enforced in PR A and run under both supported Python versio
 3.14) in CI. Runtime audit behavior is unchanged in PR A.
 
 1. **Corpus relabel.** Every one of the 78 `ACCEPTANCE_CASES`
-   (`tests/test_github_ci_shell_scanner.py:28`) gets a predeclared label: `must certify`,
-   `intentional exit 2`, or `outside direct-marker contract`, as a checked-in column with the
-   expected `BlockScan` outcome under this contract. Labels derive mechanically from the frozen
-   D3 grammar and D2 gate and are fixed before the recognizer runs.
-2. **Frozen replay inventory.** Before the recognizer runs, every input exercised by the
-   existing scanner suite (parameterized and constructed inputs included, not only
-   `ACCEPTANCE_CASES`) is extracted into a named, checked-in manifest with stable IDs and an
-   asserted count and content hash. The differential replay runs old and new implementations
-   over this manifest plus all tiers. Allowed divergence categories are predeclared:
-   (a) identical verdicts; (b) `intentional exit 2` (old certified, new uninspectable);
-   (c) `outside direct-marker contract` (old verdict, new not-applicable); (d) old incomplete,
-   new certified, which must be empty or individually justified. Any divergence outside these
-   categories fails the gate; no post-hoc explanation.
+   (`tests/test_github_ci_shell_scanner.py:28`) gets its checkpoint label as a checked-in
+   column with the expected `BlockScan` outcome under this contract.
+2. **Frozen replay inventory.** Every input exercised by the existing scanner suite
+   (parameterized and constructed inputs included, not only `ACCEPTANCE_CASES`) is extracted
+   into the checkpoint manifest. The differential replay runs old and new implementations over
+   this manifest plus all tiers, producing one normalized record per case:
+   `{id, source hash, old raw result (ordered (subcommand, dry_run) tuples, incomplete-reason
+   category or none), old adapter outcome (tuples or config-error), new BlockScan (status,
+   ordered tuples, reason code, offset)}`. Comparison happens on the normalized records, never
+   on raw exception text. Allowed divergence categories, predeclared: (a) identical normalized
+   verdicts; (b) `intentional exit 2` (old certified, new uninspectable); (c) `outside
+   direct-marker contract` (old verdict, new not-applicable); (d) old incomplete, new
+   certified, which must be empty unless prelabeled in the checkpoint. Any divergence outside
+   these categories fails the gate; no post-hoc classification.
 3. **Tier 1, managed workflows.** The rendered offline template's PR block certifies with its
    exact invocations; zero diagnostics. (The Linear workflow carries no PR trigger and is out of
    the PR scan by existing document-level gating.)
@@ -213,23 +337,45 @@ All gates are pytest-enforced in PR A and run under both supported Python versio
 6. **Tier 3B, empirical shell envelopes.** 20 minimal workflow fixtures derived from public
    workflows using analogous `uvx`, `uv run`, or ordinary console-script invocations, with the
    surrounding shell structure preserved and a doc-lattice command mechanically substituted. At
-   most one fixture per source repository; a provenance manifest records source URL, commit,
-   retrieval date, selection query, and normalization performed. Each fixture carries an
-   independently assigned expected policy outcome (the old scanner is a baseline, not a semantic
-   oracle) and contains one marker-bearing block, so the unit matches audit usability. Budgets,
-   predeclared:
+   most one fixture per source repository; provenance per the checkpoint. Each fixture carries
+   an independently assigned expected policy outcome (the old scanner is a baseline, not a
+   semantic oracle) and contains one marker-bearing block, so the unit matches audit usability.
+   Budgets, predeclared:
    - candidate indeterminate: at most 2 of 20 in total;
    - newly indeterminate relative to the current scanner: at most 2 of 20, with intentional
      exit 2 counting against the budget (failures never leave the denominator);
-   - false-safe against the independent expectation: exactly 0.
-7. **Adversarial and bounds tests.** Cap exhaustion, oversized sources, pathological token
-   streams, and malformed tails produce deterministic `uninspectable` results within bounds.
-8. **Complexity and performance.** A work counter instruments the scanner and a gate asserts a
-   fixed `work <= k * input_length + c` bound over marker-heavy and worst-case sources (the
-   repository audit is mostly marker-gated and therefore not representative). Wall-clock timing
-   is recorded evidence, not a gate assertion: predeclared machine and runtime, repetition
-   count, statistic, and ceiling, reported in the decision record.
-   `scripts/bench_sections.py` is not triggered; no section-identity surface is touched.
+   - false-safe against the independent expectation: exactly 0;
+   - false positives against the independent expectation, reported separately: exactly 0
+     (shared old/new false positives would otherwise pass every compatibility gate).
+7. **Semantic differential (independent oracle).** Fail-closed-by-construction is a design
+   intent, not a verified property: a recognizer bug could return `certified` wrongly, and the
+   archived July benchmark neither contains this implementation nor is independently
+   reproducible. Therefore a checked-in, candidate-specific differential harness runs over
+   every certifiable fixture (corpus, tiers, and boundary fixtures):
+   - **Bash argv oracle.** Each certifiable fixture executes under pinned real Bash in a
+     scratch directory whose PATH contains only argv-recording stubs (`doc-lattice`, `uvx`,
+     `uv`); fixture-referenced environment variables are predefined to known values. The
+     recognizer's normalized argv for each certified command must equal the argv Bash actually
+     produced. External commands beyond the stubs simply fail to resolve; builtins behave
+     normally. Tier 3B envelopes are never executed outside this PATH-isolated sandbox. The
+     Bash version is recorded in the results.
+   - **shfmt parse oracle.** Each certifiable fixture must parse cleanly under `shfmt-py==4.0.0`
+     (bundled shfmt 3.13.1, matching the archived benchmark pins, dev-group dependency only)
+     with matching command and word-boundary structure.
+   - **Boundary mutations.** Every mutation in the checkpoint's grammar-boundary set (for
+     example inserted backslash-newline, backticks, `$(`, unquoted expansions, heredoc
+     introducers) applied to certifiable fixtures must yield `uninspectable`.
+   Any mismatch is a gate failure. The current-scanner replay (gate 2) remains a compatibility
+   check, not a semantic oracle; this gate is the semantic one.
+8. **Adversarial and bounds tests.** Cap exhaustion (source, work, token, statement,
+   invocation), oversized sources, pathological token streams, and malformed tails produce
+   deterministic `uninspectable` results within bounds.
+9. **Complexity and performance.** The work counter increments per character examined and per
+   token, statement, and policy step emitted; a gate asserts `work <= 4 * input_length + 4,096`
+   for every input in the replay inventory, tiers, and adversarial suite, including
+   marker-heavy and worst-case sources (the repository audit is mostly marker-gated and
+   therefore not representative). Wall-clock timing follows the checkpoint benchmark protocol;
+   exceeding the predeclared ceiling rejects the candidate.
 
 ## Delivery
 
@@ -237,10 +383,11 @@ Two stacked PRs sharing one implementation.
 
 **PR A, evaluation and decision.**
 
+- First commit: the predeclaration checkpoint (see above).
 - Adds `reachability.py`, `direct_marker_scanner.py`, and `launcher_policy.py` as
   production-quality but dormant code; runtime audit behavior is unchanged.
-- Adds the frozen corpora, relabeled cases, replay manifest, differential fixtures,
-  adversarial, bounds, and complexity tests, and gate automation.
+- Adds the replay harness, differential harness, adversarial, bounds, and complexity tests, and
+  gate automation.
 - Runs every predeclared gate and lands the final decision record in this directory, plus an
   archived copy of the July 2026 bash-parser benchmark artifacts under `docs/research/` with
   SHA-256 hashes and provenance, labeled "internally consistent, not independently
@@ -254,14 +401,21 @@ Two stacked PRs sharing one implementation.
 **PR B, integration, stacked on PR A.**
 
 - Reuses the exact PR A implementation; no rebuild.
-- Wires D1 pruning, D2 gating, `AuditResult` aggregation, mixed-result rendering, and D5 exit
-  precedence through `audit.py` and `cli/commands/ci.py`.
+- Wires D1 pruning, D2 gating, D6 composition, `AuditResult` aggregation, the D5 rendering
+  contract, and exit precedence through `audit.py` and `cli/commands/ci.py`.
 - Deletes `shell_scanner.py` and its obsolete tests in the same PR.
-- Atomically updates the authoritative docs: one cohesive ARCHITECTURE.md decision (not four
-  micro-decisions), README user behavior and limitations including both D2 contract removals,
-  and changelog and migration notes.
+- Atomically updates the authoritative docs: one cohesive ARCHITECTURE.md decision (not a set
+  of micro-decisions), README user behavior and limitations including both D2 contract
+  removals, and changelog and migration notes.
 - States explicit rollback criteria: reverting PR B restores the previous runtime; the PR A
   modules go dormant. Two scanners never coexist in production.
+
+**Verification.** Both PRs run the complete handoff verification from
+[CLAUDE.md](../../../CLAUDE.md): full pytest (coverage floor 80 percent), `ruff check`,
+`ruff format --check`, `ty check src`, `scripts/check_typing_boundaries.py`, and
+`scripts/check_version_sync.py`, in addition to the PR A gates. The slugger generator check and
+`scripts/bench_sections.py` are not triggered: no adapter, dependency, Unicode, or
+generated-data surface for section identity is touched.
 
 **Release.** PR A bumps nothing. After PR B, the next release is the next major, expected
 3.0.0 (accepted-input narrowing plus exit-semantics change); the exact version is confirmed
@@ -272,17 +426,17 @@ decision record lands before any version bump.
 ## Issue #100 definition-of-done mapping
 
 - Allowlist prototype against the acceptance corpus, indeterminate rates on managed plus user
-  workflows: PR A gates 1 through 6.
+  workflows: gates 1 through 6.
 - tree-sitter prototype: only if PR A gates fail; the decision record then scopes the
   parser-backed evaluation (`mvdan/sh` family first, per the issue thread).
 - Pass/fail for every current case including malformed input and heredocs: gates 1 and 2.
-- Differential comparison with Bash and shfmt: covered by the archived July benchmark for
-  parser candidates; the allowlist needs no external oracle because uncertifiable input fails
-  closed by construction, and the replay manifest pins behavior against the current scanner.
-- Explicit fail-closed behavior: D2 through D5.
-- Performance and bounded parsing: gate 8 and the bounds in Architecture.
+- Differential comparison with Bash and shfmt: gate 7, candidate-specific and checked in. The
+  archived July benchmark covers only the external parser candidates and is evidence, not a
+  gate input.
+- Explicit fail-closed behavior: D2 through D6.
+- Performance and bounded parsing: gates 8 and 9 and the bounds in Architecture.
 - Python 3.13 and 3.14 verification: all gates run on both versions.
-- Lines removed and remaining policy surface: final symbol- and diff-based accounting in the
-  decision record.
+- Lines removed and remaining policy surface: final symbol- and diff-based accounting against
+  baseline `00737ca` in the decision record.
 - Decision record: PR A. Separately scoped implementation PR with compatibility and rollback
   criteria: PR B.
