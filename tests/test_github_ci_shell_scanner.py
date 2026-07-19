@@ -444,6 +444,24 @@ def test_direct_doc_lattice_invocations_handles_documented_forms(script, expecte
 
 
 @pytest.mark.parametrize(
+    "script",
+    [
+        './"$TOOLS"/doc-lattice linear',
+        'tools/"$OS"/doc-lattice reconcile --all',
+        'tools/"$OS"doc-lattice linear',
+        'env ./"$TOOLS"/doc-lattice linear',
+        'uv run tools/"$OS"/doc-lattice reconcile --all',
+    ],
+    ids=["dot-relative", "nested-relative", "dynamic-basename", "env", "uv-run"],
+)
+def test_direct_doc_lattice_invocations_fails_closed_on_dynamic_relative_executable_paths(
+    script,
+):
+    with pytest.raises(ConfigError, match=r"shell scan.*dynamic"):
+        direct_doc_lattice_invocations(script)
+
+
+@pytest.mark.parametrize(
     ("script", "expected"),
     [
         ("doc-lattice --no-color linear", LINEAR),
@@ -1733,6 +1751,11 @@ def test_direct_doc_lattice_invocations_recognizes_documented_uv_tool_run_flags(
     )
 
 
+@pytest.mark.parametrize("launcher", ["uvx", "uv run", "uv tool run"])
+def test_direct_doc_lattice_invocations_recognizes_clustered_uv_launcher_flags(launcher):
+    assert direct_doc_lattice_invocations(f"{launcher} -qv doc-lattice linear") == LINEAR
+
+
 @pytest.mark.parametrize(
     "script",
     [
@@ -1767,6 +1790,7 @@ def test_direct_doc_lattice_invocations_fails_closed_on_unknown_uv_option(script
     [
         "uvx --future-opt value doc-lattice linear",
         "uvx --with requests --future-opt value doc-lattice linear",
+        "uvx -qZ doc-lattice linear",
         "uv run --future-opt value doc-lattice reconcile --all",
         "uv tool run --future-opt value doc-lattice linear",
     ],

@@ -87,6 +87,7 @@ def test_secret_name_regex_single_sources_from_secret_names():
             "uv tool run --refresh doc-lattice reconcile --all",
             "PR_MUTATING_RECONCILE",
         ),
+        ("uvx -qv doc-lattice linear", "PR_LINEAR_INVOCATION"),
         ("{ doc-lattice linear; }", "PR_LINEAR_INVOCATION"),
         ("{ doc-lattice reconcile --all; }", "PR_MUTATING_RECONCILE"),
         ("time -p doc-lattice linear", "PR_LINEAR_INVOCATION"),
@@ -144,6 +145,28 @@ jobs:
     )
 
     assert _finding_codes(audit_global_workflows((document,))) == {expected_code}
+
+
+@pytest.mark.parametrize(
+    "script",
+    ['./"$TOOLS"/doc-lattice linear', 'tools/"$OS"/doc-lattice reconcile --all'],
+    ids=["dot-relative", "nested-relative"],
+)
+def test_global_audit_fails_closed_on_dynamic_relative_doc_lattice_paths(script):
+    document = _workflow(
+        f"""\
+on: pull_request
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          {script}
+"""
+    )
+
+    with pytest.raises(ConfigError, match=r"shell scan.*dynamic relative doc-lattice"):
+        audit_global_workflows((document,))
 
 
 def test_global_audit_allows_literal_doc_lattice_array_data_on_pr():
@@ -1274,9 +1297,10 @@ jobs:
     [
         "doc-lattice reconcile --all --dry-run",
         "uv run --all-extras doc-lattice reconcile --dry-run",
+        "uv run -qv doc-lattice reconcile --dry-run",
         "uvx --no-index --find-links dist doc-lattice reconcile --dry-run",
     ],
-    ids=["direct", "uv-run-all-extras", "uvx-no-index"],
+    ids=["direct", "uv-run-all-extras", "uv-run-short-cluster", "uvx-no-index"],
 )
 def test_global_audit_allows_pr_dry_run_reconcile(script):
     document = _workflow(

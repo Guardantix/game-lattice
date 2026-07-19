@@ -1748,6 +1748,10 @@ def _reject_unsafe_executable_word(word: _ShellWord) -> None:
         raise _ShellScanIncomplete("locale-translated executable cannot be scanned safely")
     if word.active_argv_expansion:
         raise _ShellScanIncomplete("executable word uses brace or glob expansion")
+    if _is_dynamic_relative_doc_lattice_executable(word):
+        raise _ShellScanIncomplete(
+            "dynamic relative doc-lattice executable cannot be scanned safely"
+        )
 
 
 def _reject_unresolved_unsafe_executable(
@@ -2684,6 +2688,17 @@ def _has_attached_short_value(literal: str, short_options: tuple[str, ...]) -> b
     return any(literal.startswith(option) and literal != option for option in short_options)
 
 
+def _has_clustered_short_flags(literal: str, flags: frozenset[str]) -> bool:
+    """Return whether every member of a short-option cluster is a known flag."""
+    cluster = literal.removeprefix("-")
+    return (
+        len(cluster) > 1
+        and literal.startswith("-")
+        and not literal.startswith("--")
+        and all(f"-{option}" in flags for option in cluster)
+    )
+
+
 def _unresolved_uv_launcher_option(
     *,
     fail_on_unknown: bool,
@@ -2744,8 +2759,10 @@ def _skip_options(
             if value_index < len(words) and _word_may_change_option_value_shape(words[value_index]):
                 ambiguous = True
             index += 2
-        elif option_name in options.flags or _has_attached_short_value(
-            literal, options.short_options_with_arguments
+        elif (
+            option_name in options.flags
+            or _has_clustered_short_flags(literal, options.flags)
+            or _has_attached_short_value(literal, options.short_options_with_arguments)
         ):
             index += 1
         elif literal.startswith("-"):
@@ -2968,3 +2985,13 @@ def _is_doc_lattice_executable(word: _ShellWord) -> bool:
     if not _is_doc_lattice_executable_basename(_basename(word.literal)):
         return False
     return not word.dynamic or word.literal.startswith("/")
+
+
+def _is_dynamic_relative_doc_lattice_executable(word: _ShellWord) -> bool:
+    """Return whether a dynamic relative path can name the doc-lattice executable."""
+    return (
+        word.dynamic
+        and not word.literal.startswith("/")
+        and "/" in word.literal
+        and _is_doc_lattice_executable_basename(_basename(word.literal))
+    )
