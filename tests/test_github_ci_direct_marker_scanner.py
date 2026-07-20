@@ -186,3 +186,20 @@ def test_certified_command_words_skips_assignment_only_statements():
 def test_certified_command_words_reports_non_candidate_commands():
     words = certified_command_words("false && doc-lattice linear\n")
     assert words == (("false",), ("doc-lattice", "linear"))
+
+
+def test_exe_executable_head_certifies_end_to_end():
+    result = scan_execution_source(".venv/Scripts/doc-lattice.exe linear")
+    assert result.status == "certified"
+    assert result.invocations == (("linear", False),)
+
+
+def test_exe_executable_head_carries_reconcile_dry_run_flag():
+    # The .exe head routes through the same subcommand resolution, so reconcile carries its
+    # dry-run flag exactly as a bare doc-lattice head does.
+    plain = scan_execution_source("doc-lattice.exe reconcile")
+    assert plain.status == "certified"
+    assert plain.invocations == (("reconcile", False),)
+    dry = scan_execution_source("doc-lattice.exe reconcile --dry-run")
+    assert dry.status == "certified"
+    assert dry.invocations == (("reconcile", True),)

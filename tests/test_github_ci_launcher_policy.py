@@ -305,3 +305,22 @@ def test_reconcile_dry_run_after_attached_value_option_credited():
     assert resolve_command(
         lit("doc-lattice", "reconcile", "pc-design", "--config=cfg.yml", "--dry-run")
     ).invocation == ("reconcile", True)
+
+
+def test_exe_executable_head_resolves():
+    # A .exe launcher shim resolves like a bare doc-lattice head, matching the runtime scanner's
+    # _is_doc_lattice_executable_basename (shell_scanner.py:2961).
+    assert resolve_command(lit(".venv/Scripts/doc-lattice.exe", "linear")).invocation == (
+        "linear",
+        False,
+    )
+
+
+def test_exe_executable_head_is_casefolded():
+    assert resolve_command(lit("DOC-LATTICE.EXE", "check")).invocation == ("check", False)
+
+
+def test_bare_exe_head_resolves_with_no_invocation():
+    resolution = resolve_command(lit("doc-lattice.exe"))
+    assert resolution.kind == "resolved"
+    assert resolution.invocation is None

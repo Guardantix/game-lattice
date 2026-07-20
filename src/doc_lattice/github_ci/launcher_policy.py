@@ -21,6 +21,13 @@ CandidateKind = Literal["resolved", "not_candidate", "refused"]
 
 _DOC_LATTICE = "doc-lattice"
 
+# Executable head basenames, matched by casefold. The .exe form mirrors the runtime scanner's
+# _is_doc_lattice_executable_basename (shell_scanner.py:2961), which recognizes the Windows
+# launcher shim; the floor must resolve the same heads or a marker-bearing .exe launch would
+# certify with no invocation. The payload position keeps _DOC_LATTICE and fails closed on .exe
+# look-alikes through _looks_like_doc_lattice, so this set is for the head position only.
+_DOC_LATTICE_HEADS: frozenset[str] = frozenset({"doc-lattice", "doc-lattice.exe"})
+
 # Launcher options recognized before the payload, adapted from shell_scanner.py:2606 and
 # shell_scanner.py:2713. Only the options this contract names are recognized; any other
 # option-like word before the payload fails closed.
@@ -132,7 +139,7 @@ def resolve_command(words: tuple[ScanWord, ...]) -> CandidateResolution:
         return _NOT_CANDIDATE
     head = words[0].text
     base = _basename(head)
-    if base == _DOC_LATTICE:
+    if _is_doc_lattice_head(base):
         return _resolve_after_executable(words, 1)
     if head == "uvx":
         return _resolve_launcher_payload(words, 1, package_form=True)
@@ -406,6 +413,11 @@ def _looks_like_doc_lattice(text: str) -> bool:
     fails closed on it rather than dropping the launch it hides.
     """
     return _DOC_LATTICE in _DISTRIBUTION_SEPARATOR_RE.sub("-", text).casefold()
+
+
+def _is_doc_lattice_head(base: str) -> bool:
+    """Return whether a casefolded executable basename names doc-lattice (with or without .exe)."""
+    return base.casefold() in _DOC_LATTICE_HEADS
 
 
 def _basename(text: str) -> str:
