@@ -1,5 +1,7 @@
 """Unit tests for the D3 floor-grammar scanner."""
 
+import time
+
 from doc_lattice.github_ci.direct_marker_scanner import (
     DIRECT_MARKER_RE,
     scan_execution_source,
@@ -140,3 +142,16 @@ def test_work_charged_is_linear():
     result = scan_execution_source(source)
     assert result.status == "certified"
     assert result.work_charged <= min(4_194_304, 4 * len(source) + 4_096)
+
+
+def test_tokenization_is_linear_in_word_count():
+    # A single marker-bearing command with many words stresses the per-word tokenizer path.
+    # This was O(word_count ** 2) before delimiter classification stopped copying the word
+    # list on every word start; the generous wall-clock bound only fails on the quadratic path.
+    source = "doc-lattice check " + "a " * 20_000 + "\n"
+    start = time.perf_counter()
+    result = scan_execution_source(source)
+    elapsed = time.perf_counter() - start
+    assert result.status == "certified"
+    assert result.invocations == (("check", False),)
+    assert elapsed < 5.0

@@ -252,7 +252,7 @@ class _Scanner:
             if char in " \t":
                 self._advance()
                 continue
-            delimiter = self._read_delimiter(char, tuple(words))
+            delimiter = self._read_delimiter(char, words)
             if delimiter is not None:
                 return delimiter
             if char == "#":
@@ -271,24 +271,29 @@ class _Scanner:
                 return token_refusal
         return _CommandEnd(tuple(words), False, self.pos)
 
-    def _read_delimiter(self, char: str, words: tuple[_Word, ...]) -> _CommandEnd | _Refusal | None:
-        """Classify a statement or list delimiter at the cursor, or None for a word start."""
+    def _read_delimiter(self, char: str, words: list[_Word]) -> _CommandEnd | _Refusal | None:
+        """Classify a statement or list delimiter at the cursor, or None for a word start.
+
+        The ``words`` list is materialized into a tuple only in the branches that construct a
+        ``_CommandEnd``, so a word-start call (the common case) never copies it. This keeps
+        tokenization linear in word count rather than quadratic.
+        """
         if char in "\n;":
             offset = self.pos
             self._advance()
-            return _CommandEnd(words, False, offset)
+            return _CommandEnd(tuple(words), False, offset)
         if char == "&":
             return self._read_pair(words, "&")
         if char == "|":
             return self._read_pair(words, "|")
         return None
 
-    def _read_pair(self, words: tuple[_Word, ...], char: str) -> _CommandEnd | _Refusal:
+    def _read_pair(self, words: list[_Word], char: str) -> _CommandEnd | _Refusal:
         """Accept a doubled ``&&`` or ``||`` list operator; refuse the single form."""
         offset = self.pos
         if self._peek(1) == char:
             self._advance_to(offset + 2)
-            return _CommandEnd(words, True, offset)
+            return _CommandEnd(tuple(words), True, offset)
         return _Refusal(offset, _UNSUPPORTED_OPERATOR)
 
     def _read_word(self) -> _Word | _Refusal:  # noqa: PLR0911, PLR0912
