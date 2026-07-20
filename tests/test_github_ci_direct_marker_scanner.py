@@ -160,8 +160,10 @@ def test_work_charged_is_linear():
 def test_tokenization_is_linear_in_word_count():
     # A single marker-bearing command with many words stresses the per-word tokenizer path.
     # This was O(word_count ** 2) before delimiter classification stopped copying the word
-    # list on every word start; the generous wall-clock bound only fails on the quadratic path.
-    source = "doc-lattice check " + "a " * 20_000 + "\n"
+    # list on every word start. At 80,000 words the quadratic path measured ~9.3s, which blows
+    # the 5.0s bound; the linear implementation measured ~136ms at the same size, so the bound
+    # only passes on the linear path.
+    source = "doc-lattice check " + "a " * 80_000 + "\n"
     start = time.perf_counter()
     result = scan_execution_source(source)
     elapsed = time.perf_counter() - start
