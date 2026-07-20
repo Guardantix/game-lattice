@@ -165,6 +165,18 @@ replay entry `doc-lattice !(reconcile) --all`, whose anchor moves from the `(` t
 unresolvable `!` word before it); no source's status or invocation evidence changes, so every
 recorded gate result and the verdict remain unchanged.
 
+A fourth PR #101 review round found one defect, in the evaluation harness rather than the
+dormant modules: the harness's D6 composition judged template marker presence on the
+sentinel-substituted text, and the `{0}` scan sentinel `__doc_lattice_script__` itself matches
+the direct-marker regex, so every marker-free explicit shell template carrying `{0}` was treated
+as marker-bearing, and a `shell: python {0}` step with a marker-free body received an
+`UNSUPPORTED_EXECUTION_SEMANTICS` diagnostic against the D6 table's no-marker row. Marker
+presence is now judged on the author's template text, with the sentinel substituted only into
+the scan input (`0f9f216`); the substitution can only fabricate a marker, never remove one,
+because no marker contains the substring `{0}`. The scan input itself is unchanged, the dormant
+modules are untouched, and neither workflow evaluated through the harness declares a shell
+template, so every recorded gate result and the verdict remain unchanged.
+
 ## 6. Parser-backed candidate scoping
 
 Per the issue thread and its review comments, the successor is a doc-lattice-owned static helper
