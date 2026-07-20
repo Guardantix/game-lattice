@@ -147,11 +147,15 @@ class _CommandEnd:
         words: The command's words in source order.
         list_op: True when the delimiter was ``&&`` or ``||`` (a list join, not a statement end).
         offset: The source offset of the closing delimiter (or end of source).
+        semicolon: True when the delimiter was a ``;`` (a statement separator, not a newline). The
+            D3 grammar permits a blank line but has no empty-semicolon statement, so an empty
+            command closed by ``;`` refuses where one closed by a newline certifies.
     """
 
     words: tuple[_Word, ...]
     list_op: bool
     offset: int
+    semicolon: bool = False
 
 
 @dataclass
@@ -285,6 +289,11 @@ class _Scanner:
             return _Refusal(outcome.offset, _UNSUPPORTED_OPERATOR)
         elif self.after_list_op is not None:
             return _Refusal(self.after_list_op, _UNSUPPORTED_OPERATOR)
+        elif outcome.semicolon:
+            # An empty statement closed by ``;`` (a leading ``;``, ``cmd;;``, or a lone ``;`` line)
+            # has no D3 production and bash rejects it. This branch follows the after_list_op one
+            # so ``cmd && ;`` still anchors at the earlier operator, not the semicolon.
+            return _Refusal(outcome.offset, _UNSUPPORTED_OPERATOR)
         if outcome.list_op:
             self.after_list_op = outcome.offset
             return None
@@ -338,7 +347,7 @@ class _Scanner:
         if char in "\n;":
             offset = self.pos
             self._advance()
-            return _CommandEnd(tuple(words), False, offset)
+            return _CommandEnd(tuple(words), False, offset, semicolon=char == ";")
         if char == "&":
             return self._read_pair(words, "&")
         if char == "|":

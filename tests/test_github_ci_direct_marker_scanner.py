@@ -228,3 +228,48 @@ def test_completed_list_after_operator_still_certifies():
     result = scan_execution_source("doc-lattice check && doc-lattice lint")
     assert result.status == "certified"
     assert result.invocations == (("check", False), ("lint", False))
+
+
+def test_leading_semicolon_empty_statement_refuses():
+    # bash rejects a leading `; cmd`; the empty statement it closes is refused at the semicolon.
+    source = "; doc-lattice check"
+    result = scan_execution_source(source)
+    assert result.status == "uninspectable"
+    assert result.reason_category == "unsupported-operator"
+    assert result.offset == source.index(";")
+
+
+def test_double_semicolon_empty_statement_refuses():
+    # bash rejects `cmd;;`; the first `;` closes the command, the second closes an empty
+    # statement that is refused at the second semicolon.
+    source = "doc-lattice check;;"
+    result = scan_execution_source(source)
+    assert result.status == "uninspectable"
+    assert result.reason_category == "unsupported-operator"
+    assert result.offset == source.index(";") + 1
+
+
+def test_single_trailing_semicolon_still_certifies():
+    result = scan_execution_source("doc-lattice check;")
+    assert result.status == "certified"
+    assert result.invocations == (("check", False),)
+
+
+def test_semicolon_separated_commands_still_certify():
+    result = scan_execution_source("doc-lattice check ; doc-lattice lint")
+    assert result.status == "certified"
+    assert result.invocations == (("check", False), ("lint", False))
+
+
+def test_blank_lines_still_certify():
+    result = scan_execution_source("\ndoc-lattice check\n\n")
+    assert result.status == "certified"
+    assert result.invocations == (("check", False),)
+
+
+def test_semicolon_only_line_refuses():
+    source = "doc-lattice check\n;\n"
+    result = scan_execution_source(source)
+    assert result.status == "uninspectable"
+    assert result.reason_category == "unsupported-operator"
+    assert result.offset == source.index(";")
