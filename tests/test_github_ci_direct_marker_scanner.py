@@ -239,6 +239,28 @@ def test_dangling_or_operator_at_eof_refuses():
     assert result.invocations == (("check", False),)
 
 
+def test_empty_command_between_operators_anchors_at_pending_operator():
+    # bash -n rejects `cmd && || echo`: the second list operator closes an empty command whose
+    # left operator already had no right-hand command. That pending && at offset 18 is the earlier
+    # failure, so it outranks the second operator at 21, matching the `&& ;` and end-of-source
+    # anchors. The check invocation proven before the pending operator is retained.
+    result = scan_execution_source("doc-lattice check && || echo")
+    assert result.status == "uninspectable"
+    assert result.reason_category == "unsupported-operator"
+    assert result.offset == 18
+    assert result.invocations == (("check", False),)
+
+
+def test_empty_command_between_doubled_operators_anchors_at_pending_operator():
+    # A second `&&` after a pending `&&` closes the same empty command; the earlier pending
+    # operator at offset 18 wins over the second one at 21.
+    result = scan_execution_source("doc-lattice check && && doc-lattice lint")
+    assert result.status == "uninspectable"
+    assert result.reason_category == "unsupported-operator"
+    assert result.offset == 18
+    assert result.invocations == (("check", False),)
+
+
 def test_completed_list_after_operator_still_certifies():
     result = scan_execution_source("doc-lattice check && doc-lattice lint")
     assert result.status == "certified"

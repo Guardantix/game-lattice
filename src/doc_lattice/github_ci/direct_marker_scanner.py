@@ -287,10 +287,14 @@ class _Scanner:
             refusal = self._resolve_and_flush(outcome.words)
             if refusal is not None:
                 return refusal
+        elif self.after_list_op is not None:
+            # A pending operator's missing right-hand command is the earlier failure, so it
+            # outranks a second list operator that closes this same empty command, consistent
+            # with the ``&& ;`` and end-of-source refusals that also anchor at the pending
+            # operator.
+            return _Refusal(self.after_list_op, _UNSUPPORTED_OPERATOR)
         elif outcome.list_op:
             return _Refusal(outcome.offset, _UNSUPPORTED_OPERATOR)
-        elif self.after_list_op is not None:
-            return _Refusal(self.after_list_op, _UNSUPPORTED_OPERATOR)
         elif outcome.semicolon:
             # An empty statement closed by ``;`` (a leading ``;``, ``cmd;;``, or a lone ``;`` line)
             # has no D3 production and bash rejects it. This branch follows the after_list_op one
