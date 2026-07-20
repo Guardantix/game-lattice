@@ -149,3 +149,52 @@ def test_gate6_tier3b_conformance_and_recorded_verdict():
     assert len(indeterminate) > TIER3B_BUDGET_TOTAL
     assert len(newly_indeterminate) > TIER3B_BUDGET_NEWLY
     assert TIER3B_VERDICT == "rejected"
+
+
+_LIMITS = json.loads((CHECKPOINT / "limits.json").read_text())
+
+ADVERSARIAL_SOURCES = [
+    ("oversized-source", "doc-lattice " + "a" * (_LIMITS["source_cap_chars"] + 1)),
+    ("nul-control", "doc-lattice check\x00\n"),
+    ("carriage-return", "doc-lattice check\r\n"),
+    ("token-storm", "doc-lattice check " + "x " * (_LIMITS["token_cap"] + 8)),
+    ("statement-storm", "# doc-lattice\n" + ";" * (_LIMITS["statement_cap"] + 8)),
+    (
+        "invocation-storm",
+        "doc-lattice check\n" * (_LIMITS["invocation_cap"] + 1),
+    ),
+    ("quote-flood", "doc-lattice check " + "'a' " * 100_000),
+    ("malformed-tail", "doc-lattice check\ndoc-lattice lint 'unterminated"),
+    ("marker-heavy", "# doc-lattice doc_lattice DOC.LATTICE\n" * 50_000),
+]
+
+
+@pytest.mark.parametrize("name", [name for name, _ in ADVERSARIAL_SOURCES])
+def test_gate8_adversarial_inputs_refuse_deterministically(name):
+    source = dict(ADVERSARIAL_SOURCES)[name]
+    first = scan_execution_source(source)
+    second = scan_execution_source(source)
+    assert first == second, name
+    if first.status == "uninspectable":
+        assert first.reason_category is not None
+        assert first.offset is not None
+    work_bound = min(4_194_304, 4 * len(source) + 4_096)
+    assert first.work_charged <= work_bound, (name, first.work_charged)
+
+
+def test_gate9_work_counter_holds_over_every_input():
+    from github_ci_evaluation_harness import (  # noqa: PLC0415
+        load_replay_inventory,
+        load_tier3a_cases,
+        load_tier3b_provenance,
+        tier3b_run_block,
+    )
+
+    sources = [entry["source"] for entry in load_replay_inventory()["entries"]]
+    sources += [case["source"] for case in load_tier3a_cases()]
+    sources += [tier3b_run_block(row["id"]) for row in load_tier3b_provenance()["fixtures"]]
+    sources += [source for _name, source in ADVERSARIAL_SOURCES]
+    for source in sources:
+        result = scan_execution_source(source)
+        bound = min(4_194_304, 4 * len(source) + 4_096)
+        assert result.work_charged <= bound, source[:60]
