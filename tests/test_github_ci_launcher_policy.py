@@ -187,3 +187,121 @@ def test_wrapper_head_refuses():
 
 def test_echo_doc_lattice_stays_not_candidate():
     assert resolve_command(lit("echo", "doc-lattice")).kind == "not_candidate"
+
+
+def test_uv_global_option_before_selector_refuses():
+    for option in ("-q", "--no-cache", "--directory", "--frobnicate"):
+        resolution = resolve_command(lit("uv", option, "run", "doc-lattice", "linear"))
+        assert resolution.kind == "refused", option
+        assert resolution.reason_category == "policy-unresolvable", option
+        assert resolution.offset == 3, option
+    tool = resolve_command(lit("uv", "--frobnicate", "tool", "run", "doc-lattice", "linear"))
+    assert tool.kind == "refused"
+    assert tool.offset == 3
+
+
+def test_uv_sync_stays_not_candidate():
+    assert resolve_command(lit("uv", "sync")).kind == "not_candidate"
+
+
+def test_uv_run_payload_is_command_form_no_version_strip():
+    # uv run launches a literal command, so a versioned payload does not normalize to
+    # doc-lattice under the package rules; it still resembles doc-lattice, so the floor fails
+    # closed on it rather than resolving the version-stripped launch that uv tool run would.
+    resolution = resolve_command(lit("uv", "run", "doc-lattice@2.0.0", "linear"))
+    assert resolution.kind == "refused"
+    assert resolution.reason_category == "policy-unresolvable"
+
+
+def test_uv_tool_run_payload_is_package_form_version_strip():
+    # uv tool run (like uvx) treats the payload as a package spec, so a versioned spelling
+    # resolves to the doc-lattice launch.
+    assert resolve_command(lit("uv", "tool", "run", "doc-lattice@2.0.0", "linear")).invocation == (
+        "linear",
+        False,
+    )
+    assert resolve_command(lit("uvx", "doc-lattice@latest", "reconcile")).invocation == (
+        "reconcile",
+        False,
+    )
+
+
+def test_wrapper_payload_after_launcher_refuses():
+    for payload in ("env", "time", "/usr/bin/time", "uvx"):
+        resolution = resolve_command(lit("uv", "run", payload, "doc-lattice", "linear"))
+        assert resolution.kind == "refused", payload
+        assert resolution.reason_category == "policy-unresolvable", payload
+
+
+def test_lookalike_payload_after_launcher_refuses():
+    # A quoted payload carrying surrounding whitespace or embedded text resembles doc-lattice but
+    # does not normalize cleanly as a distribution, so the floor fails closed.
+    for payload in ("doc-lattice ", "doc-lattice (>=2)", "doc.lattice @ url"):
+        resolution = resolve_command(words(("uvx", False), (payload, False), ("linear", False)))
+        assert resolution.kind == "refused", payload
+        assert resolution.reason_category == "policy-unresolvable", payload
+
+
+def test_distinct_tool_payload_stays_not_candidate():
+    assert resolve_command(lit("uv", "run", "pytest", "doc-lattice-tests")).kind == "not_candidate"
+
+
+def test_path_form_and_quoted_dispatch_head_refuses():
+    for head in ("/usr/bin/time", "/usr/bin/env", "time"):
+        resolution = resolve_command(lit(head, "doc-lattice", "linear"))
+        assert resolution.kind == "refused", head
+        assert resolution.reason_category == "policy-unresolvable", head
+        assert resolution.offset == 0, head
+
+
+def test_trailing_help_after_subcommand_refuses():
+    for command in (
+        lit("doc-lattice", "linear", "--help"),
+        lit("doc-lattice", "reconcile", "--version"),
+        lit("doc-lattice", "reconcile", "pc-design", "--format", "human", "--help"),
+    ):
+        resolution = resolve_command(command)
+        assert resolution.kind == "refused"
+        assert resolution.reason_category == "policy-unresolvable"
+
+
+def test_trailing_help_after_terminator_or_unstable_resolves():
+    assert resolve_command(lit("doc-lattice", "linear", "--", "--help")).invocation == (
+        "linear",
+        False,
+    )
+    assert resolve_command(lit("doc-lattice", "reconcile", "--", "--help")).invocation == (
+        "reconcile",
+        False,
+    )
+    unstable = resolve_command(
+        words(("doc-lattice", False), ("linear", False), ("$X", True), ("--help", False))
+    )
+    assert unstable.invocation == ("linear", False)
+
+
+def test_non_reconcile_dry_run_refuses():
+    resolution = resolve_command(lit("doc-lattice", "check", "--dry-run"))
+    assert resolution.kind == "refused"
+    assert resolution.reason_category == "policy-unresolvable"
+
+
+def test_reconcile_dry_run_after_double_dash_not_credited():
+    assert resolve_command(
+        lit("doc-lattice", "reconcile", "pc-design", "--", "--dry-run")
+    ).invocation == ("reconcile", False)
+
+
+def test_reconcile_dry_run_after_bare_value_option_refuses():
+    for option in ("--config", "--ref", "--format"):
+        resolution = resolve_command(
+            lit("doc-lattice", "reconcile", "pc-design", option, "--dry-run")
+        )
+        assert resolution.kind == "refused", option
+        assert resolution.reason_category == "policy-unresolvable", option
+
+
+def test_reconcile_dry_run_after_attached_value_option_credited():
+    assert resolve_command(
+        lit("doc-lattice", "reconcile", "pc-design", "--config=cfg.yml", "--dry-run")
+    ).invocation == ("reconcile", True)

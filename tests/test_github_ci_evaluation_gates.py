@@ -32,3 +32,17 @@ def test_gate1_acceptance_label_conformance(index):
             result.offset,
             result.reason,
         )
+
+
+def test_gate2_replay_divergences_stay_in_predeclared_categories():
+    from github_ci_evaluation_harness import replay_records  # noqa: PLC0415
+
+    records = replay_records()
+    assert len(records) == 580 + 13 + 20
+    allowed = {"identical", "intentional-exit-2", "outside-direct-marker"}
+    unexplained = [r for r in records if r["category"] == "unexplained"]
+    assert unexplained == [], unexplained[:5]
+    category_d = [r["id"] for r in records if r["category"] == "old-incomplete-new-certified"]
+    prelabeled = json.loads((CHECKPOINT / "category_d_exceptions.json").read_text())
+    assert category_d == prelabeled == []
+    assert {r["category"] for r in records} <= allowed

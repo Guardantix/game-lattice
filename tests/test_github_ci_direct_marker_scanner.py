@@ -57,6 +57,18 @@ def test_assignment_prefix_refuses():
     assert result.reason_category == "assignment-prefix"
 
 
+def test_append_assignment_prefix_refuses():
+    result = scan_execution_source("PATH+=:/tools doc-lattice check\n")
+    assert result.status == "uninspectable"
+    assert result.reason_category == "assignment-prefix"
+
+
+def test_append_assignment_statement_certifies():
+    result = scan_execution_source("FLAGS+=x\ndoc-lattice check\n")
+    assert result.status == "certified"
+    assert result.invocations == (("check", False),)
+
+
 def test_unquoted_pipe_refuses_at_offset():
     source = "doc-lattice check | cat\n"
     result = scan_execution_source(source)

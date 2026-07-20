@@ -33,11 +33,14 @@ _LAUNCHER_FLAG_OPTIONS: frozenset[str] = frozenset({"--no-sync"})
 # where a marker-bearing path-form launch would certify with no invocation.
 _LAUNCHER_BASENAMES: frozenset[str] = frozenset({"uvx", "uv"})
 
-# Shell command wrappers that can prepend a doc-lattice launch through forms the floor grammar
-# does not model (env option runs, exec/command/builtin re-dispatch). The old scanner resolves
-# through these; the floor does not grow to match, so a wrapper head fails closed rather than
-# leaving a marker-bearing wrapper launch to certify off-grammar or drop its invocation silently.
-_WRAPPER_HEADS: frozenset[str] = frozenset({"command", "exec", "builtin", "env"})
+# Shell wrappers, re-dispatchers, and timing keywords that can prepend a doc-lattice launch
+# through forms the floor grammar does not model (env option runs, exec/command/builtin
+# re-dispatch, external time). Matched by basename so both bare (env) and path (/usr/bin/env)
+# forms fail closed. Bare unquoted time is refused earlier as a control-flow keyword; this set
+# also catches its path form and any quoted spelling that bypasses that earlier gate. The old
+# scanner resolves through these; the floor does not grow to match, so it fails closed rather
+# than leaving a marker-bearing wrapper launch to certify off-grammar or drop its invocation.
+_OFF_FLOOR_DISPATCH: frozenset[str] = frozenset({"command", "exec", "builtin", "env", "time"})
 
 # Root options between the executable and its subcommand, from shell_scanner.py:261-263.
 # --no-color is skipped; --help and --version are eager options that resolve with no
@@ -128,16 +131,17 @@ def resolve_command(words: tuple[ScanWord, ...]) -> CandidateResolution:
     if not words:
         return _NOT_CANDIDATE
     head = words[0].text
-    if _basename(head) == _DOC_LATTICE:
+    base = _basename(head)
+    if base == _DOC_LATTICE:
         return _resolve_after_executable(words, 1)
     if head == "uvx":
-        return _resolve_launcher_payload(words, 1)
+        return _resolve_launcher_payload(words, 1, package_form=True)
     if head == "uv":
         return _resolve_uv(words)
-    if head in _WRAPPER_HEADS or _basename(head) in _LAUNCHER_BASENAMES:
-        # Fail closed on a shell wrapper head (command, exec, builtin, env), whose off-grammar
-        # re-dispatch the floor does not model, or a path-form launcher (basename matches but the
-        # text is not the bare word). Either could carry a marker-bearing launch, so neither is
+    if base in _OFF_FLOOR_DISPATCH or base in _LAUNCHER_BASENAMES:
+        # Fail closed on a shell wrapper, re-dispatcher, or timing keyword (command, exec,
+        # builtin, env, time) or a path-form launcher (uvx/uv basename with non-bare text). Each
+        # could carry a marker-bearing launch the floor grammar does not model, so none is
         # allowed to certify off-grammar or drop its invocation silently.
         return _refused(words[0].start)
     return _NOT_CANDIDATE
@@ -150,8 +154,10 @@ def _resolve_uv(words: tuple[ScanWord, ...]) -> CandidateResolution:
     established) refuses with ``policy-unresolvable`` at that word's start: the selector could
     expand to ``run`` at runtime, so the launcher form cannot be ruled out and the command
     fails closed, matching the old scanner's incomplete result on a command-position expansion
-    (contract point 3's "any unstable word before the payload is established, is refused"). Any
-    stable non-``run``/``tool`` selector is not a candidate (contract point 2).
+    (contract point 3's "any unstable word before the payload is established, is refused"). A
+    stable option-like selector (a global uv option) fails closed because the floor does not
+    model uv's global options; any other stable non-``run``/``tool`` selector is not a candidate
+    (contract point 2).
     """
     subcommand = _word_at(words, 1)
     if subcommand is None:
@@ -159,9 +165,14 @@ def _resolve_uv(words: tuple[ScanWord, ...]) -> CandidateResolution:
     if subcommand.unstable:
         return _refused(subcommand.start)
     if subcommand.text == "run":
-        return _resolve_launcher_payload(words, 2)
+        return _resolve_launcher_payload(words, 2, package_form=False)
     if subcommand.text == "tool":
         return _resolve_uv_tool(words)
+    if subcommand.text.startswith("-"):
+        # A uv global option before the run or tool selector is outside the floor's launcher
+        # forms; the old scanner models these options, so the floor fails closed rather than
+        # dropping a launch that hides behind one.
+        return _refused(subcommand.start)
     return _NOT_CANDIDATE
 
 
@@ -174,15 +185,30 @@ def _resolve_uv_tool(words: tuple[ScanWord, ...]) -> CandidateResolution:
         return _refused(run.start)
     if run.text != "run":
         return _NOT_CANDIDATE
-    return _resolve_launcher_payload(words, 3)
+    return _resolve_launcher_payload(words, 3, package_form=True)
 
 
-def _resolve_launcher_payload(words: tuple[ScanWord, ...], start: int) -> CandidateResolution:
+def _resolve_launcher_payload(
+    words: tuple[ScanWord, ...], start: int, *, package_form: bool
+) -> CandidateResolution:
     """Skip launcher options to the payload word and resolve it against doc-lattice.
 
     Any unstable word or unknown option-like word before the payload is established refuses
-    with ``policy-unresolvable`` (contract point 3). A resolved literal payload that names
-    anything other than doc-lattice makes the command a non-candidate (contract point 4).
+    with ``policy-unresolvable`` (contract point 3). A resolved literal payload that cleanly
+    names anything other than doc-lattice makes the command a non-candidate (contract point 4).
+    A payload that is instead a wrapper, a nested launcher, or a doc-lattice look-alike that
+    does not normalize cleanly fails closed: the old scanner resolves through those, and the
+    floor refuses rather than dropping the launch they hide.
+
+    Args:
+        words: The command's words in source order.
+        start: The index of the first word after the launcher head.
+        package_form: True when the launcher (uvx or uv tool run) treats the payload as a
+            package specification whose version and extras normalize; False when the launcher
+            (uv run) launches a literal command matched by basename alone.
+
+    Returns:
+        The command's ``CandidateResolution``.
     """
     index = start
     while index < len(words):
@@ -210,9 +236,27 @@ def _resolve_launcher_payload(words: tuple[ScanWord, ...], start: int) -> Candid
         break
     if index >= len(words):
         return _NOT_CANDIDATE
-    if not _payload_is_doc_lattice(words[index].text):
-        return _NOT_CANDIDATE
-    return _resolve_after_executable(words, index + 1)
+    return _resolve_payload_word(words, index, package_form)
+
+
+def _resolve_payload_word(
+    words: tuple[ScanWord, ...], index: int, package_form: bool
+) -> CandidateResolution:
+    """Resolve the established launcher payload word against doc-lattice.
+
+    A clean doc-lattice name continues after the executable. A payload that is a wrapper, a
+    nested launcher, or a doc-lattice look-alike fails closed. Any other name is a non-candidate.
+    """
+    payload = words[index].text
+    if _payload_is_doc_lattice(payload, package_form):
+        return _resolve_after_executable(words, index + 1)
+    if (
+        _basename(payload) in _OFF_FLOOR_DISPATCH
+        or _basename(payload) in _LAUNCHER_BASENAMES
+        or _looks_like_doc_lattice(payload)
+    ):
+        return _refused(words[index].start)
+    return _NOT_CANDIDATE
 
 
 def _resolve_after_executable(words: tuple[ScanWord, ...], start: int) -> CandidateResolution:
@@ -242,37 +286,105 @@ def _resolve_after_executable(words: tuple[ScanWord, ...], start: int) -> Candid
 
 
 def _resolve_subcommand(words: tuple[ScanWord, ...], index: int) -> CandidateResolution:
-    """Resolve the subcommand word into its invocation or refuse an unknown subcommand."""
+    """Resolve the subcommand word into its invocation or refuse an unknown subcommand.
+
+    An eager ``--help`` or ``--version`` after the subcommand short-circuits execution in ways
+    the floor does not model (the old scanner reports help or version, not an invocation), so it
+    fails closed. Otherwise reconcile carries its dry-run flag and every other subcommand
+    resolves to a non-mutating invocation.
+    """
     word = words[index]
     subcommand = word.text
     if subcommand not in _SUBCOMMANDS:
         return _refused(word.start)
+    rest = words[index + 1 :]
+    eager = _eager_option_offset(rest)
+    if eager is not None:
+        return _refused(eager)
     if subcommand == "reconcile":
-        return _resolved(("reconcile", _reconcile_is_dry(words, index + 1)))
+        return _resolve_reconcile(rest)
+    dry = _plain_dry_run_offset(rest)
+    if dry is not None:
+        # --dry-run on a non-reconcile subcommand is a flag the old scanner credits but the
+        # floor does not model there, so the floor fails closed rather than diverge on it.
+        return _refused(dry)
     # check, lint, linear, and ci all resolve to a non-mutating invocation. ci consumes an
     # optional following literal ``audit`` word, but that consumption is inert here: no
     # trailing argument changes the ci disposition, so the invocation is fixed at (ci, False).
     return _resolved((subcommand, False))
 
 
-def _reconcile_is_dry(words: tuple[ScanWord, ...], start: int) -> bool:
-    """Return whether ``--dry-run`` appears before the first unstable word (spec D3).
+def _resolve_reconcile(rest: tuple[ScanWord, ...]) -> CandidateResolution:
+    """Resolve reconcile's dry-run flag over its trailing words (spec D3).
 
-    Once the reconcile subcommand is established, the first unstable word terminates option
-    processing while retaining the disposition proven so far, so a ``--dry-run`` that only
-    follows an unstable word is never credited.
+    Option processing stops at the first unstable word or an end-of-options ``--`` marker, so a
+    ``--dry-run`` reached only past either is never credited. A ``--dry-run`` immediately
+    preceded by a bare long option (one without ``=``) is ambiguous: the old scanner may bind it
+    as that option's value, which the floor cannot decide without an option-arity table it does
+    not keep, so it fails closed instead of guessing.
     """
-    for word in words[start:]:
+    dry = False
+    prev_bare_option = False
+    for word in rest:
         if word.unstable:
-            return False
-        if word.text == _RECONCILE_DRY_RUN:
-            return True
-    return False
+            break
+        text = word.text
+        if text == "--":
+            break
+        if text == _RECONCILE_DRY_RUN:
+            if prev_bare_option:
+                return _refused(word.start)
+            dry = True
+            prev_bare_option = False
+            continue
+        prev_bare_option = text.startswith("--") and "=" not in text
+    return _resolved(("reconcile", dry))
 
 
-def _payload_is_doc_lattice(text: str) -> bool:
-    """Return whether a launcher payload names doc-lattice by basename or distribution."""
-    return _basename(text) == _DOC_LATTICE or _is_doc_lattice_distribution(text)
+def _eager_option_offset(rest: tuple[ScanWord, ...]) -> int | None:
+    """Return the offset of a bare eager ``--help``/``--version`` after the subcommand.
+
+    The scan stops at the first unstable word or an end-of-options ``--`` marker, mirroring the
+    dry-run scan, so an eager option reached only past either is not credited.
+    """
+    for word in rest:
+        if word.unstable:
+            return None
+        text = word.text
+        if text == "--":
+            return None
+        if text in _ROOT_STOP_OPTIONS:
+            return word.start
+    return None
+
+
+def _plain_dry_run_offset(rest: tuple[ScanWord, ...]) -> int | None:
+    """Return the offset of a plain ``--dry-run`` after a non-reconcile subcommand, if any.
+
+    The scan stops at the first unstable word or an end-of-options ``--`` marker, matching the
+    reconcile and eager-option scans.
+    """
+    for word in rest:
+        if word.unstable:
+            return None
+        text = word.text
+        if text == "--":
+            return None
+        if text == _RECONCILE_DRY_RUN:
+            return word.start
+    return None
+
+
+def _payload_is_doc_lattice(text: str, package_form: bool) -> bool:
+    """Return whether a launcher payload names doc-lattice.
+
+    A payload always matches by basename. Only a package-form launcher (uvx or uv tool run)
+    additionally accepts a requirement-style distribution spelling, because uv run launches a
+    literal command whose name the old scanner never version-strips.
+    """
+    if _basename(text) == _DOC_LATTICE:
+        return True
+    return package_form and _is_doc_lattice_distribution(text)
 
 
 def _is_doc_lattice_distribution(text: str) -> bool:
@@ -283,6 +395,17 @@ def _is_doc_lattice_distribution(text: str) -> bool:
             stem = text[:position]
             break
     return _DISTRIBUTION_SEPARATOR_RE.sub("-", stem).casefold() == _DOC_LATTICE
+
+
+def _looks_like_doc_lattice(text: str) -> bool:
+    """Return whether a payload resembles doc-lattice without normalizing cleanly.
+
+    A payload that carries the doc-lattice distribution name once its separators are collapsed,
+    yet is not accepted by ``_payload_is_doc_lattice`` (surrounding whitespace, an embedded
+    version or URL, and so on), is a look-alike the old scanner resolves through. The floor
+    fails closed on it rather than dropping the launch it hides.
+    """
+    return _DOC_LATTICE in _DISTRIBUTION_SEPARATOR_RE.sub("-", text).casefold()
 
 
 def _basename(text: str) -> str:

@@ -88,7 +88,10 @@ _WORD_TERMINATORS: frozenset[str] = frozenset({" ", "\t", "\n", ";", "&", "|"})
 _OPERATOR_CHARS: frozenset[str] = frozenset({"<", ">", "(", ")", "`", "\\", "{", "}"})
 _GLOB_CHARS: frozenset[str] = frozenset({"*", "?", "[", "]"})
 
-_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+# Both plain (NAME=) and append (NAME+=) assignment prefixes: the old scanner skips either to
+# reach the following command, so the floor treats both as an assignment prefix and fails closed
+# when one precedes a command.
+_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=")
 _NAME_PARAM_RE = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*")
 _BRACE_PARAM_RE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
 
