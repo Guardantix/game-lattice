@@ -8,6 +8,7 @@ synthesized single-command probe body of each span, one probe per list arm, unde
 contains only the three recorder stubs; original fixture text is never executed.
 """
 
+import hashlib
 import json
 import stat
 import subprocess
@@ -33,6 +34,8 @@ def _bash_pin_checked():
         [BASH, "--version"], capture_output=True, text=True, check=True
     ).stdout.splitlines()[0]
     assert pin["version"] in version, (version, pin["version"])
+    digest = hashlib.sha256(Path(BASH).read_bytes()).hexdigest()
+    assert digest == pin["local_binary_sha256"], (digest, pin["local_binary_sha256"])
     return pin
 
 
