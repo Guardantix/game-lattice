@@ -92,6 +92,20 @@ def test_control_flow_refuses():
     assert result.offset == 0
 
 
+def test_select_reserved_word_refuses():
+    result = scan_execution_source("select doc-lattice")
+    assert result.status == "uninspectable"
+    assert result.reason_category == "control-flow-keyword"
+    assert result.offset == 0
+
+
+def test_in_reserved_word_refuses():
+    result = scan_execution_source("in doc-lattice")
+    assert result.status == "uninspectable"
+    assert result.reason_category == "control-flow-keyword"
+    assert result.offset == 0
+
+
 def test_quoted_expansion_in_argument_certifies():
     result = scan_execution_source('doc-lattice check --config "$CFG"\n')
     assert result.status == "certified"

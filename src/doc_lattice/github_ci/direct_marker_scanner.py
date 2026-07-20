@@ -73,6 +73,8 @@ _CONTROL_FLOW_KEYWORDS: frozenset[str] = frozenset(
         "do",
         "done",
         "for",
+        "in",
+        "select",
         "case",
         "esac",
         "function",
