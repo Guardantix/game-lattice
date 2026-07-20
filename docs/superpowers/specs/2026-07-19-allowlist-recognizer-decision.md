@@ -20,9 +20,10 @@ The D3 floor-grammar candidate is REJECTED by predeclared gate 6: candidate inde
 05, and 14: a command substitution with a pipe, a function definition, and a literal `${{ }}`
 template). Per the spec's failure path, only durable corpus, harness, results, and decision
 evidence merge; the evaluation implementation stays in the merged harness as the dormant
-`reachability.py`, `launcher_policy.py`, and `direct_marker_scanner.py` modules, referenced here
-by commit `bfc1f46`. The evaluation advances the parser-backed candidate (`mvdan/sh` family
-first), scoped in section 6.
+`reachability.py`, `launcher_policy.py`, and `direct_marker_scanner.py` modules, which land in
+the branch's implementation commits, with their reviewed evaluation state pinned here by commit
+`bfc1f46`. The evaluation advances the parser-backed candidate (`mvdan/sh` family first), scoped
+in section 6.
 
 ## 2. Gate results
 
