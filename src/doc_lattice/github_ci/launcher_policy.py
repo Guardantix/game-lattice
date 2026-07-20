@@ -1,0 +1,263 @@
+"""doc-lattice launcher, option, and subcommand policy over the shared word IR.
+
+This module owns the deterministic recognition floor for doc-lattice invocations that a shell
+scanner discovers in GitHub CI execution sources. It exposes the shared word intermediate
+representation (``ScanWord``) and a single pure entry point, ``resolve_command``, that
+classifies one command's words into a ``CandidateResolution``.
+
+The dependency direction is policy-first and permanent: the scanner imports this module and
+never the reverse, so this module must not import the scanner. The semantics adapt
+``shell_scanner.py`` to a deliberately narrower floor; where that reference is more permissive,
+this contract wins.
+"""
+
+import re
+from dataclasses import dataclass
+from typing import Literal
+
+from doc_lattice.constants import ScanReasonCategory
+
+CandidateKind = Literal["resolved", "not_candidate", "refused"]
+
+_DOC_LATTICE = "doc-lattice"
+
+# Launcher options recognized before the payload, adapted from shell_scanner.py:2606 and
+# shell_scanner.py:2713. Only the options this contract names are recognized; any other
+# option-like word before the payload fails closed.
+_LAUNCHER_VALUE_OPTIONS: frozenset[str] = frozenset({"--python", "--from", "--with"})
+_LAUNCHER_FLAG_OPTIONS: frozenset[str] = frozenset({"--no-sync"})
+
+# Root options between the executable and its subcommand, from shell_scanner.py:261-263.
+# --no-color is skipped; --help and --version are eager options that resolve with no
+# invocation before any subcommand runs.
+_ROOT_SKIP_OPTIONS: frozenset[str] = frozenset({"--no-color"})
+_ROOT_STOP_OPTIONS: frozenset[str] = frozenset({"--help", "--version"})
+
+# Recognized subcommands. reconcile carries a mutation flag; every other member resolves to a
+# non-mutating invocation under the floor.
+_SUBCOMMANDS: frozenset[str] = frozenset({"check", "lint", "linear", "ci", "reconcile"})
+_RECONCILE_DRY_RUN = "--dry-run"
+
+# PEP 503 distribution normalization (shell_scanner.py:35-37). A requirement-style word's name
+# ends at the first character in this set, and its separators collapse before comparison.
+_REQUIREMENT_SUFFIX_STARTS: frozenset[str] = frozenset("([<>=!~@;")
+_DISTRIBUTION_SEPARATOR_RE = re.compile(r"[-_.]+")
+
+
+@dataclass(frozen=True, slots=True)
+class ScanWord:
+    """One normalized shell word in the shared word IR.
+
+    Attributes:
+        text: The dequoted, normalized word text. Permitted expansions are kept in raw form,
+            so ``--config=$CFG`` has text ``--config=$CFG``.
+        start: The source offset of the word's first character.
+        end: The source offset one past the word's last character.
+        unstable: True when the word contains a permitted expansion or an unquoted glob or
+            tilde instability. A fully literal word is stable (``unstable=False``).
+    """
+
+    text: str
+    start: int
+    end: int
+    unstable: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateResolution:
+    """The policy disposition for one command's words.
+
+    Attributes:
+        kind: ``resolved`` for a recognized doc-lattice launch, ``not_candidate`` when the
+            command is provably not a doc-lattice invocation, or ``refused`` when a candidate
+            cannot be resolved under the floor.
+        invocation: The ``(subcommand, mutating)`` pair for a resolved invocation, or None for
+            a resolved disposition that records none, such as root ``--help``.
+        reason_category: The refusal category; set only when ``kind`` is ``refused``.
+        offset: The source offset the refusal is anchored to; set only when ``kind`` is
+            ``refused``.
+    """
+
+    kind: CandidateKind
+    invocation: tuple[str, bool] | None = None
+    reason_category: ScanReasonCategory | None = None
+    offset: int | None = None
+
+
+_NOT_CANDIDATE = CandidateResolution("not_candidate")
+
+
+def _refused(offset: int) -> CandidateResolution:
+    """Build a policy-unresolvable refusal anchored at ``offset``."""
+    return CandidateResolution("refused", None, "policy-unresolvable", offset)
+
+
+def _resolved(invocation: tuple[str, bool] | None) -> CandidateResolution:
+    """Build a resolved disposition carrying ``invocation`` (None records no invocation)."""
+    return CandidateResolution("resolved", invocation)
+
+
+def resolve_command(words: tuple[ScanWord, ...]) -> CandidateResolution:
+    """Classify one command's words into a doc-lattice launcher policy disposition.
+
+    The scanner guarantees the first word is literal (``unstable=False``) before calling, so
+    policy never sees an unstable command word. The words are walked left to right: the head
+    selects a direct executable or a ``uvx``/``uv`` launcher, launcher options are skipped to
+    the payload, root options are skipped to the subcommand, and the subcommand table yields
+    the invocation.
+
+    Args:
+        words: The command's words in source order. Expected to be non-empty with a literal
+            first word.
+
+    Returns:
+        The command's ``CandidateResolution``.
+    """
+    if not words:
+        return _NOT_CANDIDATE
+    head = words[0].text
+    if _basename(head) == _DOC_LATTICE:
+        return _resolve_after_executable(words, 1)
+    if head == "uvx":
+        return _resolve_launcher_payload(words, 1)
+    if head == "uv":
+        return _resolve_uv(words)
+    return _NOT_CANDIDATE
+
+
+def _resolve_uv(words: tuple[ScanWord, ...]) -> CandidateResolution:
+    """Continue only for the literal ``uv run`` and ``uv tool run`` launcher forms.
+
+    Any other ``uv`` subcommand, including a non-literal one, is not a candidate (contract
+    point 2): the ``uv`` subcommand word governs launcher recognition, so an unstable word
+    here means the launcher form is unconfirmed rather than an in-argv refusal.
+    """
+    subcommand = _word_at(words, 1)
+    if subcommand is None or subcommand.unstable:
+        return _NOT_CANDIDATE
+    if subcommand.text == "run":
+        return _resolve_launcher_payload(words, 2)
+    if subcommand.text == "tool":
+        run = _word_at(words, 2)
+        if run is None or run.unstable or run.text != "run":
+            return _NOT_CANDIDATE
+        return _resolve_launcher_payload(words, 3)
+    return _NOT_CANDIDATE
+
+
+def _resolve_launcher_payload(words: tuple[ScanWord, ...], start: int) -> CandidateResolution:
+    """Skip launcher options to the payload word and resolve it against doc-lattice.
+
+    Any unstable word or unknown option-like word before the payload is established refuses
+    with ``policy-unresolvable`` (contract point 3). A resolved literal payload that names
+    anything other than doc-lattice makes the command a non-candidate (contract point 4).
+    """
+    index = start
+    while index < len(words):
+        word = words[index]
+        if word.unstable:
+            return _refused(word.start)
+        text = word.text
+        if text == "":
+            break
+        option_name = text.split("=", 1)[0]
+        if option_name in _LAUNCHER_VALUE_OPTIONS:
+            if "=" in text:
+                index += 1
+                continue
+            value_index = index + 1
+            if value_index < len(words) and words[value_index].unstable:
+                return _refused(words[value_index].start)
+            index = value_index + 1
+            continue
+        if text in _LAUNCHER_FLAG_OPTIONS:
+            index += 1
+            continue
+        if text.startswith("-"):
+            return _refused(word.start)
+        break
+    if index >= len(words):
+        return _NOT_CANDIDATE
+    if not _payload_is_doc_lattice(words[index].text):
+        return _NOT_CANDIDATE
+    return _resolve_after_executable(words, index + 1)
+
+
+def _resolve_after_executable(words: tuple[ScanWord, ...], start: int) -> CandidateResolution:
+    """Skip root options to the subcommand, honoring eager ``--help`` and ``--version``.
+
+    An unstable word before the subcommand is established refuses with ``policy-unresolvable``
+    (contract points 5 and 7), as does any unknown ``-``-prefixed root option. Reaching the
+    end of the words with no subcommand resolves with no invocation, mirroring ``--help``.
+    """
+    index = start
+    while index < len(words):
+        word = words[index]
+        if word.unstable:
+            return _refused(word.start)
+        text = word.text
+        if text in _ROOT_STOP_OPTIONS:
+            return _resolved(None)
+        if text in _ROOT_SKIP_OPTIONS:
+            index += 1
+            continue
+        if text.startswith("-"):
+            return _refused(word.start)
+        break
+    if index >= len(words):
+        return _resolved(None)
+    return _resolve_subcommand(words, index)
+
+
+def _resolve_subcommand(words: tuple[ScanWord, ...], index: int) -> CandidateResolution:
+    """Resolve the subcommand word into its invocation or refuse an unknown subcommand."""
+    word = words[index]
+    subcommand = word.text
+    if subcommand not in _SUBCOMMANDS:
+        return _refused(word.start)
+    if subcommand == "reconcile":
+        return _resolved(("reconcile", _reconcile_is_dry(words, index + 1)))
+    # check, lint, linear, and ci all resolve to a non-mutating invocation. ci consumes an
+    # optional following literal ``audit`` word, but that consumption is inert here: no
+    # trailing argument changes the ci disposition, so the invocation is fixed at (ci, False).
+    return _resolved((subcommand, False))
+
+
+def _reconcile_is_dry(words: tuple[ScanWord, ...], start: int) -> bool:
+    """Return whether ``--dry-run`` appears before the first unstable word (spec D3).
+
+    Once the reconcile subcommand is established, the first unstable word terminates option
+    processing while retaining the disposition proven so far, so a ``--dry-run`` that only
+    follows an unstable word is never credited.
+    """
+    for word in words[start:]:
+        if word.unstable:
+            return False
+        if word.text == _RECONCILE_DRY_RUN:
+            return True
+    return False
+
+
+def _payload_is_doc_lattice(text: str) -> bool:
+    """Return whether a launcher payload names doc-lattice by basename or distribution."""
+    return _basename(text) == _DOC_LATTICE or _is_doc_lattice_distribution(text)
+
+
+def _is_doc_lattice_distribution(text: str) -> bool:
+    """Return whether a requirement-style word normalizes to the doc-lattice distribution."""
+    stem = text
+    for position, character in enumerate(text):
+        if character in _REQUIREMENT_SUFFIX_STARTS:
+            stem = text[:position]
+            break
+    return _DISTRIBUTION_SEPARATOR_RE.sub("-", stem).casefold() == _DOC_LATTICE
+
+
+def _basename(text: str) -> str:
+    """Return the word text after its last path separator."""
+    return text.rsplit("/", 1)[-1]
+
+
+def _word_at(words: tuple[ScanWord, ...], index: int) -> ScanWord | None:
+    """Return the word at ``index``, or None when the command has no such word."""
+    return words[index] if index < len(words) else None
