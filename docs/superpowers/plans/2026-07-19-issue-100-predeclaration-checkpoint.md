@@ -842,8 +842,9 @@ construction because spans exclude comments and quoted contexts. Expected catego
 `backslash-newline`, `backtick-wrap`, `pipe-suffix`, `redirection-suffix`, `subshell-wrap`,
 `heredoc-introducer`, `brace-payload` map to `unsupported-operator`;
 `unterminated-substitution` maps to `unsupported-expansion`; `unquoted-expansion` maps to
-`unquoted-expansion-in-command-word` when a subcommand is already established at the site,
-else `policy-unresolvable`; `control-flow-prefix` maps to `control-flow-keyword`.
+`unquoted-expansion-in-command-word` at every site (an unquoted expansion in a command word is
+a D3 grammar refusal regardless of whether a subcommand is established; the spec governs);
+`control-flow-prefix` maps to `control-flow-keyword`.
 
 - [ ] **Step 3: Validation test, manifest, commit**
 
