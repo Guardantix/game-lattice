@@ -3,7 +3,8 @@
 A job is pruned from the PR scan only when its condition is provably false for every
 triggered PR event. The only recognized atom is ``github.event_name == '<literal>'`` in
 either operand order inside an optional ``${{ ... }}`` wrapper around a top-level ``&&``
-conjunction. Everything else evaluates to unknown, and unknown never proves falsity.
+conjunction. Everything else, including any parenthesized grouping, evaluates to unknown, and
+unknown never proves falsity.
 """
 
 import re
@@ -28,7 +29,11 @@ def _atom_literal(atom: str) -> str | None:
 
 
 def _split_conjunction(body: str) -> list[str] | None:
-    """Split on top-level ``&&`` outside single quotes; None on structural failure."""
+    """Split on top-level ``&&`` outside single quotes; None on structural failure.
+
+    An unquoted parenthesis is a structural failure because a grouping can nest a conjunction the
+    splitter would otherwise misread as top-level, so any such body returns None (unknown).
+    """
     if "||" in body:
         return None
     atoms: list[str] = []
@@ -42,6 +47,8 @@ def _split_conjunction(body: str) -> list[str] | None:
             current.append(char)
             index += 1
             continue
+        if not in_quote and char in "()":
+            return None
         if not in_quote and body.startswith("&&", index):
             atoms.append("".join(current).strip())
             current = []
