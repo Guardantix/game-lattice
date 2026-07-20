@@ -253,10 +253,12 @@ class _Scanner:
             if refusal is not None:
                 return self._uninspectable(refusal)
         if self.after_list_op is not None:
-            # The source ended immediately after a && or || with no following command; bash -n
-            # rejects the dangling operator. Refuse at the operator offset, matching the
-            # trailing-space variant that _commit_command already refuses, and keep every
-            # invocation proven before it (monotonic evidence).
+            # The source ended with a && or || still pending and no right-hand command ever
+            # arrived; bash -n rejects the dangling operator. This is the single point that refuses
+            # every such variant (immediate end of source, trailing whitespace, or trailing blank
+            # and comment continuation lines), because a newline after the operator continues the
+            # list rather than closing it. Refuse at the operator offset and keep every invocation
+            # proven before it (monotonic evidence).
             return self._uninspectable(_Refusal(self.after_list_op, _UNSUPPORTED_OPERATOR))
         return BlockScan("certified", tuple(self.invocations), None, None, None, self.work.used)
 
@@ -281,18 +283,24 @@ class _Scanner:
         """Return whether a command is a single assignment word (which is not a command)."""
         return len(words) == 1 and _ASSIGNMENT_RE.match(self.source, words[0].start) is not None
 
-    def _commit_command(self, outcome: _CommandEnd) -> _Refusal | None:
+    def _commit_command(self, outcome: _CommandEnd) -> _Refusal | None:  # noqa: PLR0911
         """Resolve one closed command, flush evidence, and advance list or statement state."""
         if outcome.words:
             refusal = self._resolve_and_flush(outcome.words)
             if refusal is not None:
                 return refusal
         elif self.after_list_op is not None:
-            # A pending operator's missing right-hand command is the earlier failure, so it
-            # outranks a second list operator that closes this same empty command, consistent
-            # with the ``&& ;`` and end-of-source refusals that also anchor at the pending
-            # operator.
-            return _Refusal(self.after_list_op, _UNSUPPORTED_OPERATOR)
+            if outcome.list_op or outcome.semicolon:
+                # A pending operator's missing right-hand command is the earlier failure, so it
+                # outranks a second list operator or the semicolon that closes this same empty
+                # command, consistent with the ``&& ;`` and end-of-source refusals that also anchor
+                # at the pending operator.
+                return _Refusal(self.after_list_op, _UNSUPPORTED_OPERATOR)
+            # A newline after a pending ``&&`` or ``||`` continues the list: bash reads the
+            # right-hand command from the following lines, past blank and comment lines, so the
+            # operator stays pending and no statement closes. A source that ends before that command
+            # arrives is refused by ``run``'s dangling check at the operator offset.
+            return None
         elif outcome.list_op:
             return _Refusal(outcome.offset, _UNSUPPORTED_OPERATOR)
         elif outcome.semicolon:

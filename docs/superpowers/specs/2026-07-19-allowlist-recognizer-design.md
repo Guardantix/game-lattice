@@ -92,9 +92,12 @@ tab, makes the source uninspectable. Non-ASCII code points are ordinary literal 
 every metacharacter and marker in this grammar is ASCII.
 
 **Tokens and operators.** Statements are separated by unquoted newlines or `;`. Within a
-statement, commands are joined by `&&` or `||`. Any unquoted occurrence of the following makes
-the block uninspectable at that offset: `|` (other than in `||`), `&` (other than in `&&`), `<`,
-`>`, `(`, `)`, backtick, backslash (including line continuations), any unquoted brace outside
+statement, commands are joined by `&&` or `||`. A newline after `&&` or `||` (optionally preceded
+by whitespace or a comment) does not end the statement; the list continues across blank and
+comment lines to the next command, matching Bash's linebreak rule, and a source that ends with the
+operator still pending is uninspectable at the operator. Any unquoted occurrence of the following
+makes the block uninspectable at that offset: `|` (other than in `||`), `&` (other than in `&&`),
+`<`, `>`, `(`, `)`, backtick, backslash (including line continuations), any unquoted brace outside
 a permitted `${NAME}` form, `#` inside a word (see comments), and `$` not forming a permitted
 parameter form. The recognizer never decides whether braces constitute brace expansion; any
 live unquoted brace refuses.
@@ -141,7 +144,8 @@ than reasons).
    assignment prefix followed by further words in the same command (`FOO=bar cmd ...`) is
    uninspectable.
 4. Lists: forms 2 and 3 joined by `&&` or `||`. Both sides of every list are scanned
-   conservatively; no short-circuit reachability reasoning.
+   conservatively; no short-circuit reachability reasoning. A list may continue across newlines
+   after its operator, including past blank and comment lines.
 
 **Policy rule for unstable argv.** When candidate resolution (launcher, executable, subcommand,
 or option processing) encounters an unstable word at an argv-sensitive position, resolution

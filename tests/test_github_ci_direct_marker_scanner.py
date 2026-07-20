@@ -222,8 +222,9 @@ def test_exe_executable_head_carries_reconcile_dry_run_flag():
 
 def test_dangling_and_operator_at_eof_refuses():
     # A source ending immediately after && is rejected by bash -n; the recognizer refuses at the
-    # operator offset, keeping the invocation proven before it (monotonic evidence), matching the
-    # trailing-space variant that already refuses through _commit_command.
+    # operator offset, keeping the invocation proven before it (monotonic evidence). run's dangling
+    # check is the single point that refuses every variant where the right-hand command never
+    # arrives, including the trailing-space and trailing-newline continuation forms.
     result = scan_execution_source("doc-lattice check &&")
     assert result.status == "uninspectable"
     assert result.reason_category == "unsupported-operator"
@@ -402,3 +403,75 @@ def test_partial_word_with_no_earlier_failure_keeps_lexical_anchor():
     assert result.reason_category == "unsupported-operator"
     assert result.offset == 21
     assert result.invocations == ()
+
+
+def test_and_list_continues_across_newline():
+    # bash -n accepts a newline after &&; the list continues to the command on the next line.
+    result = scan_execution_source("doc-lattice check &&\ndoc-lattice lint\n")
+    assert result.status == "certified"
+    assert result.invocations == (("check", False), ("lint", False))
+
+
+def test_or_list_continues_across_newline():
+    result = scan_execution_source("doc-lattice check ||\ndoc-lattice lint\n")
+    assert result.status == "certified"
+    assert result.invocations == (("check", False), ("lint", False))
+
+
+def test_and_list_continues_across_comment_after_operator():
+    # A comment immediately after the operator is certifiable (spec comments rule); bash -n reads
+    # the right-hand command from the following line.
+    result = scan_execution_source("doc-lattice check && # gate two\ndoc-lattice lint\n")
+    assert result.status == "certified"
+    assert result.invocations == (("check", False), ("lint", False))
+
+
+def test_and_list_continues_across_blank_and_comment_lines():
+    # bash -n reads the right-hand command past blank and comment lines following the operator.
+    result = scan_execution_source("doc-lattice check &&\n\n# note\ndoc-lattice lint\n")
+    assert result.status == "certified"
+    assert result.invocations == (("check", False), ("lint", False))
+
+
+def test_dangling_and_operator_before_newline_eof_refuses():
+    # A newline continues the list, but no right-hand command ever arrives before end of source, so
+    # run's dangling check refuses at the operator offset (bash -n rejects the dangling operator).
+    result = scan_execution_source("doc-lattice check &&\n")
+    assert result.status == "uninspectable"
+    assert result.reason_category == "unsupported-operator"
+    assert result.offset == 18
+    assert result.invocations == (("check", False),)
+
+
+def test_dangling_and_operator_before_trailing_blank_lines_refuses():
+    # Trailing whitespace and blank continuation lines still never supply the right-hand command.
+    result = scan_execution_source("doc-lattice check && \n  \n")
+    assert result.status == "uninspectable"
+    assert result.reason_category == "unsupported-operator"
+    assert result.offset == 18
+    assert result.invocations == (("check", False),)
+
+
+def test_pending_operator_across_newline_outranks_later_semicolon():
+    # The newline continues the list; the `;` then closes an empty continuation. The pending && at
+    # offset 18 is the earlier failure, so it outranks the semicolon (as `&& ;` does inline).
+    result = scan_execution_source("doc-lattice check &&\n;")
+    assert result.status == "uninspectable"
+    assert result.reason_category == "unsupported-operator"
+    assert result.offset == 18
+    assert result.invocations == (("check", False),)
+
+
+def test_certified_command_words_spans_newline_continued_list():
+    words = certified_command_words("doc-lattice check &&\ndoc-lattice lint\n")
+    assert words == (("doc-lattice", "check"), ("doc-lattice", "lint"))
+
+
+def test_uv_run_from_option_refuses_at_marker_offset():
+    # uv run does not accept --from; the launcher policy refuses at the --from offset and the
+    # scanner surfaces that as a policy-unresolvable refusal.
+    source = "uv run --from doc-lattice check\n"
+    result = scan_execution_source(source)
+    assert result.status == "uninspectable"
+    assert result.reason_category == "policy-unresolvable"
+    assert result.offset == source.index("--from")
