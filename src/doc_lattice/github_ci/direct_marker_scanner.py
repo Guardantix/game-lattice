@@ -309,12 +309,13 @@ class _Scanner:
     def _scan_command(self) -> _CommandEnd | _Refusal:
         """Read one command, reporting the earliest command-level or lexical refusal (spec D4).
 
-        The lexical scan discards the words already read when it refuses mid-command, but the
-        command those words form may fail the grammar or policy at an earlier source offset. The
-        earliest failure by offset wins; a tie keeps the lexical refusal and its category, so a
-        control-flow keyword head (refused lexically at its own offset) ties the policy refusal a
-        time-style head would raise there and stays control-flow-keyword. The command-level
-        refusal is derived purely, so it never charges the work meter or flushes an invocation.
+        The lexical scan retains the words already read when it refuses mid-command, including the
+        partial word a mid-word refusal interrupts, and the command those words form may fail the
+        grammar or policy at an earlier source offset. The earliest failure by offset wins; a tie
+        keeps the lexical refusal and its category, so a control-flow keyword head (refused
+        lexically at its own offset) ties the policy refusal a time-style head would raise there
+        and stays control-flow-keyword. The command-level refusal is derived purely, so it never
+        charges the work meter or flushes an invocation.
         """
         words: list[_Word] = []
         outcome = self._scan_command_words(words)
@@ -346,10 +347,10 @@ class _Scanner:
                 continue
             if char in _OPERATOR_CHARS:
                 return _Refusal(self.pos, _UNSUPPORTED_OPERATOR)
-            word = self._read_word()
-            if isinstance(word, _Refusal):
-                return word
-            words.append(word)
+            refusal = self._read_word(words)
+            if refusal is not None:
+                return refusal
+            word = words[-1]
             if len(words) == 1 and word.is_plain and word.text in _CONTROL_FLOW_KEYWORDS:
                 # A control-flow keyword in command position refuses at the keyword itself, which
                 # is earlier than any operator the keyword's own syntax (for example the ``)`` of
@@ -385,8 +386,15 @@ class _Scanner:
             return _CommandEnd(tuple(words), True, offset)
         return _Refusal(offset, _UNSUPPORTED_OPERATOR)
 
-    def _read_word(self) -> _Word | _Refusal:  # noqa: PLR0911, PLR0912
-        """Read one maximal word of literals, quoted strings, and permitted expansions."""
+    def _read_word(self, words: list[_Word]) -> _Refusal | None:  # noqa: PLR0912, PLR0915
+        """Read one maximal word and append it, or the partial word before a refusal, to ``words``.
+
+        The word is built from literals, quoted strings, and permitted expansions. On success the
+        completed word is appended and None is returned. On a mid-word lexical refusal the partial
+        word read before it is still appended, unless no character was consumed, and the refusal is
+        returned, so ``_scan_command``'s command-level pass can anchor an earlier grammar or policy
+        failure inside that partial word (spec D4).
+        """
         start = self.pos
         length = len(self.source)
         parts: list[str] = []
@@ -394,26 +402,32 @@ class _Scanner:
         has_expansion = False
         glob_unstable = False
         unquoted_expansion_offset: int | None = None
+        refusal: _Refusal | None = None
         while self.pos < length:
             if self.work.over():
-                return _Refusal(self.pos, _CAP_EXCEEDED)
+                refusal = _Refusal(self.pos, _CAP_EXCEEDED)
+                break
             char = self.source[self.pos]
             if _is_control(char):
-                return _Refusal(self.pos, _CONTROL_CHARACTER)
+                refusal = _Refusal(self.pos, _CONTROL_CHARACTER)
+                break
             if char in _WORD_TERMINATORS:
                 break
             if char == "#" or char in _OPERATOR_CHARS:
-                return _Refusal(self.pos, _UNSUPPORTED_OPERATOR)
+                refusal = _Refusal(self.pos, _UNSUPPORTED_OPERATOR)
+                break
             if char == "'":
                 segment = self._read_single_quote()
                 if isinstance(segment, _Refusal):
-                    return segment
+                    refusal = segment
+                    break
                 parts.append(segment)
                 quoted = True
             elif char == '"':
                 segment = self._read_double_quote()
                 if isinstance(segment, _Refusal):
-                    return segment
+                    refusal = segment
+                    break
                 text, saw_expansion = segment
                 parts.append(text)
                 quoted = True
@@ -422,7 +436,8 @@ class _Scanner:
                 dollar = self.pos
                 expansion = self._read_expansion()
                 if isinstance(expansion, _Refusal):
-                    return expansion
+                    refusal = expansion
+                    break
                 parts.append(expansion)
                 has_expansion = True
                 if unquoted_expansion_offset is None:
@@ -431,17 +446,22 @@ class _Scanner:
                 glob_unstable = glob_unstable or self._is_glob_char(char, start)
                 parts.append(char)
                 self._advance()
+        if refusal is not None and self.pos == start:
+            return refusal
         text = "".join(parts)
         if text in {"[", "]"}:
             glob_unstable = False
-        return _Word(
-            text,
-            start,
-            self.pos,
-            has_expansion or glob_unstable,
-            not quoted and not has_expansion,
-            unquoted_expansion_offset,
+        words.append(
+            _Word(
+                text,
+                start,
+                self.pos,
+                has_expansion or glob_unstable,
+                not quoted and not has_expansion,
+                unquoted_expansion_offset,
+            )
         )
+        return refusal
 
     def _is_glob_char(self, char: str, start: int) -> bool:
         """Return whether an unquoted literal ``char`` makes the word glob- or tilde-unstable."""

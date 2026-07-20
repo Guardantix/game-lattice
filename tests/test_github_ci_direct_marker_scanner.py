@@ -360,3 +360,45 @@ def test_empty_command_before_pipe_keeps_lexical_refusal():
     assert result.reason_category == "unsupported-operator"
     assert result.offset == 0
     assert result.invocations == ()
+
+
+def test_mid_word_expansion_refusal_retains_partial_word_for_earlier_anchor():
+    # The `#` that ends `$X#foo` is an unsupported operator at offset 20, but the partial word
+    # `$X` read before it carries an unquoted expansion at offset 18. Retaining that partial word
+    # lets the command-level pass anchor the earlier unquoted-expansion failure (spec D4).
+    result = scan_execution_source("doc-lattice check $X#foo")
+    assert result.status == "uninspectable"
+    assert result.reason_category == "unquoted-expansion-in-command-word"
+    assert result.offset == 18
+    assert result.invocations == ()
+
+
+def test_mid_word_unterminated_quote_yields_to_earlier_expansion():
+    # The single quote at offset 20 is unterminated, but the partial word `$X` already carries an
+    # unquoted expansion at offset 18, which is the earlier failure and wins over the quote.
+    result = scan_execution_source("doc-lattice check $X'oops")
+    assert result.status == "uninspectable"
+    assert result.reason_category == "unquoted-expansion-in-command-word"
+    assert result.offset == 18
+    assert result.invocations == ()
+
+
+def test_mid_word_refusal_in_first_word_anchors_unstable_at_word_start():
+    # The partial first word `$DOC_LATTICE` is unstable (it carries an expansion, whose name also
+    # supplies the direct marker so the source is scanned), which is an unstable first word
+    # anchored at the word start (offset 0), earlier than the `#` operator that interrupts it.
+    result = scan_execution_source("$DOC_LATTICE#foo")
+    assert result.status == "uninspectable"
+    assert result.reason_category == "unstable-first-word"
+    assert result.offset == 0
+    assert result.invocations == ()
+
+
+def test_partial_word_with_no_earlier_failure_keeps_lexical_anchor():
+    # The partial word `abc` forms `doc-lattice check abc`, which resolves cleanly, so no earlier
+    # command-level failure exists and the lexical `#` operator at offset 21 stands.
+    result = scan_execution_source("doc-lattice check abc#foo")
+    assert result.status == "uninspectable"
+    assert result.reason_category == "unsupported-operator"
+    assert result.offset == 21
+    assert result.invocations == ()
