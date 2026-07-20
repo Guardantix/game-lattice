@@ -266,6 +266,11 @@ class _Scanner:
             if isinstance(word, _Refusal):
                 return word
             words.append(word)
+            if len(words) == 1 and word.is_plain and word.text in _CONTROL_FLOW_KEYWORDS:
+                # A control-flow keyword in command position refuses at the keyword itself, which
+                # is earlier than any operator the keyword's own syntax (for example the ``)`` of
+                # a ``case`` arm) would otherwise surface first.
+                return _Refusal(word.start, _CONTROL_FLOW_KEYWORD)
             token_refusal = self._emit_token()
             if token_refusal is not None:
                 return token_refusal
@@ -443,15 +448,15 @@ class _Scanner:
             self._advance()
         return None
 
-    def _resolve_and_flush(self, words: tuple[_Word, ...]) -> _Refusal | None:  # noqa: PLR0911
+    def _resolve_and_flush(self, words: tuple[_Word, ...]) -> _Refusal | None:
         """Apply the command-level grammar and policy, flushing a proven invocation."""
         first = words[0]
         if _ASSIGNMENT_RE.match(self.source, first.start) is not None:
             if len(words) > 1:
                 return _Refusal(first.start, _ASSIGNMENT_PREFIX)
             return None
-        if first.is_plain and first.text in _CONTROL_FLOW_KEYWORDS:
-            return _Refusal(first.start, _CONTROL_FLOW_KEYWORD)
+        # A control-flow keyword in command position is refused earlier, in _scan_command, so the
+        # command's first word is never a plain control-flow keyword by the time it reaches here.
         if first.unstable:
             return _Refusal(first.start, _UNSTABLE_FIRST_WORD)
         for word in words:
