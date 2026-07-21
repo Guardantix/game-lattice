@@ -58,6 +58,9 @@ evaluation harness and tests; `audit.py` never imports them in this PR):
 - `successor_audit.py`: the dormant collect, batch, aggregate pipeline. Owns attribution,
   maps `BatchFailure` into per-source D5 diagnostics, and performs D4 aggregation. PR B
   disposition: folded into `audit.py` (the durable production name).
+- `helper_locator.py`: the dormant package-owned helper lookup, resolving the bundled
+  binary from package data for the current platform, never `PATH`. In this PR it is
+  invoked only by the installed candidate-wheel smoke tests of gate 13.
 
 Direct reuse, unchanged: `reachability.py` (D1), `model.py` (`BlockScan`, D4 invariants,
 `AuditDiagnostic`, D5 aggregation), and `launcher_policy.py` behavior and tests, with one
@@ -65,23 +68,30 @@ explicit interface revision described in section 5. Successor fixtures live in a
 checkpoint (section 8); the frozen D3 checkpoint at `tests/fixtures/github_ci_checkpoint/`
 is never mutated.
 
-Evaluation tests inject the temporary helper binary's absolute path because no
-package-owned binary exists before PR B.
+Ordinary evaluation tests inject the temporary helper binary's absolute path because no
+package-owned binary exists in the normal build before PR B; only the installed
+candidate-wheel smoke tests exercise `helper_locator.py`.
 
 ## 3. Go helper contract
 
 ### 3.1 Parse strategy
 
-`syntax.NewParser` with explicit `LangBash` at the pinned version. `RecoverErrors` is
-prohibited by predeclaration: a recovered tree is the clean-looking-wrong-tree channel.
+The parser is constructed as `syntax.NewParser(syntax.Variant(syntax.LangBash))` at the
+pinned version. `RecoverErrors` is prohibited by predeclaration: a recovered tree is the
+clean-looking-wrong-tree channel.
 
 Statement acquisition uses `Parser.StmtsSeq` with this exact consumption rule: accept a
-yielded statement only when the statement is non-nil and the error is nil. On any non-nil
-error, discard the co-yielded statement, emit one terminal refusal at the error position,
-and stop. Partial evidence is therefore preserved only across completed top-level statement
-boundaries. The canonical fixture `doc-lattice check; echo "$(` (site for statement 1, one
-terminal refusal, nothing after) is a hard pin-upgrade tripwire: any parser pin change must
-re-verify it before the pin lands.
+yielded statement only when the statement is non-nil and the error is nil. On the first
+non-nil error, stop certifying, discard the co-yielded statement, and record the error
+once; then drain the iterator to completion without accepting any later statement and
+without breaking the range (the pinned implementation can yield `(statement, error)` and
+subsequently `(nil, error)` again, and the Go iterator contract panics if `yield` is
+called after it has returned false). Duplicate terminal errors are deduplicated, and
+exactly one terminal refusal is emitted at the first error position. Partial evidence is
+therefore preserved only across completed top-level statement boundaries. The canonical
+fixture `doc-lattice check; echo "$(` (site for statement 1, exactly one terminal refusal,
+nothing after, iterator fully drained) tests this drain-and-deduplicate behavior and is a
+hard pin-upgrade tripwire: any parser pin change must re-verify it before the pin lands.
 
 Upstream error values (`syntax.ParseError`, `syntax.LangError`) are type-switched only to
 recover positions. Upstream error text never crosses the wire; every refusal carries an
@@ -126,9 +136,11 @@ ordered argv word facts. Each word fact carries:
 - `start_byte` and `end_byte`: UTF-8 byte offsets into the scanned source. Every position
   is validated with `Pos.IsValid()` and `0 <= start <= end <= source byte length`; an
   invalid upstream position becomes a stable refusal, never a crash or a guess.
-- raw-segment marker fact: whether the word's authored raw-source segments match the
-  direct-marker pattern (section 6.2 consumes this; it is computed against authored bytes,
-  never substituted scan text).
+
+The helper exports syntax-only facts; it never applies the direct-marker pattern. Marker
+provenance is computed in Python (section 6.2) from `text` and from the word's authored
+raw-source segment, obtained by projecting the word span onto `raw_text`. The product
+regex stays single-owned in `direct_marker.py`, avoiding cross-language regex drift.
 
 `refusal`: owned category code, span, stable reason, and scope class. The frozen
 reason-code-to-scope table (checkpoint artifact, shared by Go and Python) assigns each code
@@ -217,14 +229,25 @@ set, out-of-order results, events out of span order, spans failing the section 3
 rule, and trailing non-whitespace after the document. A valid-looking prefix is never
 accepted.
 
+The request encoder is canonical: compact JSON with `ensure_ascii=False`,
+`allow_nan=False`, no BOM, and strict surrogate rejection before encoding. All byte caps
+are measured over the resulting UTF-8 bytes; this is what makes the per-source and
+aggregate caps compose (Python's default ASCII escaping can expand an astral character to
+twelve JSON bytes, breaking the four-bytes-per-character worst case). A
+max-length four-byte-character source fixture sits beside the raw negative fixtures to
+pin the composition.
+
 ### 4.3 Identity checks
 
 `parser_version` is derived inside the helper from `runtime/debug.ReadBuildInfo`, not from
 an independently maintained constant, and must exactly match the checkpoint pin
 (`parser_pin_mismatch` on failure). `helper_version` must exactly match the expected
-internal build identity (`helper_identity_mismatch` on failure); that identity changes
-with any visitor or protocol change so the stale-binary check stays meaningful, and it is
-decoupled from the package semver. Reported versions are compatibility tripwires, not
+internal build identity (`helper_identity_mismatch` on failure). That identity is
+mechanically enforced, not asserted: it is a build-embedded semantic digest computed over
+the owned protocol schema and the certifier inputs (the certification tables and visitor
+sources), the Python side expects the same generated value, and CI recomputes the digest
+so a forgotten manual bump cannot defeat the stale-binary check. It is decoupled from the
+package semver. Reported versions are compatibility tripwires, not
 integrity proof; the package-owned path (PR B) and recorded artifact hashes remain the
 integrity controls.
 
@@ -232,7 +255,8 @@ integrity controls.
 
 `helper_supervisor.py` enforces, in order: aggregate request cap before spawning (the
 helper independently enforces it while reading stdin); spawn with absolute helper path
-(injected in evaluation, package-owned in PR B, never `PATH`), a dedicated neutral working
+(injected in ordinary evaluation tests, resolved by `helper_locator.py` in installed
+candidate-wheel smoke tests and in PR B, never `PATH`), a dedicated neutral working
 directory, an explicit frozen minimal per-platform environment, `close_fds=True`, and only
 the three standard handles; concurrent stdin writing and stdout/stderr draining with byte
 caps (never `communicate()`, which buffers and whose timeout does not kill the child); a
@@ -363,10 +387,13 @@ direct-invocation contract exactly as documented today.
 ### 6.2 Synthetic-safe marker provenance
 
 A word carries a marker when the pattern matches its statically known final text
-(excluding synthetic sentinel content) or its authored raw-source segments (the section
-3.3 raw-segment fact, decisive when `text` is null). This catches `eval "doc-lattice $X"`
+(excluding synthetic sentinel content) or its authored raw-source segment (the word span
+projected onto `raw_text`, decisive when `text` is null). The check runs in the Python
+launcher-policy precheck stage using the single-owned pattern in `direct_marker.py`; the
+helper contributes only syntax facts (section 3.3). This catches `eval "doc-lattice $X"`
 while preventing the `{0}` sentinel (`__doc_lattice_script__`) from manufacturing a
-dispatcher or head-look-alike refusal.
+dispatcher or head-look-alike refusal, because projection maps sentinel-interior spans to
+the authored `{0}`.
 
 ### 6.3 Head look-alike symmetry
 
@@ -417,25 +444,31 @@ checkpoint, evaluation PR link) and the original body preserved as history.
 ## 7. Packaging and platform contract
 
 Claimed matrix (five targets): Linux x86_64, Linux aarch64, macOS x86_64, macOS arm64,
-Windows x86_64. Everywhere else: core `check`, `lint`, and `reconcile` remain pure-Python
-and fully functional; `ci audit` fails closed with a clear contextual diagnostic and exit
-2. The sdist builds helper-free with that documented fail-closed behavior and never
-downloads anything at install time.
+Windows x86_64. The following degradation behavior is the PR B contract (PR A's actual
+CLI still uses the old scanner): on unsupported platforms and from the helper-free sdist,
+core `check`, `lint`, and `reconcile` remain pure-Python and fully functional, while
+`ci audit` fails closed with a clear contextual diagnostic and exit 2. Installation never
+downloads anything.
 
 In this PR, normal Hatch wheel and sdist outputs remain helper-free and the existing
 release and publish path is untouched. The evaluation workflow separately builds
 ephemeral, platform-tagged candidate wheels using the exact wheel layout proposed for
-PR B, and its smoke tests prove both packaging and package-owned helper lookup (the PR B
-lookup path, exercised from an installed wheel), plus direct protocol execution, on every
-claimed target under Python 3.13 and 3.14. Target triples, wheel tags, build images,
-native smoke runners, and runner image versions are frozen in the checkpoint; candidate
-wheels are retained as short-lived CI artifacts and never published.
+PR B. Gate 13 covers both halves: the five installed candidate wheels (smoke tests
+proving packaging, `helper_locator.py` lookup from the installed wheel, and direct
+protocol execution, under Python 3.13 and 3.14 on every claimed target) and a helper-free
+sdist degradation harness exercising the dormant pipeline's fail-closed path. The actual
+CLI exit-2 smoke is repeated in PR B when the pipeline is wired. Runner labels, target
+triples, wheel tags, and build-container digests are frozen in the checkpoint; actual
+hosted runner image versions cannot be frozen in advance (images are continuously
+deployed) and are recorded in gate evidence from the job logs. Candidate wheels are
+retained as short-lived CI artifacts and never published.
 
 ## 8. Checkpoint: immutable inputs, separate evidence
 
 Fresh checkpoint at `tests/fixtures/github_ci_successor_checkpoint/`, frozen as the
-branch's first reviewed commit. Its `MANIFEST.sha256` covers checkpoint inputs only and
-is never repinned. Contents:
+branch's first post-design, pre-implementation reviewed commit (this design document
+precedes it). Its `MANIFEST.sha256` covers checkpoint inputs only and is never repinned.
+Contents:
 
 - the re-derived corpus: the frozen 78-row prefix, the post-#103 appended rows, and new
   fixture families (dispatcher grammar, head look-alikes, heredoc guard, malformed tails
@@ -448,14 +481,15 @@ is never repinned. Contents:
   fixtures;
 - `limits.json`: every cap and formula in sections 3.5 and 4.4, work-unit definitions,
   and the performance and RSS ceilings of section 9;
-- budgets, tripwires, the platform matrix with frozen runner images, and exact pins:
+- budgets, tripwires, the platform matrix with frozen runner labels, target triples,
+  wheel tags, and build-container digests, and exact pins:
   Go toolchain (exact version and per-builder sha256), `mvdan.cc/sh/v3` v3.13.1, bash
   5.2.21 with the container digest and binary sha256, shfmt 3.13.1 with sha256 and exact
   command lines, and pinned CI action revisions.
 
 Gate results live outside the checkpoint and record: the checkpoint digest, the evaluated
-implementation commit and tree hash, helper and wheel hashes, runner images, and tool
-versions. The evaluated implementation tree is pinned explicitly because the
+implementation commit and tree hash, helper and wheel hashes, actual hosted runner image
+versions discovered from the job logs, and tool versions. The evaluated implementation tree is pinned explicitly because the
 decision-record commit cannot identify itself. A code change reruns affected gates
 against the new tree; any post-freeze checkpoint change creates a new checkpoint revision
 and invalidates the entire evaluation.
@@ -494,7 +528,10 @@ and false-positive metrics are always reported separately.
     version (3.13 and 3.14); corpus digest recorded; fleetyard trusted-half median
     ceiling 750 ms with p95 recorded; work-counter CI half against its own predeclared
     ceilings.
-13. Wheels: the section 7 five-target build, install, and execute evidence.
+13. Wheels and degradation: the section 7 evidence, both halves; the five installed
+    candidate wheels (packaging, `helper_locator.py` lookup, direct protocol execution)
+    and the helper-free sdist degradation harness. The actual CLI exit-2 smoke repeats
+    in PR B.
 14. Surface accounting, two measures over a frozen path set: owned surface (full
     successor-owned files, changed symbols in shared modules, and all schema, build, and
     packaging logic) at most 2,200 production lines; net reduction (production size at
