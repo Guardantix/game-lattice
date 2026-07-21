@@ -189,11 +189,21 @@ def _resolve_uv(words: tuple[ScanWord, ...]) -> CandidateResolution:
 
 
 def _resolve_uv_tool(words: tuple[ScanWord, ...]) -> CandidateResolution:
-    """Resolve the ``run`` selector of ``uv tool run``, failing closed on an unstable one."""
+    """Resolve the ``run`` selector of ``uv tool run``.
+
+    An unstable selector fails closed, and so does a stable option-like one: uv accepts options
+    between ``tool`` and ``run`` (``uv tool -q run`` dispatches to ``uv tool run``), so the floor
+    refuses there under contract point 3's option-before-payload rule rather than certifying a
+    marker-bearing launch that hides behind the option as a non-candidate with no invocation.
+    The old scanner shares that drop; the floor does not inherit it. Any other stable
+    non-``run`` selector is a different uv tool subcommand and not a candidate.
+    """
     run = _word_at(words, 2)
     if run is None:
         return _NOT_CANDIDATE
     if run.unstable:
+        return _refused(run.start)
+    if run.text.startswith("-"):
         return _refused(run.start)
     if run.text != "run":
         return _NOT_CANDIDATE

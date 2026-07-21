@@ -204,6 +204,21 @@ def test_uv_sync_stays_not_candidate():
     assert resolve_command(lit("uv", "sync")).kind == "not_candidate"
 
 
+def test_uv_tool_option_before_run_selector_refuses():
+    # uv accepts options between tool and run (uv tool -q run dispatches to uv tool run), so a
+    # stable option-like selector fails closed instead of dropping the doc-lattice payload.
+    for option in ("-q", "--offline", "--no-cache", "--frobnicate"):
+        resolution = resolve_command(lit("uv", "tool", option, "run", "doc-lattice", "linear"))
+        assert resolution.kind == "refused", option
+        assert resolution.reason_category == "policy-unresolvable", option
+        assert resolution.offset == 8, option
+
+
+def test_uv_tool_non_run_subcommand_stays_not_candidate():
+    assert resolve_command(lit("uv", "tool", "install", "doc-lattice")).kind == "not_candidate"
+    assert resolve_command(lit("uv", "tool", "list")).kind == "not_candidate"
+
+
 def test_uv_run_payload_is_command_form_no_version_strip():
     # uv run launches a literal command, so a versioned payload does not normalize to
     # doc-lattice under the package rules; it still resembles doc-lattice, so the floor fails
