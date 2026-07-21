@@ -373,3 +373,26 @@ def test_uv_run_shared_options_still_resolve():
     assert resolve_command(
         lit("uv", "run", "--python", "3.13", "doc-lattice", "check")
     ).invocation == ("check", False)
+
+
+def test_package_form_no_sync_refuses():
+    # Only uv run accepts --no-sync; uv rejects it for uvx and uv tool run with an
+    # unexpected-argument error before any dispatch, so a package-form --no-sync must not
+    # certify a launch that never runs. Under lit(), --no-sync starts at offset 4 after uvx
+    # and at offset 12 after uv tool run.
+    for command, offset in (
+        (lit("uvx", "--no-sync", "doc-lattice", "linear"), 4),
+        (lit("uv", "tool", "run", "--no-sync", "doc-lattice", "linear"), 12),
+    ):
+        resolution = resolve_command(command)
+        assert resolution.kind == "refused"
+        assert resolution.reason_category == "policy-unresolvable"
+        assert resolution.offset == offset
+
+
+def test_uv_run_no_sync_still_resolves():
+    # --no-sync stays recognized for the command-form launcher.
+    assert resolve_command(lit("uv", "run", "--no-sync", "doc-lattice", "linear")).invocation == (
+        "linear",
+        False,
+    )

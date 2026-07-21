@@ -29,15 +29,21 @@ _DOC_LATTICE = "doc-lattice"
 _DOC_LATTICE_HEADS: frozenset[str] = frozenset({"doc-lattice", "doc-lattice.exe"})
 
 # Value-taking launcher options recognized before the payload, adapted from shell_scanner.py:2606
-# and shell_scanner.py:2713. The set splits by launcher form: --from selects the payload package
+# and shell_scanner.py:2713. The sets split by launcher form: --from selects the payload package
 # for the package-form launchers only (uvx and uv tool run). uv run does not accept --from, and the
 # old scanner reports an unresolved uv launcher option there, so the floor refuses it before the
 # payload rather than skipping it and certifying a marker-bearing source with no invocation.
-# --python and --with are shared by both forms. Only the options this contract names are
-# recognized; any other option-like word before the payload fails closed.
+# --python and --with are shared by both forms. The --no-sync flag splits the other way: only
+# uv run accepts it, and uv rejects it for uvx and uv tool run with an unexpected-argument error
+# before any dispatch, so skipping a package-form --no-sync would certify a launch that never runs.
+# The old scanner skips it for both forms (shell_scanner.py:214 feeds _UV_TOOL_RUN_FLAGS at
+# shell_scanner.py:222), so the floor refuses rather than inheriting that false accept. Only the
+# options this contract names are recognized; any other option-like word before the payload fails
+# closed.
 _PACKAGE_FORM_VALUE_OPTIONS: frozenset[str] = frozenset({"--python", "--from", "--with"})
 _COMMAND_FORM_VALUE_OPTIONS: frozenset[str] = frozenset({"--python", "--with"})
-_LAUNCHER_FLAG_OPTIONS: frozenset[str] = frozenset({"--no-sync"})
+_PACKAGE_FORM_FLAG_OPTIONS: frozenset[str] = frozenset()
+_COMMAND_FORM_FLAG_OPTIONS: frozenset[str] = frozenset({"--no-sync"})
 
 # A first word whose basename is one of these but whose text is not the bare launcher word is a
 # path-form launcher (for example /usr/bin/uvx or ./uv). The old scanner resolves those by
@@ -229,13 +235,16 @@ def _resolve_launcher_payload(
             package specification whose version and extras normalize; False when the launcher
             (uv run) launches a literal command matched by basename alone. The form also narrows
             the recognized value options: --from selects the payload package in package form only,
-            so uv run refuses a --from before the payload rather than skipping it.
+            so uv run refuses a --from before the payload rather than skipping it. The recognized
+            flags narrow the other way: only uv run accepts --no-sync, so a package-form --no-sync
+            refuses before the payload rather than certifying a launch uv rejects.
 
     Returns:
         The command's ``CandidateResolution``.
     """
     index = start
     value_options = _PACKAGE_FORM_VALUE_OPTIONS if package_form else _COMMAND_FORM_VALUE_OPTIONS
+    flag_options = _PACKAGE_FORM_FLAG_OPTIONS if package_form else _COMMAND_FORM_FLAG_OPTIONS
     while index < len(words):
         word = words[index]
         if word.unstable:
@@ -253,7 +262,7 @@ def _resolve_launcher_payload(
                 return _refused(words[value_index].start)
             index = value_index + 1
             continue
-        if text in _LAUNCHER_FLAG_OPTIONS:
+        if text in flag_options:
             index += 1
             continue
         if text.startswith("-"):
