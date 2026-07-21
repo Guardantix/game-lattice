@@ -204,6 +204,19 @@ frozen corpus and replay inventory contain no `uv tool` form with a stable optio
 (the only non-`run` words in that position are an unstable expansion and a brace expansion, both
 already refused), so every recorded gate result and the verdict remain unchanged.
 
+A seventh PR #101 review round, from an automated reviewer, found one further dormant-module
+defect. The launcher policy shared its one recognized flag across every uv launcher form, so
+`uvx --no-sync doc-lattice linear` and `uv tool run --no-sync doc-lattice linear` skipped
+`--no-sync` and certified the marker-bearing source, although only `uv run` accepts `--no-sync`:
+uv rejects it for both package-form launchers with an unexpected-argument error before any
+dispatch, so the certified invocation never runs. The old scanner shares the false accept
+(`shell_scanner.py:214` carries `--no-sync` in the base launcher flags that feed
+`_UV_TOOL_RUN_FLAGS` at `shell_scanner.py:222`), so this is a false-safe hole in both rather than
+a parity divergence; the flag options now split by launcher form like the fifth round's value
+options, and a package-form `--no-sync` refuses before the payload under contract point 3
+(`401e1e1`). The frozen corpus and replay inventory carry `--no-sync` only in `uv run` form, so
+every recorded gate result and the verdict remain unchanged.
+
 ## 6. Parser-backed candidate scoping
 
 Per the issue thread and its review comments, the successor is a doc-lattice-owned static helper
