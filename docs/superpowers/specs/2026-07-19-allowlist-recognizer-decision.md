@@ -192,6 +192,18 @@ the continuation rule (`04bc8b7`). The frozen corpus contains no `uv run --from`
 `--from` occurrences are uvx package-form launches) and no list split across a newline, so every
 recorded gate result and the verdict remain unchanged.
 
+A sixth PR #101 review round found one further dormant-module defect. The launcher policy treated
+a stable option-like word in the `uv tool` run-selector position as a non-candidate, so
+`uv tool -q run doc-lattice linear` certified the marker-bearing source with no invocation,
+although uv dispatches through options there (`uv tool -q run` reaches the `uv tool run` help) and
+contract point 3 refuses any option-like word before the payload is established. The old scanner
+shares the drop (`shell_scanner.py:2343` returns no payload for a non-`run` literal selector), so
+this is not a parity divergence but a false-safe hole in both; the floor now refuses at the
+selector, matching its handling of a uv global option before `run` or `tool` (`31440be`). The
+frozen corpus and replay inventory contain no `uv tool` form with a stable option before `run`
+(the only non-`run` words in that position are an unstable expansion and a brace expansion, both
+already refused), so every recorded gate result and the verdict remain unchanged.
+
 ## 6. Parser-backed candidate scoping
 
 Per the issue thread and its review comments, the successor is a doc-lattice-owned static helper
