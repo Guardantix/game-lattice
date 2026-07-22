@@ -293,6 +293,26 @@ def test_successor_acceptance_labels_cover_all_rows():
     assert len(adjudications) <= 12, "too many unresolved judgment calls for review"
 
 
+def test_pinned_parser_no_ast_heredocs_are_syntax_errors():
+    """No-AST heredoc cases stay terminal syntax errors under the pinned parser."""
+    descriptions = {
+        "single-quoted heredoc delimiter word preserves continuation",
+        "unquoted heredoc continuation suppresses physical delimiter",
+        "unquoted heredoc continuation forms delimiter",
+    }
+    cases = {
+        case["description"]: case
+        for case in _load("corpus/acceptance_labels.json")["cases"]
+        if case["description"] in descriptions
+    }
+    assert set(cases) == descriptions
+    for case in cases.values():
+        assert case["reason_category"] == "syntax-error"
+        assert case["expected_status"] == "uninspectable"
+        assert case["expected_invocations"] == []
+        assert case["owner_adjudicate"] is False
+
+
 _FAMILIES = frozenset(
     {
         "dispatcher",

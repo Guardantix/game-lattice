@@ -529,11 +529,13 @@ _DECISIONS: tuple[Decision, ...] = (
     Decision(
         IE,
         NONE,
-        "parser-divergence-guard",
-        True,
-        "rule5-heredoc-guard",
-        "S3.4 flags the backslash-newline continuation in the single-quoted delimiter word; "
-        "parser-behavior dependent. Proposed fail-closed: guard refusal.",
+        "syntax-error",
+        False,
+        "pinned-parser-syntax-error",
+        "Pinned mvdan.cc/sh/v3 v3.13.1 StmtsSeq yields stmt=nil with an unclosed-heredoc "
+        "error at byte offset 4 for the single-quoted continued delimiter, so S3.1 builds no "
+        "AST and the AST-only S3.4 guard cannot apply; terminal syntax-error with no invocation "
+        "is the owner-ratified outcome.",
     ),
     Decision(
         MC,
@@ -601,21 +603,24 @@ _DECISIONS: tuple[Decision, ...] = (
     Decision(
         IE,
         NONE,
-        "parser-divergence-guard",
+        "syntax-error",
         False,
-        "rule5-heredoc-guard",
-        "S3.4 canonical body backslash-newline false-safe (documented permanent regression); the "
-        "continuation suppresses the physical delimiter, so the guard fires terminally with no "
-        "invocation.",
+        "pinned-parser-syntax-error",
+        "Pinned mvdan.cc/sh/v3 v3.13.1 StmtsSeq yields stmt=nil with an unclosed-heredoc "
+        "error at byte offset 4 when the continuation suppresses the physical delimiter, so "
+        "S3.1 builds no AST and the AST-only S3.4 guard cannot apply; terminal syntax-error with "
+        "no invocation is the owner-ratified outcome.",
     ),
     Decision(
         IE,
         NONE,
-        "parser-divergence-guard",
-        True,
-        "rule5-heredoc-guard",
-        "S3.4 body backslash-newline continuation that forms the delimiter; guard-versus-certify "
-        "is parser-behavior dependent. Proposed fail-closed: guard refusal, dropping old linear.",
+        "syntax-error",
+        False,
+        "pinned-parser-syntax-error",
+        "Pinned mvdan.cc/sh/v3 v3.13.1 StmtsSeq yields stmt=nil with an unclosed-heredoc "
+        "error at byte offset 4 when the continuation would form the delimiter, so S3.1 builds "
+        "no AST and the AST-only S3.4 guard cannot apply; terminal syntax-error with no "
+        "invocation is the owner-ratified outcome.",
     ),
     Decision(
         IE,

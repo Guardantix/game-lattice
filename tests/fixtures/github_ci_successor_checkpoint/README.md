@@ -141,10 +141,11 @@ revision; the items remain listed with their original framing for the record.
   source never parses, no command site is built, and the refusal is a terminal syntax-error
   with no retained invocation. The indeterminate status and the 2/20 count are unchanged.
   Fixture 05 (splitting-unsafe-word) is firm.
-- **Acceptance-corpus adjudication rows (Task 6, cap 12, zero headroom).** The acceptance
-  corpus carries exactly 12 `owner_adjudicate` rows (the cap): rows 1, 32, 37, 38, 49, 50,
-  51, 60, 61, 62, 63, 71. The cap has zero headroom; a thirteenth judgment call fails the
-  corpus validator.
+- **Acceptance-corpus adjudication rows (Task 6, cap 12, two-row headroom).** The acceptance
+  corpus carries exactly 10 `owner_adjudicate` rows: rows 1, 32, 37, 38, 49, 50, 61, 62,
+  63, 71. The cap now has two-row headroom; a thirteenth judgment call still fails the corpus
+  validator. The Task 7 parser-alignment revision resolved rows 51 and 60; row 59 was already
+  non-adjudicated.
 - **Legacy normalization adjudications (Task 9, per-entry contextual classification, 79
   entries).** The 580 legacy entries carry 79 `owner_adjudicate` entries, all
   category-label-only. Four legacy strings collapse successor-distinct constructs into one
@@ -251,6 +252,17 @@ revision; the items remain listed with their original framing for the record.
      a new `completeness_rule` field requires CI to independently assert that every non-test
      `.go` file under the helper module is covered by `include` minus `exclude_globs`.
   `MANIFEST.sha256` was regenerated in the same revision.
+- **2026-07-22 (Task 7 parser-alignment revision): three owner-authorized
+  reclassifications.** The acceptance rows for the single-quoted continued heredoc delimiter,
+  the body continuation that suppresses the physical delimiter, and the body continuation that
+  forms the delimiter are reclassified from `parser-divergence-guard` to `syntax-error`.
+  Pinned mvdan.cc/sh/v3 v3.13.1 `StmtsSeq` yields `stmt=nil` with an unclosed-heredoc error at
+  byte offset 4 for all three, so S3.1 builds no AST and the AST-only S3.4 guard cannot apply.
+  Preserving that AST-only boundary avoids a raw-source heredoc lexer. Their labels, uninspectable
+  statuses, and empty invocation lists are unchanged; rows 51 and 60 are now resolved alongside
+  already-non-adjudicated row 59, reducing `owner_adjudicate` from 12 to 10 with two-row headroom
+  under the cap. The owner authorized this post-ratification checkpoint revision, and
+  `MANIFEST.sha256` was regenerated after all checkpoint edits.
 
 ## Handoff
 

@@ -12,9 +12,10 @@ Deterministic output; see `scripts/derive_successor_labels.py`.
 ## Applied-delta counts
 
 - parse-ambiguity: 2
+- pinned-parser-syntax-error: 3
 - rule1-traverse: 43
 - rule4-malformed-tail: 1
-- rule5-heredoc-guard: 6
+- rule5-heredoc-guard: 3
 - rule6-carried: 12
 - s3.3-word-text: 1
 - s6.2-d2-reachability: 1
@@ -59,7 +60,7 @@ Deterministic output; see `scripts/derive_successor_labels.py`.
 | 48 | quoted heredoc suppresses modern substitution | intentional-exit-2 | must-certify | [] | rule1-traverse |
 | 49 | unquoted heredoc delimiter word removes continuation | intentional-exit-2 | intentional-exit-2 | [] | rule5-heredoc-guard |
 | 50 | double-quoted heredoc delimiter word removes continuation | intentional-exit-2 | intentional-exit-2 | [] | rule5-heredoc-guard |
-| 51 | single-quoted heredoc delimiter word preserves continuation | intentional-exit-2 | intentional-exit-2 | [] | rule5-heredoc-guard |
+| 51 | single-quoted heredoc delimiter word preserves continuation | intentional-exit-2 | intentional-exit-2 | [] | pinned-parser-syntax-error |
 | 52 | ansi-quoted heredoc suppresses substitution | intentional-exit-2 | must-certify | [] | rule1-traverse |
 | 53 | unquoted heredoc expands backticks | intentional-exit-2 | must-certify | [["linear", false]] | rule1-traverse |
 | 54 | quoted heredoc suppresses backticks | intentional-exit-2 | must-certify | [] | rule1-traverse |
@@ -67,8 +68,8 @@ Deterministic output; see `scripts/derive_successor_labels.py`.
 | 56 | nested unquoted heredoc | intentional-exit-2 | must-certify | [["linear", false]] | rule1-traverse |
 | 57 | nested quoted heredoc | intentional-exit-2 | must-certify | [] | rule1-traverse |
 | 58 | multiple heredocs retain expansion policy and ordering | intentional-exit-2 | must-certify | [["linear", false], ["lint", false]] | rule1-traverse |
-| 59 | unquoted heredoc continuation suppresses physical delimiter | intentional-exit-2 | intentional-exit-2 | [] | rule5-heredoc-guard |
-| 60 | unquoted heredoc continuation forms delimiter | intentional-exit-2 | intentional-exit-2 | [] | rule5-heredoc-guard |
+| 59 | unquoted heredoc continuation suppresses physical delimiter | intentional-exit-2 | intentional-exit-2 | [] | pinned-parser-syntax-error |
+| 60 | unquoted heredoc continuation forms delimiter | intentional-exit-2 | intentional-exit-2 | [] | pinned-parser-syntax-error |
 | 61 | unquoted heredoc continuation forms command substitution | intentional-exit-2 | intentional-exit-2 | [] | rule5-heredoc-guard |
 | 62 | here-string substitution | intentional-exit-2 | must-certify | [["linear", false]] | rule1-traverse |
 | 63 | here-string literal | intentional-exit-2 | must-certify | [] | rule1-traverse |
@@ -94,7 +95,7 @@ Deterministic output; see `scripts/derive_successor_labels.py`.
 | 85 | uv tool run no-sync is intentional exit 2 | live-incomplete | intentional-exit-2 | [] | s6.5-launcher-parity |
 | 86 | uv run no-sync remains certified | live-certified | must-certify | [["linear", false]] | s6.5-launcher-parity |
 
-## Owner-adjudicate rows (12)
+## Owner-adjudicate rows (10)
 
 These rows are not fully determined by the frozen contracts and carry a
 fail-closed proposal for Rick's checkpoint review.
@@ -105,8 +106,6 @@ fail-closed proposal for Rick's checkpoint review.
 - Row 38 (unbalanced arithmetic command runs a nested subshell): proposed intentional-exit-2. Whether mvdan/sh parses (( )) as an ArithmCmd refuse or as a nested subshell traverse is parser-behavior dependent; fail-closed intentional-exit-2 drops the old-scanner linear.
 - Row 49 (unquoted heredoc delimiter word removes continuation): proposed intentional-exit-2. S3.4 flags the backslash-newline continuation in the heredoc delimiter word; whether the guard fires is parser-behavior dependent. Proposed fail-closed: guard refusal.
 - Row 50 (double-quoted heredoc delimiter word removes continuation): proposed intentional-exit-2. S3.4 flags the backslash-newline continuation in the double-quoted delimiter word; parser-behavior dependent. Proposed fail-closed: guard refusal.
-- Row 51 (single-quoted heredoc delimiter word preserves continuation): proposed intentional-exit-2. S3.4 flags the backslash-newline continuation in the single-quoted delimiter word; parser-behavior dependent. Proposed fail-closed: guard refusal.
-- Row 60 (unquoted heredoc continuation forms delimiter): proposed intentional-exit-2. S3.4 body backslash-newline continuation that forms the delimiter; guard-versus-certify is parser-behavior dependent. Proposed fail-closed: guard refusal, dropping old linear.
 - Row 61 (unquoted heredoc continuation forms command substitution): proposed intentional-exit-2. S3.4 body backslash-newline continuation that forms a command substitution; guard-versus-certify is parser-behavior dependent. Proposed fail-closed: guard refusal, dropping old linear.
 - Row 62 (here-string substitution): proposed must-certify. S3.2 traverses the here-string word as a redirect target-word expansion; the command substitution executes and doc-lattice linear certifies. Proposal: here-string word mapped to Redirect target-word-expansion traverse; frozen table lacks an explicit here-string row; ratify the mapping or add the row.
 - Row 63 (here-string literal): proposed must-certify. The here-string word is literal; cat is not a candidate and the source certifies empty. Proposal: here-string word mapped to Redirect target-word-expansion traverse; frozen table lacks an explicit here-string row; ratify the mapping or add the row.
