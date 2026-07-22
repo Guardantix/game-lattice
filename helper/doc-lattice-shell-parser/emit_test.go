@@ -649,7 +649,7 @@ func TestBashUnquotedNumericExpansionsAreIFSSplittable(t *testing.T) {
 	}
 }
 
-func TestEmitLengthParameterIndexTraversesNestedExecution(t *testing.T) {
+func TestEmitLengthParameterIndexRefusesNestedExecutionLocally(t *testing.T) {
 	tests := []struct {
 		name   string
 		word   string
@@ -660,13 +660,15 @@ func TestEmitLengthParameterIndexTraversesNestedExecution(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			response, err := Certify(mustRequest(t, `echo `+test.word))
+			source := `echo ` + test.word
+			response, err := Certify(mustRequest(t, source))
 			if err != nil {
 				t.Fatalf("Certify error = %v", err)
 			}
 			events := response.Results[0].Events
-			if len(events) != 2 || events[0].Kind != "command_site" || events[1].Kind != "command_site" {
-				t.Fatalf("events = %#v, want outer and nested command sites", events)
+			if len(events) != 2 || events[0].Kind != "command_site" || events[1].Kind != "refusal" ||
+				events[1].Code != "expansion-unsupported" || events[1].StartByte != len("echo ") || events[1].EndByte != len(source) {
+				t.Fatalf("events = %#v, want outer site then complete parameter-expansion refusal", events)
 			}
 			word := events[0].Argv[1]
 			if word.Text != nil || word.Single != test.single {
@@ -766,15 +768,16 @@ func TestEmitArithmeticExpansionRespectsIFSAndQuoting(t *testing.T) {
 	}
 }
 
-func TestEmitArithmeticExpansionStillTraversesNestedExecution(t *testing.T) {
+func TestEmitArithmeticExpansionRefusesNestedExecutionLocally(t *testing.T) {
 	const src = `echo $(( $(doc-lattice check) + 1 ))`
 	response, err := Certify(mustRequest(t, src))
 	if err != nil {
 		t.Fatalf("Certify error = %v", err)
 	}
 	events := response.Results[0].Events
-	if len(events) != 2 || events[0].Kind != "command_site" || events[1].Kind != "command_site" {
-		t.Fatalf("events = %#v, want outer and nested command sites", events)
+	if len(events) != 2 || events[0].Kind != "command_site" || events[1].Kind != "refusal" ||
+		events[1].Code != "expansion-unsupported" || events[1].StartByte != len("echo ") || events[1].EndByte != len(src) {
+		t.Fatalf("events = %#v, want outer site then complete arithmetic-expansion refusal", events)
 	}
 	word := events[0].Argv[1]
 	if word.Text != nil || word.Single {

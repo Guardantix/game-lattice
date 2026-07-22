@@ -189,6 +189,41 @@ func TestTableGeneratorRejectsCommandLocalConstructCode(t *testing.T) {
 	}
 }
 
+func TestTableGeneratorRejectsIncorrectHelperOwnedScope(t *testing.T) {
+	tests := []struct {
+		code      string
+		fromScope string
+		toScope   string
+	}{
+		{code: "unsupported-construct", fromScope: "terminal", toScope: "subtree-local"},
+		{code: "expansion-unsupported", fromScope: "subtree-local", toScope: "terminal"},
+		{code: "redirect-unsupported", fromScope: "subtree-local", toScope: "terminal"},
+	}
+	for _, test := range tests {
+		t.Run(test.code, func(t *testing.T) {
+			workspace := newGeneratorWorkspace(t)
+			copyTestFile(t, "gen_tables.go", filepath.Join(workspace.helperDir, "gen_tables.go"))
+			copyTestFile(t, checkpointTablesPath+"certified_constructs.json", filepath.Join(workspace.checkpointDir, "tables", "certified_constructs.json"))
+			reasons := readTestFile(t, checkpointTablesPath+"reason_codes.json")
+			from := []byte("\"code\": \"" + test.code + "\",\n      \"scope\": \"" + test.fromScope + "\"")
+			to := []byte("\"code\": \"" + test.code + "\",\n      \"scope\": \"" + test.toScope + "\"")
+			modified := bytes.Replace(reasons, from, to, 1)
+			if bytes.Equal(modified, reasons) {
+				t.Fatalf("reason fixture did not contain %q with scope %q", test.code, test.fromScope)
+			}
+			writeTestFile(t, filepath.Join(workspace.checkpointDir, "tables", "reason_codes.json"), modified)
+
+			output, err := runTestGenerator(t, workspace.helperDir, "gen_tables.go")
+			if err == nil {
+				t.Fatalf("generator accepted %q with scope %q; output: %s", test.code, test.toScope, output)
+			}
+			if !bytes.Contains(output, []byte(test.code)) || !bytes.Contains(output, []byte(test.toScope)) {
+				t.Fatalf("wrong-scope failure did not identify code and scope: %s", output)
+			}
+		})
+	}
+}
+
 func TestReasonScopesAreHelperEmittable(t *testing.T) {
 	for code, scope := range reasonScopes {
 		if scope != "terminal" && scope != "subtree-local" && scope != "command-local" {

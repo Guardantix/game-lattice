@@ -51,7 +51,7 @@ func TestWalkTraversesCommandSubstInArgv(t *testing.T) {
 	}
 }
 
-func TestWalkTraversesCommandSubstInsideParameterOperand(t *testing.T) {
+func TestWalkRefusesCommandSubstInsideParameterOperandLocally(t *testing.T) {
 	const src = `echo "${x:+$(doc-lattice check)}"`
 	stmts, refusal := parseStatements(src)
 	if refusal != nil {
@@ -59,8 +59,8 @@ func TestWalkTraversesCommandSubstInsideParameterOperand(t *testing.T) {
 	}
 
 	sites, refusals, _ := walk(stmts, src)
-	if len(refusals) != 0 || len(sites) != 2 {
-		t.Fatalf("walk returned %d sites and refusals %#v, want outer and nested sites only", len(sites), refusals)
+	if len(sites) != 1 || len(refusals) != 1 || refusals[0].code != "expansion-unsupported" {
+		t.Fatalf("walk returned %d sites and refusals %#v, want outer site and local expansion refusal", len(sites), refusals)
 	}
 }
 
@@ -264,15 +264,15 @@ func TestParseRejectsProcessSubstitutionInParameterIndex(t *testing.T) {
 	}
 }
 
-func TestWalkTraversesCommandSubstitutionInReplacementWord(t *testing.T) {
+func TestWalkRefusesCommandSubstitutionInReplacementWordLocally(t *testing.T) {
 	const src = `echo ${x/safe/$(doc-lattice check)}`
 	stmts, parseRefusal := parseStatements(src)
 	if parseRefusal != nil {
 		t.Fatalf("parseStatements refusal = %#v, want none", parseRefusal)
 	}
 	sites, refusals, _ := walk(stmts, src)
-	if len(sites) != 2 || len(refusals) != 0 {
-		t.Fatalf("walk returned %d sites and refusals %#v, want outer and nested command sites", len(sites), refusals)
+	if len(sites) != 1 || len(refusals) != 1 || refusals[0].code != "expansion-unsupported" {
+		t.Fatalf("walk returned %d sites and refusals %#v, want outer site and local expansion refusal", len(sites), refusals)
 	}
 }
 

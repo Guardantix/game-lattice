@@ -129,11 +129,26 @@ func assignConstructCodes(constructs []constructRow, reasons []reasonRow) error 
 		if !ok {
 			return fmt.Errorf("construct %q/%q references unknown reason code %q", row.Node, row.Role, row.Code)
 		}
-		if scope != "terminal" && scope != "subtree-local" {
-			return fmt.Errorf("construct %q/%q references helper-unowned reason code %q with scope %q", row.Node, row.Role, row.Code, scope)
+		expectedScope, ok := constructRefusalScope(row.Code)
+		if !ok {
+			return fmt.Errorf("construct %q/%q references reason code %q without an expected scope", row.Node, row.Role, row.Code)
+		}
+		if scope != expectedScope {
+			return fmt.Errorf("construct %q/%q references reason code %q with scope %q, want %q", row.Node, row.Role, row.Code, scope, expectedScope)
 		}
 	}
 	return nil
+}
+
+func constructRefusalScope(code string) (string, bool) {
+	switch code {
+	case "unsupported-construct":
+		return "terminal", true
+	case "redirect-unsupported", "expansion-unsupported":
+		return "subtree-local", true
+	default:
+		return "", false
+	}
 }
 
 func constructRefusalCode(node string) string {

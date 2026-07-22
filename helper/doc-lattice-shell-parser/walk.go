@@ -73,10 +73,7 @@ func (w *walker) dispatch(node syntax.Node, role string, depth int) {
 		w.requestTerminal(node, "unsupported-construct", false)
 		return
 	}
-	rule, ok := certifiedConstructs[constructKey{node: name, role: role}]
-	if !ok {
-		rule, ok = certifiedConstructs[constructKey{node: name, role: "*"}]
-	}
+	rule, ok := lookupCertifiedConstruct(name, role)
 	if !ok {
 		w.requestTerminal(node, "unsupported-construct", false)
 		return
@@ -354,18 +351,24 @@ func (w *walker) consumeWordPart(part syntax.WordPart, depth int, quoted bool) {
 }
 
 func (w *walker) consumeNestedExecution(node syntax.Node, depth int, quoted bool) {
-	w.consumeNestedExecutionIn(node, depth, false, quoted)
+	w.consumeNestedExecutionIn(node, depth, false, quoted, nil, "")
 }
 
-func (w *walker) consumeNestedExecutionIn(node syntax.Node, depth int, parameterOperand, quoted bool) {
+func (w *walker) consumeNestedExecutionIn(node syntax.Node, depth int, parameterOperand, quoted bool, owner syntax.Node, ownerCode string) bool {
+	if owner == nil {
+		if rule, ok := localConstructRefusal(node); ok {
+			owner = node
+			ownerCode = rule.code
+		}
+	}
 	next := 0
 	for {
 		child, ok := nextStructuralChild(node, &next)
 		if !ok {
-			return
+			return false
 		}
 		if !w.enterChild() {
-			return
+			return w.stop
 		}
 		childIsParameterOperand := false
 		if parameter, ok := node.(*syntax.ParamExp); ok {
@@ -377,6 +380,10 @@ func (w *walker) consumeNestedExecutionIn(node syntax.Node, depth int, parameter
 		}
 		switch child := child.(type) {
 		case *syntax.CmdSubst:
+			if owner != nil {
+				w.requestRefusal(owner, ownerCode)
+				return true
+			}
 			w.dispatch(child, "body-statements", depth+1)
 		case *syntax.ProcSubst:
 			w.dispatch(child, "word-part", depth+1)
@@ -385,12 +392,31 @@ func (w *walker) consumeNestedExecutionIn(node syntax.Node, depth int, parameter
 				w.dispatch(child, "parameter-operand-process-substitution", depth+1)
 			}
 		default:
-			w.consumeNestedExecutionIn(child, depth+1, childIsParameterOperand, childQuoted)
+			if w.consumeNestedExecutionIn(child, depth+1, childIsParameterOperand, childQuoted, owner, ownerCode) {
+				return true
+			}
 		}
 		if w.stop {
-			return
+			return true
 		}
 	}
+}
+
+func lookupCertifiedConstruct(name, role string) (constructRule, bool) {
+	rule, ok := certifiedConstructs[constructKey{node: name, role: role}]
+	if !ok {
+		rule, ok = certifiedConstructs[constructKey{node: name, role: "*"}]
+	}
+	return rule, ok
+}
+
+func localConstructRefusal(node syntax.Node) (constructRule, bool) {
+	name, known := syntaxNodeName(node)
+	if !known || name == "" {
+		return constructRule{}, false
+	}
+	rule, ok := lookupCertifiedConstruct(name, "nested-word-execution")
+	return rule, ok && rule.disposition == "refuse" && reasonScopes[rule.code] == "subtree-local"
 }
 
 func parameterWordOperand(parameter *syntax.ParamExp, child syntax.Node) bool {

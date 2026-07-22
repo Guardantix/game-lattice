@@ -4,6 +4,7 @@ package main
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -32,6 +33,16 @@ func commandHeads(t *testing.T, events []Event) []string {
 		heads = append(heads, *event.Argv[0].Text)
 	}
 	return heads
+}
+
+func refusalEvents(events []Event) []Event {
+	refusals := make([]Event, 0)
+	for _, event := range events {
+		if event.Kind == "refusal" {
+			refusals = append(refusals, event)
+		}
+	}
+	return refusals
 }
 
 func TestRefusalCodesAreHelperScoped(t *testing.T) {
@@ -112,6 +123,134 @@ func TestUnsupportedExpansionRefusesLocallyWithoutLeakingNestedSite(t *testing.T
 	}
 	if events[refusalIndex].EndByte > events[laterIndex].StartByte {
 		t.Fatalf("local refusal overlaps later site: refusal %#v, site %#v", events[refusalIndex], events[laterIndex])
+	}
+}
+
+func TestParameterExpansionOwnsNestedCommandSubstitutionRefusal(t *testing.T) {
+	const src = `unset x; echo "${x:-$(doc-lattice hidden)}"; doc-lattice later`
+	resp, err := Certify(mustRequest(t, src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := resp.Results[0].Events
+	if got := commandHeads(t, events); !reflect.DeepEqual(got, []string{"unset", "echo", "doc-lattice"}) {
+		t.Fatalf("command heads = %#v, want prior, outer, and later sites without buried hidden site", got)
+	}
+	refusals := refusalEvents(events)
+	if len(refusals) != 1 || refusals[0].Code != "expansion-unsupported" {
+		t.Fatalf("refusals = %#v, want one expansion-unsupported", refusals)
+	}
+	wantStart := strings.Index(src, "${x:")
+	wantEnd := strings.Index(src, `}";`) + 1
+	if refusals[0].StartByte != wantStart || refusals[0].EndByte != wantEnd {
+		t.Fatalf("refusal span = [%d, %d), want complete parameter expansion [%d, %d)", refusals[0].StartByte, refusals[0].EndByte, wantStart, wantEnd)
+	}
+	later := events[len(events)-1]
+	if later.Kind != "command_site" || refusals[0].EndByte > later.StartByte {
+		t.Fatalf("local refusal did not resynchronize before later site: %#v", events)
+	}
+}
+
+func TestArithmeticExpansionOwnsNestedCommandSubstitutionRefusal(t *testing.T) {
+	const src = `echo $(( $(doc-lattice hidden) + 1 )); doc-lattice later`
+	resp, err := Certify(mustRequest(t, src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := resp.Results[0].Events
+	if got := commandHeads(t, events); !reflect.DeepEqual(got, []string{"echo", "doc-lattice"}) {
+		t.Fatalf("command heads = %#v, want outer and later sites without buried hidden site", got)
+	}
+	refusals := refusalEvents(events)
+	if len(refusals) != 1 || refusals[0].Code != "expansion-unsupported" {
+		t.Fatalf("refusals = %#v, want one expansion-unsupported", refusals)
+	}
+	wantStart := strings.Index(src, "$((")
+	wantEnd := strings.Index(src, ")); ") + 2
+	if refusals[0].StartByte != wantStart || refusals[0].EndByte != wantEnd {
+		t.Fatalf("refusal span = [%d, %d), want complete arithmetic expansion [%d, %d)", refusals[0].StartByte, refusals[0].EndByte, wantStart, wantEnd)
+	}
+	later := events[len(events)-1]
+	if later.Kind != "command_site" || refusals[0].EndByte > later.StartByte {
+		t.Fatalf("local refusal did not resynchronize before later site: %#v", events)
+	}
+}
+
+func TestOutermostUnsupportedExpansionOwnsNestedRefusal(t *testing.T) {
+	const src = `echo "${outer:-${inner:-$(doc-lattice hidden)}}"; doc-lattice later`
+	resp, err := Certify(mustRequest(t, src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := resp.Results[0].Events
+	if got := commandHeads(t, events); !reflect.DeepEqual(got, []string{"echo", "doc-lattice"}) {
+		t.Fatalf("command heads = %#v, want outer and later sites without buried hidden site", got)
+	}
+	refusals := refusalEvents(events)
+	if len(refusals) != 1 || refusals[0].Code != "expansion-unsupported" {
+		t.Fatalf("refusals = %#v, want one enclosing expansion refusal", refusals)
+	}
+	wantStart := strings.Index(src, "${outer:")
+	wantEnd := strings.Index(src, `}";`) + 1
+	if refusals[0].StartByte != wantStart || refusals[0].EndByte != wantEnd {
+		t.Fatalf("refusal span = [%d, %d), want outermost expansion [%d, %d)", refusals[0].StartByte, refusals[0].EndByte, wantStart, wantEnd)
+	}
+}
+
+func TestMultipleOwnedExpansionRefusalsRemainOrdered(t *testing.T) {
+	const src = `echo "${x:-$(doc-lattice one)}" "$(( $(doc-lattice two) + 1 ))"; doc-lattice later`
+	resp, err := Certify(mustRequest(t, src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := resp.Results[0].Events
+	if got := commandHeads(t, events); !reflect.DeepEqual(got, []string{"echo", "doc-lattice"}) {
+		t.Fatalf("command heads = %#v, want outer and later sites without buried sites", got)
+	}
+	refusals := refusalEvents(events)
+	if len(refusals) != 2 {
+		t.Fatalf("refusals = %#v, want two local expansion refusals", refusals)
+	}
+	for index, refusal := range refusals {
+		if refusal.Code != "expansion-unsupported" || reasonScopes[refusal.Code] != "subtree-local" {
+			t.Fatalf("refusal %d = %#v, want subtree-local expansion-unsupported", index, refusal)
+		}
+		if index > 0 && refusals[index-1].EndByte > refusal.StartByte {
+			t.Fatalf("refusals overlap or are out of order: %#v", refusals)
+		}
+	}
+	if refusals[len(refusals)-1].EndByte > events[len(events)-1].StartByte {
+		t.Fatalf("last local refusal overlaps later site: %#v", events)
+	}
+}
+
+func TestDirectCommandSubstitutionStillTraverses(t *testing.T) {
+	const src = `echo "$(doc-lattice direct)"; doc-lattice later`
+	resp, err := Certify(mustRequest(t, src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := resp.Results[0].Events
+	if got := commandHeads(t, events); !reflect.DeepEqual(got, []string{"echo", "doc-lattice", "doc-lattice"}) {
+		t.Fatalf("command heads = %#v, want outer, direct nested, and later sites", got)
+	}
+	if got := refusalCodes(events); len(got) != 0 {
+		t.Fatalf("direct command substitution refusals = %#v, want none", got)
+	}
+}
+
+func TestInertParameterAndArithmeticExpansionsRemainAccepted(t *testing.T) {
+	const src = `echo "${x:-fallback}" "$((1+2))"; doc-lattice later`
+	resp, err := Certify(mustRequest(t, src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := resp.Results[0].Events
+	if got := commandHeads(t, events); !reflect.DeepEqual(got, []string{"echo", "doc-lattice"}) {
+		t.Fatalf("command heads = %#v, want outer and later sites", got)
+	}
+	if got := refusalCodes(events); len(got) != 0 {
+		t.Fatalf("inert expansion refusals = %#v, want none", got)
 	}
 }
 
