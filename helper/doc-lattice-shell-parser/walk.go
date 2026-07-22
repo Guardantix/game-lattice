@@ -305,8 +305,15 @@ func (w *walker) consumeWordPart(part syntax.WordPart, depth int, quoted bool) {
 		return
 	}
 	switch part := part.(type) {
-	case *syntax.Lit, *syntax.SglQuoted:
+	case *syntax.Lit:
 		w.visit(part, depth)
+	case *syntax.SglQuoted:
+		if !w.visit(part, depth) {
+			return
+		}
+		if part.Dollar && decodeANSIValue(part.Value).unsafe {
+			w.requestTerminal(part, "unsupported-construct", false)
+		}
 	case *syntax.DblQuoted:
 		if !w.visit(part, depth) {
 			return
@@ -325,7 +332,12 @@ func (w *walker) consumeWordPart(part syntax.WordPart, depth int, quoted bool) {
 	case *syntax.ProcSubst:
 		w.dispatch(part, "word-part", depth)
 	case *syntax.ExtGlob:
-		if extGlobHasOpaqueExecution(part, w.src) {
+		classification := classifyExtGlob(part, w.src)
+		if classification.unsafe {
+			if w.visit(part, depth) {
+				w.requestTerminal(part, "unsupported-construct", false)
+			}
+		} else if classification.execution || part == nil {
 			w.dispatch(part, "opaque-execution", depth)
 		} else if w.visit(part, depth) {
 			w.consumeNestedExecution(part, depth, quoted)
@@ -335,11 +347,6 @@ func (w *walker) consumeWordPart(part syntax.WordPart, depth int, quoted bool) {
 			w.consumeNestedExecution(part, depth, quoted)
 		}
 	}
-}
-
-func extGlobHasOpaqueExecution(extglob *syntax.ExtGlob, src string) bool {
-	classification := classifyExtGlob(extglob, src)
-	return classification.execution || extglob == nil
 }
 
 func (w *walker) consumeNestedExecution(node syntax.Node, depth int, quoted bool) {

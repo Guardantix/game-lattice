@@ -285,6 +285,35 @@ func TestCertifyAndEncodeResponseUseSchemaArrays(t *testing.T) {
 	}
 }
 
+func TestCertifyRawNULFailsClosedPerSourceBeforeParsing(t *testing.T) {
+	request, err := DecodeRequest([]byte(`{"protocol_version":1,"sources":[{"id":0,"source":"doc-\u0000lattice check"},{"id":1,"source":"doc-lattice ok"}]}`))
+	if err != nil {
+		t.Fatalf("DecodeRequest error = %v", err)
+	}
+	response, err := Certify(request)
+	if err != nil {
+		t.Fatalf("Certify error = %v", err)
+	}
+	if len(response.Results) != 2 {
+		t.Fatalf("results = %#v, want two ordered per-source results", response.Results)
+	}
+	unsafe := response.Results[0]
+	if unsafe.ID != 0 || unsafe.Events == nil || len(unsafe.Events) != 1 {
+		t.Fatalf("NUL result = %#v, want one nonnull terminal event", unsafe)
+	}
+	if got := unsafe.Events[0]; got.Kind != "refusal" || got.Code != "unsupported-construct" ||
+		got.StartByte != 4 || got.EndByte != 5 {
+		t.Fatalf("NUL event = %#v, want unsupported-construct [4, 5)", got)
+	}
+	if unsafe.WorkUnits != 2 {
+		t.Fatalf("NUL work_units = %d, want base plus refusal = 2", unsafe.WorkUnits)
+	}
+	safe := response.Results[1]
+	if safe.ID != 1 || safe.Events == nil || len(safe.Events) != 1 || safe.Events[0].Kind != "command_site" {
+		t.Fatalf("safe batch neighbor = %#v, want independently processed command site", safe)
+	}
+}
+
 func TestEncodeResponseUsesExactEventUnionShapes(t *testing.T) {
 	resp := &Response{
 		ProtocolVersion: 1,

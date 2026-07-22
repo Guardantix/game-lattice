@@ -26,6 +26,18 @@ type orderedEvent struct {
 }
 
 func certifySource(source Source) (Result, error) {
+	if firstNUL := strings.IndexByte(source.Source, 0); firstNUL >= 0 {
+		return Result{
+			ID: source.ID,
+			Events: []Event{{
+				Kind:      "refusal",
+				Code:      "unsupported-construct",
+				StartByte: firstNUL,
+				EndByte:   firstNUL + 1,
+			}},
+			WorkUnits: 2,
+		}, nil
+	}
 	statements, parseRefusal := parseStatements(source.Source)
 	sites, walkRefusals, work := walk(statements, source.Source)
 	events, err := emitCommandSites(sites, source.Source)
@@ -148,8 +160,9 @@ func emitCommandSite(site commandSite, ordinal int, src string) (Event, error) {
 		if err != nil {
 			return Event{}, err
 		}
-		text, known := literalWord(raw, src)
-		word := Word{Single: wordIsSingle(raw, src), StartByte: wordStart, EndByte: wordEnd}
+		classification := classifyWordExpansion(raw, src)
+		text, known := literalWordInContextClassified(raw, src, argvExpansion, classification)
+		word := Word{Single: wordIsSingleClassified(raw, classification), StartByte: wordStart, EndByte: wordEnd}
 		if known {
 			word.Text = &text
 			word.Single = true
@@ -208,10 +221,15 @@ func literalWord(word *syntax.Word, src string) (string, bool) {
 }
 
 func literalWordInContext(word *syntax.Word, src string, context wordExpansionContext) (string, bool) {
+	return literalWordInContextClassified(word, src, context, classifyWordExpansion(word, src))
+}
+
+func literalWordInContextClassified(word *syntax.Word, src string, context wordExpansionContext, classification wordExpansionClassification) (string, bool) {
 	if word == nil {
 		return "", true
 	}
-	if wordHasActiveTilde(word, src, context) || context == argvExpansion && (wordHasActiveGlob(word, src) || wordHasActiveBrace(word, src)) {
+	if !classification.valid || wordHasActiveTilde(word, src, context) ||
+		context == argvExpansion && (classification.activeGlob || classification.activeBrace) {
 		return "", false
 	}
 	var value strings.Builder
@@ -236,12 +254,11 @@ func literalWordPart(part syntax.WordPart, src string, quoted bool, context word
 			if !part.Dollar {
 				return part.Value, true
 			}
-			value, _, err := expand.Format(nil, part.Value, nil)
-			if err != nil {
+			decoded := decodeANSIValue(part.Value)
+			if !decoded.known {
 				return "", false
 			}
-			value, _, _ = strings.Cut(value, "\x00")
-			return value, true
+			return decoded.value, true
 		}
 	case *syntax.DblQuoted:
 		if part == nil || part.Dollar {
@@ -273,6 +290,7 @@ type extGlobClassification struct {
 	value     string
 	known     bool
 	execution bool
+	unsafe    bool
 }
 
 type extGlobContextKind uint8
@@ -482,7 +500,10 @@ func classifyExtGlob(extglob *syntax.ExtGlob, src string) extGlobClassification 
 		case '$':
 			next, nextIndex := logicalNext(raw, index+1)
 			if next == '\'' {
-				decoded, close, ok := decodeANSIQuoted(raw, nextIndex+1)
+				decoded, close, ok, unsafe := decodeANSIQuoted(raw, nextIndex+1)
+				if unsafe {
+					return extGlobClassification{unsafe: true}
+				}
 				if !ok {
 					return extGlobClassification{}
 				}
@@ -575,7 +596,24 @@ func dollarExpansionByte(next byte) bool {
 	return next == '{' || next == '(' || next == '[' || next == '"' || next == '_' || next >= 'a' && next <= 'z' || next >= 'A' && next <= 'Z' || next >= '0' && next <= '9' || strings.ContainsRune("@*#?-$!", rune(next))
 }
 
-func decodeANSIQuoted(raw string, start int) (string, int, bool) {
+type ansiDecodeResult struct {
+	value  string
+	known  bool
+	unsafe bool
+}
+
+func decodeANSIValue(raw string) ansiDecodeResult {
+	value, _, err := expand.Format(nil, raw, nil)
+	if err != nil {
+		return ansiDecodeResult{}
+	}
+	if strings.IndexByte(value, 0) >= 0 {
+		return ansiDecodeResult{unsafe: true}
+	}
+	return ansiDecodeResult{value: value, known: true}
+}
+
+func decodeANSIQuoted(raw string, start int) (string, int, bool, bool) {
 	for close := start; close < len(raw); close++ {
 		if raw[close] == '\\' {
 			close++
@@ -584,14 +622,16 @@ func decodeANSIQuoted(raw string, start int) (string, int, bool) {
 		if raw[close] != '\'' {
 			continue
 		}
-		value, _, err := expand.Format(nil, raw[start:close], nil)
-		if err != nil {
-			return "", 0, false
+		decoded := decodeANSIValue(raw[start:close])
+		if decoded.unsafe {
+			return "", close, false, true
 		}
-		value, _, _ = strings.Cut(value, "\x00")
-		return value, close, true
+		if !decoded.known {
+			return "", 0, false, false
+		}
+		return decoded.value, close, true, false
 	}
-	return "", 0, false
+	return "", 0, false, false
 }
 
 func decodedLiteral(literal *syntax.Lit, src string, doubleQuoted bool) (string, bool) {
@@ -625,7 +665,12 @@ func decodedLiteral(literal *syntax.Lit, src string, doubleQuoted bool) (string,
 }
 
 func wordIsSingle(word *syntax.Word, src string) bool {
-	if word == nil || len(word.Parts) == 0 || wordHasActiveGlob(word, src) || wordHasActiveBrace(word, src) {
+	return wordIsSingleClassified(word, classifyWordExpansion(word, src))
+}
+
+func wordIsSingleClassified(word *syntax.Word, classification wordExpansionClassification) bool {
+	if word == nil || len(word.Parts) == 0 || !classification.valid ||
+		classification.activeGlob || classification.activeBrace {
 		return false
 	}
 	for _, part := range word.Parts {
@@ -646,191 +691,13 @@ func wordIsSingle(word *syntax.Word, src string) bool {
 			if part == nil {
 				return false
 			}
-		case *syntax.ArithmExp:
-			if part == nil {
-				return false
-			}
-		case *syntax.ParamExp:
-			if !unquotedScalarParameterIsSingle(part) {
-				return false
-			}
+		case *syntax.ArithmExp, *syntax.ParamExp:
+			return false
 		default:
 			return false
 		}
 	}
 	return true
-}
-
-func unquotedScalarParameterIsSingle(parameter *syntax.ParamExp) bool {
-	if parameter == nil || !parameter.Dollar.IsValid() || parameter.Flags != nil ||
-		parameter.Excl || parameter.Width || parameter.IsSet || parameter.Param == nil ||
-		parameter.NestedParam != nil || len(parameter.Modifiers) > 0 || parameter.Slice != nil ||
-		parameter.Repl != nil || parameter.Names != 0 || parameter.Exp != nil {
-		return false
-	}
-	if !parameter.Param.Pos().IsValid() || !parameter.Param.End().IsValid() ||
-		parameter.Param.Pos().Offset() > parameter.Param.End().Offset() {
-		return false
-	}
-	if parameter.Short {
-		return !parameter.Rbrace.IsValid() && !parameter.Length && parameter.Index == nil &&
-			guaranteedNumericSpecialParameter(parameter.Param.Value)
-	}
-	if !parameter.Rbrace.IsValid() {
-		return false
-	}
-	if !parameter.Length {
-		return parameter.Index == nil && guaranteedNumericSpecialParameter(parameter.Param.Value)
-	}
-	if !validBashParameterToken(parameter.Param.Value) {
-		return false
-	}
-	if parameter.Index == nil {
-		return true
-	}
-	if !syntax.ValidName(parameter.Param.Value) {
-		return false
-	}
-	return validPinnedArithmeticIndex(parameter.Index)
-}
-
-func guaranteedNumericSpecialParameter(value string) bool {
-	return value == "?" || value == "$" || value == "#"
-}
-
-func validPinnedArithmeticIndex(index syntax.ArithmExpr) (valid bool) {
-	if index == nil || syntaxNodeIsNil(index) {
-		return false
-	}
-	switch index.(type) {
-	case *syntax.Word, *syntax.BinaryArithm, *syntax.ParenArithm, *syntax.UnaryArithm:
-		return validArithmeticIndexSubtree(index)
-	default:
-		return false
-	}
-}
-
-type arithmeticIndexValidationFrame struct {
-	node        syntax.Node
-	depth, next int
-	arithmetic  bool
-}
-
-func validArithmeticIndexSubtree(root syntax.Node) bool {
-	stack := []arithmeticIndexValidationFrame{{node: root, depth: 1, next: -1, arithmetic: true}}
-	seen := make(map[syntax.Node]struct{})
-	nodes := make([]syntax.Node, 0, min(visitorNodeCap, 64))
-	for len(stack) > 0 {
-		frame := &stack[len(stack)-1]
-		if frame.next < 0 {
-			name, known := syntaxNodeName(frame.node)
-			if !known || name == "" || frame.depth > visitorDepthCap || len(nodes) >= visitorNodeCap {
-				return false
-			}
-			if frame.arithmetic && !pinnedBashArithmeticExpression(frame.node) {
-				return false
-			}
-			if _, exists := seen[frame.node]; exists {
-				return false
-			}
-			if !localStructureValid(frame.node) {
-				return false
-			}
-			seen[frame.node] = struct{}{}
-			nodes = append(nodes, frame.node)
-			frame.next = 0
-		}
-		child, ok := nextStructuralChild(frame.node, &frame.next)
-		if !ok {
-			stack = stack[:len(stack)-1]
-			continue
-		}
-		if child == nil || syntaxNodeIsNil(child) {
-			return false
-		}
-		stack = append(stack, arithmeticIndexValidationFrame{
-			node: child, depth: frame.depth + 1, next: -1,
-			arithmetic: structuralChildIsArithmetic(frame.node, child),
-		})
-	}
-	// Structural ownership and depth are known before invoking syntax span methods.
-	// Each node is checked once, and any recursive span chain is bounded by visitorDepthCap.
-	for _, node := range nodes {
-		if !syntaxNodeHasValidSpan(node) {
-			return false
-		}
-	}
-	return true
-}
-
-func pinnedBashArithmeticExpression(node syntax.Node) bool {
-	switch node.(type) {
-	case *syntax.Word, *syntax.BinaryArithm, *syntax.ParenArithm, *syntax.UnaryArithm:
-		return true
-	default:
-		return false
-	}
-}
-
-func structuralChildIsArithmetic(parent, child syntax.Node) bool {
-	same := func(expression syntax.ArithmExpr) bool {
-		return expression != nil && syntax.Node(expression) == child
-	}
-	switch parent := parent.(type) {
-	case *syntax.Assign:
-		return same(parent.Index)
-	case *syntax.CStyleLoop:
-		return true
-	case *syntax.ParamExp:
-		if same(parent.Index) {
-			return true
-		}
-		return parent.Slice != nil && (same(parent.Slice.Offset) || same(parent.Slice.Length))
-	case *syntax.ArithmExp:
-		return true
-	case *syntax.ArithmCmd:
-		return true
-	case *syntax.BinaryArithm:
-		return true
-	case *syntax.UnaryArithm:
-		return true
-	case *syntax.ParenArithm:
-		return true
-	case *syntax.FlagsArithm:
-		return same(parent.X)
-	case *syntax.ArrayElem:
-		return same(parent.Index)
-	case *syntax.LetClause:
-		return true
-	}
-	return false
-}
-
-func syntaxNodeHasValidSpan(node syntax.Node) (valid bool) {
-	defer func() {
-		if recover() != nil {
-			valid = false
-		}
-	}()
-	start, end := node.Pos(), node.End()
-	return start.IsValid() && end.IsValid() && start.Offset() <= end.Offset()
-}
-
-func validBashParameterToken(value string) bool {
-	if syntax.ValidName(value) {
-		return true
-	}
-	if value == "" {
-		return false
-	}
-	digits := true
-	for index := 0; index < len(value); index++ {
-		if value[index] < '0' || value[index] > '9' {
-			digits = false
-			break
-		}
-	}
-	return digits || len(value) == 1 && strings.ContainsRune("@*#$?!-", rune(value[0]))
 }
 
 func wordHasActiveTilde(word *syntax.Word, src string, context wordExpansionContext) bool {
@@ -1002,54 +869,170 @@ type wordToken struct {
 	unquoted bool
 }
 
-func wordHasActiveGlob(word *syntax.Word, src string) bool {
-	tokens, ok := wordTokens(word, src)
-	if !ok {
+type wordExpansionClassification struct {
+	valid                   bool
+	activeGlob, activeBrace bool
+	tokenCount, operations  int
+}
+
+type braceElementAnalysis struct {
+	value []byte
+	valid bool
+}
+
+type braceAnalysisFrame struct {
+	elements        [3]braceElementAnalysis
+	separators      int
+	comma           bool
+	invalidSequence bool
+}
+
+func newBraceAnalysisFrame() braceAnalysisFrame {
+	frame := braceAnalysisFrame{}
+	frame.elements[0].valid = true
+	return frame
+}
+
+func (frame *braceAnalysisFrame) appendValue(value byte) {
+	if frame.separators > 2 {
+		frame.invalidSequence = true
+		return
+	}
+	element := &frame.elements[frame.separators]
+	if element.valid {
+		element.value = append(element.value, value)
+	}
+}
+
+func (frame *braceAnalysisFrame) invalidateElement() {
+	if frame.separators > 2 {
+		frame.invalidSequence = true
+		return
+	}
+	frame.elements[frame.separators].valid = false
+}
+
+func (frame *braceAnalysisFrame) addSeparator() {
+	frame.separators++
+	if frame.separators > 2 {
+		frame.invalidSequence = true
+		return
+	}
+	frame.elements[frame.separators].valid = true
+}
+
+func (frame braceAnalysisFrame) active() bool {
+	if frame.comma {
 		return true
 	}
-	for index, token := range tokens {
-		if !token.unquoted {
-			continue
+	if frame.invalidSequence || frame.separators < 1 || frame.separators > 2 {
+		return false
+	}
+	firstChar, firstOK := braceAnalysisEndpoint(frame.elements[0])
+	secondChar, secondOK := braceAnalysisEndpoint(frame.elements[1])
+	if !firstOK || !secondOK || firstChar != secondChar {
+		return false
+	}
+	if frame.separators == 2 {
+		step := frame.elements[2]
+		if !step.valid {
+			return false
 		}
-		switch token.value {
-		case '*', '?':
-			return true
-		case '[':
-			for close := index + 1; close < len(tokens); close++ {
-				if tokens[close].unquoted && tokens[close].value == ']' {
-					return true
+		_, err := strconv.Atoi(string(step.value))
+		return err == nil
+	}
+	return true
+}
+
+func braceAnalysisEndpoint(element braceElementAnalysis) (isChar bool, ok bool) {
+	if !element.valid {
+		return false, false
+	}
+	value := string(element.value)
+	if _, err := strconv.Atoi(value); err == nil {
+		return false, true
+	}
+	return true, len(value) == 1 && isAssignmentNameStart(value[0]) && value[0] != '_'
+}
+
+func classifyWordExpansion(word *syntax.Word, src string) wordExpansionClassification {
+	if word == nil {
+		return wordExpansionClassification{valid: true}
+	}
+	tokens, ok := wordTokens(word, src)
+	classification := wordExpansionClassification{valid: ok, tokenCount: len(tokens)}
+	if !ok {
+		return classification
+	}
+	bracketOpen := false
+	braceFrames := make([]braceAnalysisFrame, 0, 8)
+	for index := 0; index < len(tokens); index++ {
+		token := tokens[index]
+		classification.operations++
+		if token.unquoted {
+			switch token.value {
+			case '*', '?':
+				classification.activeGlob = true
+				return classification
+			case '[':
+				bracketOpen = true
+			case ']':
+				if bracketOpen {
+					classification.activeGlob = true
+					return classification
 				}
 			}
 		}
-	}
-	return false
-}
-
-func wordHasActiveBrace(word *syntax.Word, src string) bool {
-	tokens, ok := wordTokens(word, src)
-	if !ok {
-		return true
-	}
-	open := make([]int, 0, 2)
-	for index, token := range tokens {
 		if !token.unquoted {
+			if len(braceFrames) > 0 {
+				braceFrames[len(braceFrames)-1].invalidateElement()
+			}
 			continue
 		}
 		switch token.value {
 		case '{':
-			open = append(open, index)
+			braceFrames = append(braceFrames, newBraceAnalysisFrame())
+			classification.operations++
 		case '}':
-			if len(open) == 0 {
+			if len(braceFrames) == 0 {
 				continue
 			}
-			start := open[len(open)-1]
-			open = open[:len(open)-1]
-			if braceBodyIsActive(tokens[start+1 : index]) {
-				return true
+			frame := braceFrames[len(braceFrames)-1]
+			braceFrames = braceFrames[:len(braceFrames)-1]
+			classification.operations++
+			if frame.active() {
+				classification.activeBrace = true
+				return classification
+			}
+			if len(braceFrames) > 0 {
+				braceFrames[len(braceFrames)-1].invalidateElement()
+			}
+		case ',':
+			if len(braceFrames) > 0 {
+				braceFrames[len(braceFrames)-1].comma = true
+			}
+		case '.':
+			if len(braceFrames) == 0 {
+				continue
+			}
+			if index+1 < len(tokens) && tokens[index+1].unquoted && tokens[index+1].value == '.' {
+				frame := &braceFrames[len(braceFrames)-1]
+				frame.addSeparator()
+				if index+2 < len(tokens) && tokens[index+2].unquoted && tokens[index+2].value == '.' {
+					frame.invalidSequence = true
+				}
+				index++
+				classification.operations++
+			} else {
+				braceFrames[len(braceFrames)-1].appendValue(token.value)
+			}
+		default:
+			if len(braceFrames) > 0 {
+				braceFrames[len(braceFrames)-1].appendValue(token.value)
 			}
 		}
 	}
-	return false
+	return classification
 }
 
 func wordTokens(word *syntax.Word, src string) ([]wordToken, bool) {
@@ -1111,82 +1094,4 @@ func appendWordPartTokens(tokens *[]wordToken, part syntax.WordPart, src string,
 		*tokens = append(*tokens, wordToken{value: 'x'})
 	}
 	return true
-}
-
-func braceBodyIsActive(body []wordToken) bool {
-	depth := 0
-	separators := make([]int, 0, 2)
-	for index, token := range body {
-		if !token.unquoted {
-			continue
-		}
-		switch token.value {
-		case '{':
-			depth++
-		case '}':
-			if depth > 0 {
-				depth--
-			}
-		case ',':
-			if depth == 0 {
-				return true
-			}
-		case '.':
-			if depth == 0 && index+1 < len(body) && body[index+1].unquoted && body[index+1].value == '.' {
-				separators = append(separators, index)
-			}
-		}
-	}
-	if len(separators) < 1 || len(separators) > 2 {
-		return false
-	}
-	for index, separator := range separators {
-		if separator < 0 || separator+1 >= len(body) || index > 0 && separator < separators[index-1]+2 {
-			return false
-		}
-	}
-	elements := [][]wordToken{body[:separators[0]]}
-	for index, separator := range separators {
-		end := len(body)
-		if index+1 < len(separators) {
-			end = separators[index+1]
-		}
-		elements = append(elements, body[separator+2:end])
-	}
-	firstChar, firstOK := braceSequenceEndpoint(elements[0])
-	secondChar, secondOK := braceSequenceEndpoint(elements[1])
-	if !firstOK || !secondOK || firstChar != secondChar {
-		return false
-	}
-	if len(elements) == 3 {
-		value, ok := unquotedBraceElement(elements[2])
-		if !ok {
-			return false
-		}
-		_, err := strconv.Atoi(value)
-		return err == nil
-	}
-	return true
-}
-
-func braceSequenceEndpoint(raw []wordToken) (isChar bool, ok bool) {
-	value, ok := unquotedBraceElement(raw)
-	if !ok {
-		return false, false
-	}
-	if _, err := strconv.Atoi(value); err == nil {
-		return false, true
-	}
-	return true, len(value) == 1 && isAssignmentNameStart(value[0]) && value[0] != '_'
-}
-
-func unquotedBraceElement(raw []wordToken) (string, bool) {
-	var value strings.Builder
-	for _, token := range raw {
-		if !token.unquoted {
-			return "", false
-		}
-		value.WriteByte(token.value)
-	}
-	return value.String(), true
 }

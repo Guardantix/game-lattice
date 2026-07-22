@@ -2,6 +2,8 @@
 package main
 
 import (
+	"os/exec"
+	"strings"
 	"testing"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -277,12 +279,12 @@ func TestEmitAssignmentExtGlobContexts(t *testing.T) {
 		{source: `A=*(a|"$'x'"|b)`, text: `*(a|$'x'|b)`, known: true},
 		{source: `A=*(a|\$X)`, text: `*(a|$X)`, known: true},
 		{source: `A=*($'a\n'|b)`, text: "*(a\n|b)", known: true},
-		{source: `A=*($'a\0b'|c)`, text: `*(a|c)`, known: true},
+		{source: `A=*($'a\0b'|c)`, known: false, refuse: true},
 		{source: `A=*(pre$'\x2d'post|b)`, text: `*(pre-post|b)`, known: true},
 		{source: `A=*($'a\'$(doc-lattice check)'|b)`, text: `*(a'$(doc-lattice check)|b)`, known: true},
 		{source: `A=*($'a\\b'|c)`, text: `*(a\b|c)`, known: true},
 		{source: "A=*($\\\n'a\\n'|b)", text: "*(a\n|b)", known: true},
-		{source: "A=*($\\\n'a\\0b'|c)", text: `*(a|c)`, known: true},
+		{source: "A=*($\\\n'a\\0b'|c)", known: false, refuse: true},
 		{source: "A=*($\\\n'a\\'b'|c)", text: `*(a'b|c)`, known: true},
 		{source: `A=*($X|b)`, known: false},
 		{source: `A=*(prefix$X|suffix)`, known: false},
@@ -485,8 +487,8 @@ func TestEmitUnquotedExpansionFacts(t *testing.T) {
 		single bool
 	}{
 		{name: "parameter", word: `$X`, single: false},
-		{name: "length parameter", word: `${#X}`, single: true},
-		{name: "concatenated length parameter", word: `x${#X}y`, single: true},
+		{name: "length parameter", word: `${#X}`, single: false},
+		{name: "concatenated length parameter", word: `x${#X}y`, single: false},
 		{name: "command substitution", word: `$(printf x)`, single: false},
 		{name: "glob", word: `*.go`, single: false},
 		{name: "brace", word: `{a,b}`, single: false},
@@ -508,33 +510,33 @@ func TestEmitUnquotedExpansionFacts(t *testing.T) {
 	}
 }
 
-func TestEmitUnquotedLengthParameterFamilyIsScalar(t *testing.T) {
+func TestEmitUnquotedLengthParameterFamilyIsIFSSplittable(t *testing.T) {
 	tests := []struct {
 		word   string
 		single bool
 	}{
-		{word: `${#X}`, single: true},
-		{word: `${#_X2}`, single: true},
-		{word: `${#@}`, single: true},
-		{word: `${#*}`, single: true},
-		{word: `${#0}`, single: true},
-		{word: `${#1}`, single: true},
-		{word: `${#10}`, single: true},
-		{word: `${#?}`, single: true},
-		{word: `${##}`, single: true},
-		{word: `${#$}`, single: true},
-		{word: `${#!}`, single: true},
-		{word: `${#-}`, single: true},
-		{word: `${#array[@]}`, single: true},
-		{word: `${#array[*]}`, single: true},
-		{word: `${#array[0]}`, single: true},
-		{word: `${#array[1+2]}`, single: true},
-		{word: `${#array[(1)]}`, single: true},
-		{word: `${#array[-1]}`, single: true},
-		{word: `$#`, single: true},
-		{word: `x${#X}y`, single: true},
-		{word: `x${#array[@]}y`, single: true},
-		{word: `x$#y`, single: true},
+		{word: `${#X}`},
+		{word: `${#_X2}`},
+		{word: `${#@}`},
+		{word: `${#*}`},
+		{word: `${#0}`},
+		{word: `${#1}`},
+		{word: `${#10}`},
+		{word: `${#?}`},
+		{word: `${##}`},
+		{word: `${#$}`},
+		{word: `${#!}`},
+		{word: `${#-}`},
+		{word: `${#array[@]}`},
+		{word: `${#array[*]}`},
+		{word: `${#array[0]}`},
+		{word: `${#array[1+2]}`},
+		{word: `${#array[(1)]}`},
+		{word: `${#array[-1]}`},
+		{word: `$#`},
+		{word: `x${#X}y`},
+		{word: `x${#array[@]}y`},
+		{word: `x$#y`},
 		{word: `"${#X}"`, single: true},
 		{word: `x"${#X}"y`, single: true},
 		{word: `$X`},
@@ -560,23 +562,26 @@ func TestEmitUnquotedLengthParameterFamilyIsScalar(t *testing.T) {
 	}
 }
 
-func TestEmitGuaranteedNumericSpecialParametersAreScalar(t *testing.T) {
+func TestEmitUnquotedNumericSpecialParametersAreIFSSplittable(t *testing.T) {
 	tests := []struct {
 		word   string
 		single bool
 	}{
-		{word: `$?`, single: true},
-		{word: `${?}`, single: true},
-		{word: `$$`, single: true},
-		{word: `${$}`, single: true},
-		{word: `$#`, single: true},
-		{word: `${#}`, single: true},
-		{word: `x$?y`, single: true},
-		{word: `x${?}y`, single: true},
-		{word: `x$$y`, single: true},
-		{word: `x${$}y`, single: true},
-		{word: `x$#y`, single: true},
-		{word: `x${#}y`, single: true},
+		{word: `$?`},
+		{word: `${?}`},
+		{word: `$$`},
+		{word: `${$}`},
+		{word: `$#`},
+		{word: `${#}`},
+		{word: `x$?y`},
+		{word: `x${?}y`},
+		{word: `x$$y`},
+		{word: `x${$}y`},
+		{word: `x$#y`},
+		{word: `x${#}y`},
+		{word: `"$?"`, single: true},
+		{word: `"$$"`, single: true},
+		{word: `"$#"`, single: true},
 		{word: `$!`},
 		{word: `$-`},
 		{word: `$0`},
@@ -605,489 +610,30 @@ func TestEmitGuaranteedNumericSpecialParametersAreScalar(t *testing.T) {
 	}
 }
 
-func TestUnquotedScalarParameterIsSingleRejectsAdjacentASTFlags(t *testing.T) {
-	plain := func() *syntax.ParamExp {
-		return &syntax.ParamExp{
-			Dollar: syntax.NewPos(0, 1, 1),
-			Rbrace: syntax.NewPos(4, 1, 5),
-			Length: true,
-			Param: &syntax.Lit{
-				ValuePos: syntax.NewPos(3, 1, 4),
-				ValueEnd: syntax.NewPos(4, 1, 5),
-				Value:    "X",
-			},
-		}
-	}
+func TestBashUnquotedNumericExpansionsAreIFSSplittable(t *testing.T) {
 	tests := []struct {
 		name   string
-		mutate func(*syntax.ParamExp)
-		want   bool
+		script string
 	}{
-		{name: "plain length", mutate: func(*syntax.ParamExp) {}, want: true},
-		{name: "conflicting short", mutate: func(parameter *syntax.ParamExp) { parameter.Short = true }},
-		{name: "flags", mutate: func(parameter *syntax.ParamExp) { parameter.Flags = &syntax.Lit{} }},
-		{name: "indirect", mutate: func(parameter *syntax.ParamExp) { parameter.Excl = true }},
-		{name: "width", mutate: func(parameter *syntax.ParamExp) { parameter.Width = true }},
-		{name: "is set", mutate: func(parameter *syntax.ParamExp) { parameter.IsSet = true }},
-		{name: "invalid parameter span", mutate: func(parameter *syntax.ParamExp) { parameter.Param.ValuePos = syntax.Pos{} }},
-		{name: "special name", mutate: func(parameter *syntax.ParamExp) { parameter.Param.Value = "@" }, want: true},
-		{name: "nested", mutate: func(parameter *syntax.ParamExp) { parameter.NestedParam = &syntax.ParamExp{} }},
-		{name: "index", mutate: func(parameter *syntax.ParamExp) { parameter.Index = &syntax.Word{} }},
-		{name: "valid index", mutate: func(parameter *syntax.ParamExp) {
-			parameter.Index = &syntax.Word{Parts: []syntax.WordPart{&syntax.Lit{
-				ValuePos: syntax.NewPos(5, 1, 6),
-				ValueEnd: syntax.NewPos(6, 1, 7),
-				Value:    "0",
-			}}}
-		}, want: true},
-		{name: "invalid index part span", mutate: func(parameter *syntax.ParamExp) {
-			parameter.Index = &syntax.Word{Parts: []syntax.WordPart{&syntax.Lit{Value: "0"}}}
-		}},
-		{name: "modifier", mutate: func(parameter *syntax.ParamExp) { parameter.Modifiers = []*syntax.Lit{{}} }},
-		{name: "slice", mutate: func(parameter *syntax.ParamExp) { parameter.Slice = &syntax.Slice{} }},
-		{name: "replacement", mutate: func(parameter *syntax.ParamExp) { parameter.Repl = &syntax.Replace{} }},
-		{name: "names", mutate: func(parameter *syntax.ParamExp) { parameter.Names = syntax.NamesPrefix }},
-		{name: "operand", mutate: func(parameter *syntax.ParamExp) { parameter.Exp = &syntax.Expansion{} }},
-	}
-	shortCount := plain()
-	shortCount.Short = true
-	shortCount.Length = false
-	shortCount.Rbrace = syntax.Pos{}
-	shortCount.Param.Value = "#"
-	if !unquotedScalarParameterIsSingle(shortCount) {
-		t.Fatalf("short positional count = %#v, want scalar", shortCount)
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			parameter := plain()
-			test.mutate(parameter)
-			if got := unquotedScalarParameterIsSingle(parameter); got != test.want {
-				t.Fatalf("unquotedScalarParameterIsSingle(%#v) = %t, want %t", parameter, got, test.want)
-			}
-		})
-	}
-}
-
-func TestUnquotedGuaranteedNumericParameterIsSingleRejectsConflictingAST(t *testing.T) {
-	plain := func(value string, short bool) *syntax.ParamExp {
-		parameter := &syntax.ParamExp{
-			Dollar: syntax.NewPos(0, 1, 1),
-			Param: &syntax.Lit{
-				ValuePos: syntax.NewPos(2, 1, 3),
-				ValueEnd: syntax.NewPos(3, 1, 4),
-				Value:    value,
-			},
-			Short: short,
-		}
-		if !short {
-			parameter.Rbrace = syntax.NewPos(3, 1, 4)
-		}
-		return parameter
-	}
-	for _, value := range []string{"?", "$", "#"} {
-		for _, short := range []bool{true, false} {
-			parameter := plain(value, short)
-			if !unquotedScalarParameterIsSingle(parameter) {
-				t.Fatalf("numeric special %q short=%t = %#v, want scalar", value, short, parameter)
-			}
-		}
-	}
-	for _, value := range []string{"!", "-", "0", "1", "@", "*", "X"} {
-		if unquotedScalarParameterIsSingle(plain(value, true)) {
-			t.Fatalf("non-guaranteed parameter %q unexpectedly scalar", value)
-		}
-	}
-	tests := []struct {
-		name   string
-		mutate func(*syntax.ParamExp)
-	}{
-		{name: "short with closing brace", mutate: func(parameter *syntax.ParamExp) { parameter.Short = true }},
-		{name: "braced without closing brace", mutate: func(parameter *syntax.ParamExp) { parameter.Rbrace = syntax.Pos{} }},
-		{name: "flags", mutate: func(parameter *syntax.ParamExp) { parameter.Flags = &syntax.Lit{} }},
-		{name: "indirect", mutate: func(parameter *syntax.ParamExp) { parameter.Excl = true }},
-		{name: "width", mutate: func(parameter *syntax.ParamExp) { parameter.Width = true }},
-		{name: "is set", mutate: func(parameter *syntax.ParamExp) { parameter.IsSet = true }},
-		{name: "invalid parameter span", mutate: func(parameter *syntax.ParamExp) { parameter.Param.ValuePos = syntax.Pos{} }},
-		{name: "missing parameter", mutate: func(parameter *syntax.ParamExp) { parameter.Param = nil }},
-		{name: "nested", mutate: func(parameter *syntax.ParamExp) { parameter.NestedParam = &syntax.ParamExp{} }},
-		{name: "index", mutate: func(parameter *syntax.ParamExp) {
-			parameter.Index = &syntax.Word{Parts: []syntax.WordPart{&syntax.Lit{
-				ValuePos: syntax.NewPos(4, 1, 5), ValueEnd: syntax.NewPos(5, 1, 6), Value: "0",
-			}}}
-		}},
-		{name: "modifier", mutate: func(parameter *syntax.ParamExp) { parameter.Modifiers = []*syntax.Lit{{}} }},
-		{name: "slice", mutate: func(parameter *syntax.ParamExp) { parameter.Slice = &syntax.Slice{} }},
-		{name: "replacement", mutate: func(parameter *syntax.ParamExp) { parameter.Repl = &syntax.Replace{} }},
-		{name: "names", mutate: func(parameter *syntax.ParamExp) { parameter.Names = syntax.NamesPrefix }},
-		{name: "operand", mutate: func(parameter *syntax.ParamExp) { parameter.Exp = &syntax.Expansion{} }},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			parameter := plain("?", false)
-			test.mutate(parameter)
-			if unquotedScalarParameterIsSingle(parameter) {
-				t.Fatalf("conflicting numeric parameter = %#v, want non-scalar", parameter)
-			}
-		})
-	}
-}
-
-func TestUnquotedLengthParameterAcceptsValidPinnedArithmeticIndexShapes(t *testing.T) {
-	litWord := func(start uint, value string) *syntax.Word {
-		return &syntax.Word{Parts: []syntax.WordPart{&syntax.Lit{
-			ValuePos: syntax.NewPos(start, 1, start+1),
-			ValueEnd: syntax.NewPos(start+uint(len(value)), 1, start+uint(len(value))+1),
-			Value:    value,
-		}}}
-	}
-	parameter := func(index syntax.ArithmExpr) *syntax.ParamExp {
-		return &syntax.ParamExp{
-			Dollar: syntax.NewPos(0, 1, 1),
-			Rbrace: syntax.NewPos(14, 1, 15),
-			Length: true,
-			Param: &syntax.Lit{
-				ValuePos: syntax.NewPos(3, 1, 4),
-				ValueEnd: syntax.NewPos(8, 1, 9),
-				Value:    "array",
-			},
-			Index: index,
-		}
-	}
-	valid := []struct {
-		name  string
-		index syntax.ArithmExpr
-	}{
-		{name: "word", index: litWord(9, "1")},
-		{name: "binary", index: &syntax.BinaryArithm{
-			OpPos: syntax.NewPos(10, 1, 11), Op: syntax.Add, X: litWord(9, "1"), Y: litWord(11, "2"),
-		}},
-		{name: "parenthesized", index: &syntax.ParenArithm{
-			Lparen: syntax.NewPos(9, 1, 10), Rparen: syntax.NewPos(11, 1, 12), X: litWord(10, "1"),
-		}},
-		{name: "unary", index: &syntax.UnaryArithm{
-			OpPos: syntax.NewPos(9, 1, 10), Op: syntax.Minus, X: litWord(10, "1"),
-		}},
-	}
-	for _, test := range valid {
-		t.Run(test.name, func(t *testing.T) {
-			if !unquotedScalarParameterIsSingle(parameter(test.index)) {
-				t.Fatalf("index %T = %#v, want scalar length", test.index, test.index)
-			}
-		})
-	}
-
-	var typedNilWord *syntax.Word
-	var typedNilBinary *syntax.BinaryArithm
-	var typedNilParen *syntax.ParenArithm
-	var typedNilUnary *syntax.UnaryArithm
-	invalid := []struct {
-		name  string
-		index syntax.ArithmExpr
-	}{
-		{name: "typed nil word", index: typedNilWord},
-		{name: "typed nil binary", index: typedNilBinary},
-		{name: "typed nil parenthesized", index: typedNilParen},
-		{name: "typed nil unary", index: typedNilUnary},
-		{name: "empty word", index: &syntax.Word{}},
-		{name: "invalid word span", index: &syntax.Word{Parts: []syntax.WordPart{&syntax.Lit{
-			ValuePos: syntax.NewPos(11, 1, 12), ValueEnd: syntax.NewPos(10, 1, 11), Value: "1",
-		}}}},
-		{name: "binary missing left", index: &syntax.BinaryArithm{OpPos: syntax.NewPos(10, 1, 11), Op: syntax.Add, Y: litWord(11, "2")}},
-		{name: "binary invalid span", index: &syntax.BinaryArithm{
-			OpPos: syntax.NewPos(10, 1, 11), Op: syntax.Add, X: litWord(12, "1"), Y: litWord(9, "2"),
-		}},
-		{name: "parenthesized missing expression", index: &syntax.ParenArithm{
-			Lparen: syntax.NewPos(9, 1, 10), Rparen: syntax.NewPos(11, 1, 12),
-		}},
-		{name: "parenthesized invalid span", index: &syntax.ParenArithm{
-			Lparen: syntax.NewPos(12, 1, 13), Rparen: syntax.NewPos(9, 1, 10), X: litWord(10, "1"),
-		}},
-		{name: "unary missing expression", index: &syntax.UnaryArithm{OpPos: syntax.NewPos(9, 1, 10), Op: syntax.Minus}},
-		{name: "unary invalid span", index: &syntax.UnaryArithm{
-			OpPos: syntax.NewPos(12, 1, 13), Op: syntax.Minus, X: litWord(9, "1"),
-		}},
-		{name: "zsh flags shape", index: &syntax.FlagsArithm{Flags: &syntax.Lit{
-			ValuePos: syntax.NewPos(9, 1, 10), ValueEnd: syntax.NewPos(10, 1, 11), Value: "k",
-		}}},
-	}
-	for _, test := range invalid {
-		t.Run(test.name, func(t *testing.T) {
-			if unquotedScalarParameterIsSingle(parameter(test.index)) {
-				t.Fatalf("malformed index %T = %#v, want non-scalar", test.index, test.index)
-			}
-		})
-	}
-}
-
-func TestValidPinnedArithmeticIndexRejectsMalformedDescendantGraphs(t *testing.T) {
-	lit := func(start uint, value string) *syntax.Lit {
-		return &syntax.Lit{
-			ValuePos: syntax.NewPos(start, 1, start+1),
-			ValueEnd: syntax.NewPos(start+uint(len(value)), 1, start+uint(len(value))+1),
-			Value:    value,
-		}
-	}
-	word := func(start uint, value string) *syntax.Word {
-		return &syntax.Word{Parts: []syntax.WordPart{lit(start, value)}}
-	}
-	outer := func(index syntax.ArithmExpr) syntax.ArithmExpr {
-		return &syntax.ParenArithm{
-			Lparen: syntax.NewPos(1, 1, 2),
-			Rparen: syntax.NewPos(20, 1, 21),
-			X:      index,
-		}
-	}
-	var typedNilWord *syntax.Word
-	var typedNilUnary *syntax.UnaryArithm
-	var typedNilParameter *syntax.ParamExp
-	tests := []struct {
-		name  string
-		index syntax.ArithmExpr
-	}{
-		{name: "nested binary missing grandchild", index: outer(&syntax.BinaryArithm{
-			OpPos: syntax.NewPos(10, 1, 11), Op: syntax.Add, Y: word(11, "2"),
-		})},
-		{name: "nested binary typed nil grandchild", index: outer(&syntax.BinaryArithm{
-			OpPos: syntax.NewPos(10, 1, 11), Op: syntax.Add, X: typedNilWord, Y: word(11, "2"),
-		})},
-		{name: "nested unary missing grandchild", index: outer(&syntax.UnaryArithm{
-			OpPos: syntax.NewPos(9, 1, 10), Op: syntax.Minus,
-		})},
-		{name: "nested unary typed nil grandchild", index: outer(&syntax.UnaryArithm{
-			OpPos: syntax.NewPos(9, 1, 10), Op: syntax.Minus, X: typedNilWord,
-		})},
-		{name: "nested parenthesized missing grandchild", index: outer(&syntax.ParenArithm{
-			Lparen: syntax.NewPos(8, 1, 9), Rparen: syntax.NewPos(12, 1, 13),
-		})},
-		{name: "nested parenthesized typed nil grandchild", index: outer(&syntax.ParenArithm{
-			Lparen: syntax.NewPos(8, 1, 9), Rparen: syntax.NewPos(12, 1, 13), X: typedNilUnary,
-		})},
-		{name: "word missing middle part", index: &syntax.Word{Parts: []syntax.WordPart{
-			lit(2, "a"), nil, lit(18, "z"),
-		}}},
-		{name: "word typed nil middle part", index: &syntax.Word{Parts: []syntax.WordPart{
-			lit(2, "a"), typedNilParameter, lit(18, "z"),
-		}}},
-		{name: "word invalid middle span", index: &syntax.Word{Parts: []syntax.WordPart{
-			lit(2, "a"), &syntax.Lit{
-				ValuePos: syntax.NewPos(12, 1, 13), ValueEnd: syntax.NewPos(11, 1, 12), Value: "bad",
-			}, lit(18, "z"),
-		}}},
-		{name: "malformed nested parameter", index: &syntax.Word{Parts: []syntax.WordPart{
-			lit(2, "a"), &syntax.ParamExp{
-				Dollar: syntax.NewPos(5, 1, 6), Short: true,
-			}, lit(18, "z"),
-		}}},
-		{name: "subjectless long parameter", index: &syntax.Word{Parts: []syntax.WordPart{
-			lit(2, "a"), &syntax.ParamExp{
-				Dollar: syntax.NewPos(5, 1, 6), Rbrace: syntax.NewPos(15, 1, 16),
-			}, lit(18, "z"),
-		}}},
-		{name: "short parameter with closing brace", index: &syntax.Word{Parts: []syntax.WordPart{
-			lit(2, "a"), &syntax.ParamExp{
-				Dollar: syntax.NewPos(5, 1, 6), Rbrace: syntax.NewPos(15, 1, 16), Short: true,
-				Param: lit(6, "x"),
-			}, lit(18, "z"),
-		}}},
-		{name: "malformed nested command substitution", index: &syntax.Word{Parts: []syntax.WordPart{
-			lit(2, "a"), &syntax.CmdSubst{
-				Left: syntax.NewPos(5, 1, 6), Right: syntax.NewPos(15, 1, 16), Stmts: []*syntax.Stmt{nil},
-			}, lit(18, "z"),
-		}}},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if validPinnedArithmeticIndex(test.index) {
-				t.Fatalf("malformed descendant graph rooted at %T unexpectedly validated", test.index)
-			}
-		})
-	}
-
-	t.Run("cycle", func(t *testing.T) {
-		cycle := &syntax.UnaryArithm{OpPos: syntax.NewPos(9, 1, 10), Op: syntax.Minus}
-		cycle.X = cycle
-		if validPinnedArithmeticIndex(outer(cycle)) {
-			t.Fatal("cyclic arithmetic index unexpectedly validated")
-		}
-	})
-
-	t.Run("shared child alias", func(t *testing.T) {
-		shared := word(9, "1")
-		index := &syntax.BinaryArithm{
-			OpPos: syntax.NewPos(10, 1, 11), Op: syntax.Add, X: shared, Y: shared,
-		}
-		if validPinnedArithmeticIndex(index) {
-			t.Fatal("aliased arithmetic child unexpectedly validated")
-		}
-	})
-
-	t.Run("over depth", func(t *testing.T) {
-		var index syntax.ArithmExpr = word(10, "1")
-		for range visitorDepthCap {
-			index = &syntax.UnaryArithm{OpPos: syntax.NewPos(9, 1, 10), Op: syntax.Minus, X: index}
-		}
-		if validPinnedArithmeticIndex(outer(index)) {
-			t.Fatal("over-depth arithmetic index unexpectedly validated")
-		}
-	})
-
-	t.Run("over node cap", func(t *testing.T) {
-		parts := make([]syntax.WordPart, visitorNodeCap)
-		for index := range parts {
-			parts[index] = lit(2, "x")
-		}
-		if validPinnedArithmeticIndex(&syntax.Word{Parts: parts}) {
-			t.Fatal("over-node arithmetic index unexpectedly validated")
-		}
-	})
-}
-
-func TestValidPinnedArithmeticIndexEnforcesBashDomainAtEveryArithmeticEdge(t *testing.T) {
-	lit := func(start uint, value string) *syntax.Lit {
-		return &syntax.Lit{
-			ValuePos: syntax.NewPos(start, 1, start+1),
-			ValueEnd: syntax.NewPos(start+uint(len(value)), 1, start+uint(len(value))+1),
-			Value:    value,
-		}
-	}
-	word := func(start uint, value string) *syntax.Word {
-		return &syntax.Word{Parts: []syntax.WordPart{lit(start, value)}}
-	}
-	flags := func() *syntax.FlagsArithm {
-		return &syntax.FlagsArithm{Flags: lit(10, "k"), X: word(11, "1")}
-	}
-	wordAround := func(middle syntax.WordPart) *syntax.Word {
-		return &syntax.Word{Parts: []syntax.WordPart{lit(2, "a"), middle, lit(18, "z")}}
-	}
-	parameterWithIndex := func(index syntax.ArithmExpr) *syntax.ParamExp {
-		return &syntax.ParamExp{
-			Dollar: syntax.NewPos(5, 1, 6), Rbrace: syntax.NewPos(16, 1, 17),
-			Param: lit(7, "array"), Index: index,
-		}
-	}
-	invalid := []struct {
-		name  string
-		index syntax.ArithmExpr
-	}{
-		{name: "binary left", index: &syntax.BinaryArithm{
-			OpPos: syntax.NewPos(12, 1, 13), Op: syntax.Add, X: flags(), Y: word(13, "2"),
-		}},
-		{name: "binary right", index: &syntax.BinaryArithm{
-			OpPos: syntax.NewPos(9, 1, 10), Op: syntax.Add, X: word(8, "1"), Y: flags(),
-		}},
-		{name: "parenthesized child", index: &syntax.ParenArithm{
-			Lparen: syntax.NewPos(8, 1, 9), Rparen: syntax.NewPos(14, 1, 15), X: flags(),
-		}},
-		{name: "unary child", index: &syntax.UnaryArithm{
-			OpPos: syntax.NewPos(8, 1, 9), Op: syntax.Minus, X: flags(),
-		}},
-		{name: "arithmetic expansion child", index: wordAround(&syntax.ArithmExp{
-			Left: syntax.NewPos(5, 1, 6), Right: syntax.NewPos(15, 1, 16), X: flags(),
-		})},
-		{name: "parameter index child", index: wordAround(parameterWithIndex(flags()))},
-		{name: "parameter slice child", index: wordAround(&syntax.ParamExp{
-			Dollar: syntax.NewPos(5, 1, 6), Rbrace: syntax.NewPos(16, 1, 17),
-			Param: lit(7, "array"), Slice: &syntax.Slice{Offset: flags()},
-		})},
-	}
-	for _, test := range invalid {
-		t.Run(test.name, func(t *testing.T) {
-			if validPinnedArithmeticIndex(test.index) {
-				t.Fatalf("nested dialect arithmetic at %s unexpectedly validated", test.name)
-			}
-		})
-	}
-
-	deepBash := &syntax.BinaryArithm{
-		OpPos: syntax.NewPos(12, 1, 13), Op: syntax.Add,
-		X: &syntax.ParenArithm{
-			Lparen: syntax.NewPos(8, 1, 9), Rparen: syntax.NewPos(11, 1, 12),
-			X: &syntax.UnaryArithm{OpPos: syntax.NewPos(9, 1, 10), Op: syntax.Minus, X: word(10, "1")},
+		{name: "arithmetic", script: `IFS=1; set -- $((111)); printf '%s' "$#"`},
+		{name: "length", script: `printf -v value '%*s' 111 ''; IFS=1; set -- ${#value}; printf '%s' "$#"`},
+		{name: "status", script: `IFS=1; (exit 11); set -- $?; printf '%s' "$#"`},
+		{name: "argument count", script: `set -- {1..11}; IFS=1; set -- $#; printf '%s' "$#"`},
+		{
+			name: "pid",
+			script: `for i in {1..16}; do (:) & done; wait; ` +
+				`(IFS=0123456789; set -- $BASHPID; printf '%s' "$#")`,
 		},
-		Y: word(13, "2"),
-	}
-	valid := []struct {
-		name  string
-		index syntax.ArithmExpr
-	}{
-		{name: "deep direct arithmetic", index: deepBash},
-		{name: "arithmetic expansion", index: wordAround(&syntax.ArithmExp{
-			Left: syntax.NewPos(5, 1, 6), Right: syntax.NewPos(15, 1, 16), X: deepBash,
-		})},
-		{name: "parameter index", index: wordAround(parameterWithIndex(deepBash))},
-		{name: "parameter slice", index: wordAround(&syntax.ParamExp{
-			Dollar: syntax.NewPos(5, 1, 6), Rbrace: syntax.NewPos(16, 1, 17),
-			Param: lit(7, "array"), Slice: &syntax.Slice{Offset: deepBash},
-		})},
-	}
-	for _, test := range valid {
-		t.Run(test.name, func(t *testing.T) {
-			if !validPinnedArithmeticIndex(test.index) {
-				t.Fatalf("valid deep Bash arithmetic at %s was rejected", test.name)
-			}
-		})
-	}
-}
-
-func TestStructuralChildIsArithmeticCoversPinnedArithmeticFields(t *testing.T) {
-	lit := func(offset uint, value string) *syntax.Lit {
-		return &syntax.Lit{
-			ValuePos: syntax.NewPos(offset, 1, offset+1),
-			ValueEnd: syntax.NewPos(offset+uint(len(value)), 1, offset+uint(len(value))+1),
-			Value:    value,
-		}
-	}
-	word := func(offset uint, value string) *syntax.Word {
-		return &syntax.Word{Parts: []syntax.WordPart{lit(offset, value)}}
-	}
-	type testCase struct {
-		name   string
-		parent syntax.Node
-		child  syntax.Node
-		want   bool
-	}
-	assignment := &syntax.Assign{Name: lit(0, "a"), Index: word(2, "1"), Value: word(4, "v")}
-	loop := &syntax.CStyleLoop{Init: word(2, "1"), Cond: word(4, "1"), Post: word(6, "1")}
-	parameter := &syntax.ParamExp{
-		Param: lit(2, "a"), Index: word(4, "1"),
-		Slice: &syntax.Slice{Offset: word(6, "1"), Length: word(8, "1")},
-		Exp:   &syntax.Expansion{Word: word(10, "general")},
-	}
-	arithmeticExpansion := &syntax.ArithmExp{X: word(2, "1")}
-	arithmeticCommand := &syntax.ArithmCmd{X: word(2, "1")}
-	binary := &syntax.BinaryArithm{X: word(2, "1"), Y: word(4, "2")}
-	unary := &syntax.UnaryArithm{X: word(2, "1")}
-	paren := &syntax.ParenArithm{X: word(2, "1")}
-	flags := &syntax.FlagsArithm{Flags: lit(2, "k"), X: word(4, "1")}
-	arrayElement := &syntax.ArrayElem{Index: word(2, "1"), Value: word(4, "general")}
-	let := &syntax.LetClause{Exprs: []syntax.ArithmExpr{word(2, "1"), word(4, "2")}}
-	tests := []testCase{
-		{name: "assignment index", parent: assignment, child: assignment.Index, want: true},
-		{name: "assignment value word", parent: assignment, child: assignment.Value},
-		{name: "c-style init", parent: loop, child: loop.Init, want: true},
-		{name: "c-style condition", parent: loop, child: loop.Cond, want: true},
-		{name: "c-style post", parent: loop, child: loop.Post, want: true},
-		{name: "parameter index", parent: parameter, child: parameter.Index, want: true},
-		{name: "parameter slice offset", parent: parameter, child: parameter.Slice.Offset, want: true},
-		{name: "parameter slice length", parent: parameter, child: parameter.Slice.Length, want: true},
-		{name: "parameter expansion word", parent: parameter, child: parameter.Exp.Word},
-		{name: "arithmetic expansion", parent: arithmeticExpansion, child: arithmeticExpansion.X, want: true},
-		{name: "arithmetic command", parent: arithmeticCommand, child: arithmeticCommand.X, want: true},
-		{name: "binary left", parent: binary, child: binary.X, want: true},
-		{name: "binary right", parent: binary, child: binary.Y, want: true},
-		{name: "unary expression", parent: unary, child: unary.X, want: true},
-		{name: "parenthesized expression", parent: paren, child: paren.X, want: true},
-		{name: "flags expression", parent: flags, child: flags.X, want: true},
-		{name: "flags literal", parent: flags, child: flags.Flags},
-		{name: "array element index", parent: arrayElement, child: arrayElement.Index, want: true},
-		{name: "array element value", parent: arrayElement, child: arrayElement.Value},
-		{name: "let first expression", parent: let, child: let.Exprs[0], want: true},
-		{name: "let second expression", parent: let, child: let.Exprs[1], want: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := structuralChildIsArithmetic(test.parent, test.child); got != test.want {
-				t.Fatalf("structuralChildIsArithmetic(%T, %T) = %t, want %t", test.parent, test.child, got, test.want)
+			command := exec.Command("bash", "--noprofile", "--norc", "-c", test.script)
+			output, err := command.CombinedOutput()
+			if err != nil {
+				t.Fatalf("bash differential error = %v, output = %q", err, output)
+			}
+			if got := strings.TrimSpace(string(output)); got == "1" {
+				t.Fatalf("Bash expanded to exactly one field under adversarial IFS; output = %q", got)
 			}
 		})
 	}
@@ -1099,7 +645,7 @@ func TestEmitLengthParameterIndexTraversesNestedExecution(t *testing.T) {
 		word   string
 		single bool
 	}{
-		{name: "length", word: `${#array[$(doc-lattice check)]}`, single: true},
+		{name: "length", word: `${#array[$(doc-lattice check)]}`, single: false},
 		{name: "ordinary control", word: `${array[$(doc-lattice check)]}`},
 	}
 	for _, test := range tests {
@@ -1187,17 +733,24 @@ func TestEmitQuotedIndirectParameterNeverOverclaimsSingle(t *testing.T) {
 	}
 }
 
-func TestEmitArithmeticExpansionIsSingleScalar(t *testing.T) {
-	tests := []string{`$((1+2))`, `pre$((1+2))post`, `"$((1+2))"`}
-	for _, raw := range tests {
-		t.Run(raw, func(t *testing.T) {
-			response, err := Certify(mustRequest(t, `echo `+raw))
+func TestEmitArithmeticExpansionRespectsIFSAndQuoting(t *testing.T) {
+	tests := []struct {
+		word   string
+		single bool
+	}{
+		{word: `$((1+2))`},
+		{word: `pre$((1+2))post`},
+		{word: `"$((1+2))"`, single: true},
+	}
+	for _, test := range tests {
+		t.Run(test.word, func(t *testing.T) {
+			response, err := Certify(mustRequest(t, `echo `+test.word))
 			if err != nil {
 				t.Fatalf("Certify error = %v", err)
 			}
 			word := findCommandSite(t, response.Results[0], 0).Argv[1]
-			if word.Text != nil || !word.Single {
-				t.Fatalf("arithmetic facts = %#v, want nil text and one field", word)
+			if word.Text != nil || word.Single != test.single {
+				t.Fatalf("arithmetic facts = %#v, want nil text and single=%t", word, test.single)
 			}
 		})
 	}
@@ -1214,8 +767,8 @@ func TestEmitArithmeticExpansionStillTraversesNestedExecution(t *testing.T) {
 		t.Fatalf("events = %#v, want outer and nested command sites", events)
 	}
 	word := events[0].Argv[1]
-	if word.Text != nil || !word.Single {
-		t.Fatalf("outer arithmetic facts = %#v, want nil text and one field", word)
+	if word.Text != nil || word.Single {
+		t.Fatalf("outer arithmetic facts = %#v, want nil text and IFS-sensitive cardinality", word)
 	}
 }
 
@@ -1435,6 +988,94 @@ func TestEmitANSIQuotedLiteral(t *testing.T) {
 	}
 }
 
+func TestEmitANSIQuotedNULIsUnknownAndTerminal(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{name: "short octal", source: `echo $'pre\0post'; doc-lattice later`},
+		{name: "three digit octal", source: `echo $'pre\000post'; doc-lattice later`},
+		{name: "hex", source: `echo $'pre\x00post'; doc-lattice later`},
+		{name: "short unicode", source: `echo $'pre\u0000post'; doc-lattice later`},
+		{name: "long unicode", source: `echo $'pre\U00000000post'; doc-lattice later`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response, err := Certify(mustRequest(t, test.source))
+			if err != nil {
+				t.Fatalf("Certify error = %v", err)
+			}
+			result := response.Results[0]
+			if len(result.Events) != 2 || result.Events[0].Kind != "command_site" {
+				t.Fatalf("events = %#v, want current site then terminal refusal only", result.Events)
+			}
+			word := result.Events[0].Argv[1]
+			if word.Text != nil {
+				t.Fatalf("ANSI NUL word text = %q, want unknown", *word.Text)
+			}
+			refusal := result.Events[1]
+			if refusal.Kind != "refusal" || refusal.Code != "unsupported-construct" ||
+				refusal.StartByte < 5 || refusal.EndByte <= refusal.StartByte || refusal.EndByte > len(test.source) {
+				t.Fatalf("terminal refusal = %#v, want valid ANSI word-part span", refusal)
+			}
+		})
+	}
+}
+
+func TestEmitANSIQuotedNULInAssignmentAndExtGlobIsTerminal(t *testing.T) {
+	tests := []string{
+		`A=$'pre\0post' doc-lattice check; doc-lattice later`,
+		`A=*($'pre\0post'|x) doc-lattice check; doc-lattice later`,
+	}
+	for _, source := range tests {
+		t.Run(source, func(t *testing.T) {
+			response, err := Certify(mustRequest(t, source))
+			if err != nil {
+				t.Fatalf("Certify error = %v", err)
+			}
+			result := response.Results[0]
+			if len(result.Events) != 2 || result.Events[0].Kind != "command_site" {
+				t.Fatalf("events = %#v, want current site then terminal refusal only", result.Events)
+			}
+			site := result.Events[0]
+			if len(site.Assignments) != 1 || site.Assignments[0].ValueKnown {
+				t.Fatalf("assignment facts = %#v, want unknown NUL-bearing value", site.Assignments)
+			}
+			if got := result.Events[1]; got.Kind != "refusal" || got.Code != "unsupported-construct" {
+				t.Fatalf("terminal event = %#v, want unsupported-construct", got)
+			}
+		})
+	}
+}
+
+func TestEmitANSIQuotedNonNULControlsRemainKnown(t *testing.T) {
+	tests := []struct {
+		word string
+		text string
+	}{
+		{word: `$'pre\060post'`, text: "pre0post"},
+		{word: `$'pre\x30post'`, text: "pre0post"},
+		{word: `$'pre\u0030post'`, text: "pre0post"},
+		{word: `$'pre\U00000030post'`, text: "pre0post"},
+	}
+	for _, test := range tests {
+		t.Run(test.word, func(t *testing.T) {
+			response, err := Certify(mustRequest(t, `echo `+test.word))
+			if err != nil {
+				t.Fatalf("Certify error = %v", err)
+			}
+			result := response.Results[0]
+			if len(result.Events) != 1 || result.Events[0].Kind != "command_site" {
+				t.Fatalf("events = %#v, want one command site", result.Events)
+			}
+			word := result.Events[0].Argv[1]
+			if word.Text == nil || *word.Text != test.text || !word.Single {
+				t.Fatalf("control word = %#v, want known %q and single", word, test.text)
+			}
+		})
+	}
+}
+
 func TestEmitLocaleQuotedLiteralIsNotEnvironmentIndependent(t *testing.T) {
 	response, err := Certify(mustRequest(t, `echo $"doc-lattice"`))
 	if err != nil {
@@ -1612,5 +1253,72 @@ func TestEncodeResponseRejectsKnownNonSingleWord(t *testing.T) {
 	}}}}}
 	if _, err := EncodeResponse(response); err == nil {
 		t.Fatal("EncodeResponse accepted text != nil with single=false")
+	}
+}
+
+func TestWordClassificationAdversarialWorkIsLinear(t *testing.T) {
+	tests := []struct {
+		name string
+		word string
+	}{
+		{name: "unmatched glob openers", word: strings.Repeat("[", 80_000)},
+		{name: "nested inactive braces", word: strings.Repeat("{", 40_000) + "x" + strings.Repeat("}", 40_000)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source := "echo " + test.word
+			statements, refusal := parseStatements(source)
+			if refusal != nil {
+				t.Fatalf("parse refusal = %#v", refusal)
+			}
+			call, ok := statements[0].Cmd.(*syntax.CallExpr)
+			if !ok || len(call.Args) != 2 {
+				t.Fatalf("command = %#v, want two-word call", statements[0].Cmd)
+			}
+			classification := classifyWordExpansion(call.Args[1], source)
+			if !classification.valid || classification.activeGlob || classification.activeBrace {
+				t.Fatalf("classification = %#v, want valid inactive literal", classification)
+			}
+			if classification.tokenCount != len(test.word) {
+				t.Fatalf("token count = %d, want %d", classification.tokenCount, len(test.word))
+			}
+			if limit := 5*classification.tokenCount + 8; classification.operations > limit {
+				t.Fatalf("classification operations = %d, want <= linear bound %d", classification.operations, limit)
+			}
+			response, err := Certify(mustRequest(t, source))
+			if err != nil {
+				t.Fatalf("Certify error = %v", err)
+			}
+			word := findCommandSite(t, response.Results[0], 0).Argv[1]
+			if word.Text == nil || *word.Text != test.word || !word.Single {
+				t.Fatalf("adversarial word facts = %#v, want exact literal and single", word)
+			}
+		})
+	}
+}
+
+func BenchmarkWordClassificationAdversarial(b *testing.B) {
+	for _, test := range []struct {
+		name string
+		word string
+	}{
+		{name: "80k-unmatched-glob-openers", word: strings.Repeat("[", 80_000)},
+		{name: "40k-nested-inactive-braces", word: strings.Repeat("{", 40_000) + "x" + strings.Repeat("}", 40_000)},
+	} {
+		b.Run(test.name, func(b *testing.B) {
+			source := "echo " + test.word
+			statements, refusal := parseStatements(source)
+			if refusal != nil {
+				b.Fatalf("parse refusal = %#v", refusal)
+			}
+			word := statements[0].Cmd.(*syntax.CallExpr).Args[1]
+			b.ResetTimer()
+			for range b.N {
+				classification := classifyWordExpansion(word, source)
+				if !classification.valid || classification.activeGlob || classification.activeBrace {
+					b.Fatalf("classification = %#v, want inactive literal", classification)
+				}
+			}
+		})
 	}
 }
