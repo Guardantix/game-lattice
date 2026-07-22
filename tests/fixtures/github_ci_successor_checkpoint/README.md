@@ -45,7 +45,10 @@ The helper wire protocol: the strict draft-2020-12 JSON Schema (protocol_version
 objects closed), the canonical encoder rules, the digest-input manifest that defines the
 helper-identity hash, positive conformance fixtures, and raw negative fixtures enumerating
 every rejection the schema must catch. These freeze the byte-exact contract between the
-Python engine and the Go helper before either is written.
+Python engine and the Go helper before either is written. The conformance fixtures'
+`helper_version` is a synthetic 64-hex placeholder and their `work_units` values are wire-shape
+data for byte-exact marshal tests, not values derived from the `limits.json` work-unit
+definition.
 
 ### `corpus/`
 
@@ -163,6 +166,17 @@ the remainder are presented for ratification.
   linear-then-unterminated-subshell fixture to retain `[["linear", false]]`. The spec (S3.1)
   governs: an incomplete top-level `BinaryCmd` yields nothing, so the frozen expectation is
   `[]`, verified against the pinned parser source. The spec was followed over the plan.
+
+## Revisions
+
+- **2026-07-21 (pre-review): multibyte-assignment-prefix alignment.** The `offset_oracle`
+  family's `multibyte-assignment-prefix` fixture (`corpus/new_fixtures.json`) was rewritten
+  before the owner checkpoint review to align with the ratified literal-assignment-prefix-
+  with-dynamic-refusal amendment (amendment B, see Ratification list above): the assignment
+  value changed from the all-literal `VAR="naïve"`, which now certifies under that amendment,
+  to the dynamic `VAR="naïve $X"`, so the fixture continues to exercise an assignment-prefix
+  refusal. `expected_refusal_raw_index` (13) is unchanged since the prefix up to `VAR` is
+  unchanged. `MANIFEST.sha256` was regenerated in the same revision.
 
 ## Handoff
 
