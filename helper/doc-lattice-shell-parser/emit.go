@@ -673,9 +673,16 @@ func unquotedScalarParameterIsSingle(parameter *syntax.ParamExp) bool {
 		return false
 	}
 	if parameter.Short {
-		return !parameter.Rbrace.IsValid() && !parameter.Length && parameter.Param.Value == "#" && parameter.Index == nil
+		return !parameter.Rbrace.IsValid() && !parameter.Length && parameter.Index == nil &&
+			guaranteedNumericSpecialParameter(parameter.Param.Value)
 	}
-	if !parameter.Rbrace.IsValid() || !parameter.Length || !validBashParameterToken(parameter.Param.Value) {
+	if !parameter.Rbrace.IsValid() {
+		return false
+	}
+	if !parameter.Length {
+		return parameter.Index == nil && guaranteedNumericSpecialParameter(parameter.Param.Value)
+	}
+	if !validBashParameterToken(parameter.Param.Value) {
 		return false
 	}
 	if parameter.Index == nil {
@@ -684,20 +691,45 @@ func unquotedScalarParameterIsSingle(parameter *syntax.ParamExp) bool {
 	if !syntax.ValidName(parameter.Param.Value) {
 		return false
 	}
-	index, ok := parameter.Index.(*syntax.Word)
-	if !ok || index == nil || syntaxNodeIsNil(index) || len(index.Parts) == 0 {
+	return validPinnedArithmeticIndex(parameter.Index)
+}
+
+func guaranteedNumericSpecialParameter(value string) bool {
+	return value == "?" || value == "$" || value == "#"
+}
+
+func validPinnedArithmeticIndex(index syntax.ArithmExpr) (valid bool) {
+	if index == nil || syntaxNodeIsNil(index) {
 		return false
 	}
-	for _, part := range index.Parts {
-		if part == nil || syntaxNodeIsNil(part) {
+	switch index := index.(type) {
+	case *syntax.Word:
+		if index == nil || len(index.Parts) == 0 {
 			return false
 		}
-		start, end := part.Pos(), part.End()
-		if !start.IsValid() || !end.IsValid() || start.Offset() > end.Offset() {
+	case *syntax.BinaryArithm:
+		if index == nil || index.X == nil || index.Y == nil ||
+			syntaxNodeIsNil(index.X) || syntaxNodeIsNil(index.Y) {
 			return false
 		}
+	case *syntax.ParenArithm:
+		if index == nil || index.X == nil || syntaxNodeIsNil(index.X) {
+			return false
+		}
+	case *syntax.UnaryArithm:
+		if index == nil || index.X == nil || syntaxNodeIsNil(index.X) {
+			return false
+		}
+	default:
+		return false
 	}
-	return true
+	defer func() {
+		if recover() != nil {
+			valid = false
+		}
+	}()
+	start, end := index.Pos(), index.End()
+	return start.IsValid() && end.IsValid() && start.Offset() <= end.Offset()
 }
 
 func validBashParameterToken(value string) bool {
