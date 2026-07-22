@@ -10,11 +10,6 @@ import (
 	"os"
 )
 
-const (
-	temporaryHelperVersion = "task1-placeholder"
-	temporaryParserVersion = "mvdan.cc/sh/v3@v3.13.1"
-)
-
 func main() { os.Exit(run(os.Stdin, os.Stdout, os.Stderr)) }
 
 // run reads one request from in, writes one response to out, and returns the process exit
@@ -58,8 +53,8 @@ func Certify(request *Request) (*Response, error) {
 	}
 	return &Response{
 		ProtocolVersion: 1,
-		HelperVersion:   temporaryHelperVersion,
-		ParserVersion:   temporaryParserVersion,
+		HelperVersion:   helperVersion,
+		ParserVersion:   parserVersion(),
 		Results:         results,
 	}, nil
 }
