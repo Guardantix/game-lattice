@@ -26,37 +26,41 @@ type orderedEvent struct {
 }
 
 func certifySource(source Source) (Result, error) {
+	// visitor node/depth caps bound traversal, not parser construction; byte cap plus process deadline/RSS ceiling bound parser construction.
+	if len(source.Source) > helperSourceCapBytes {
+		return terminalRefusalResult(source.ID, rawRefusal{
+			code:      "source-cap",
+			startByte: helperSourceCapBytes,
+			endByte:   len(source.Source),
+		}, len(source.Source), 2)
+	}
 	if firstNUL := strings.IndexByte(source.Source, 0); firstNUL >= 0 {
-		return Result{
-			ID: source.ID,
-			Events: []Event{{
-				Kind:      "refusal",
-				Code:      "unsupported-construct",
-				StartByte: firstNUL,
-				EndByte:   firstNUL + 1,
-			}},
-			WorkUnits: 2,
-		}, nil
+		return terminalRefusalResult(source.ID, rawRefusal{
+			code:      "unsupported-construct",
+			startByte: firstNUL,
+			endByte:   firstNUL + 1,
+		}, len(source.Source), 2)
 	}
 	statements, parseRefusal := parseStatements(source.Source)
+	if len(statements) > statementCap {
+		start, end, err := validatedSpan(statements[statementCap], len(source.Source))
+		if err != nil {
+			return Result{}, err
+		}
+		return terminalRefusalResult(source.ID, rawRefusal{
+			code:      "statement-cap",
+			startByte: start,
+			endByte:   end,
+		}, len(source.Source), 2)
+	}
 	guardRefusal, guardWork := scanHeredocGuard(source.Source, statements)
 	if guardRefusal != nil {
-		if reasonScopes[guardRefusal.code] != "terminal" ||
-			validateRawSpan(guardRefusal.startByte, guardRefusal.endByte, len(source.Source)) != nil {
-			return Result{}, errInvalidEmission
-		}
-		return Result{
-			ID: source.ID,
-			Events: []Event{{
-				Kind:      "refusal",
-				Code:      guardRefusal.code,
-				StartByte: guardRefusal.startByte,
-				EndByte:   guardRefusal.endByte,
-			}},
-			WorkUnits: guardWork + 2,
-		}, nil
+		return terminalRefusalResult(source.ID, *guardRefusal, len(source.Source), guardWork+2)
 	}
 	sites, walkRefusals, work := walkWithInitialWork(statements, source.Source, guardWork)
+	if capRefusal := visitorCapRefusal(walkRefusals); capRefusal != nil {
+		return terminalRefusalResult(source.ID, *capRefusal, len(source.Source), work+1)
+	}
 	events, err := emitCommandSites(sites, source.Source)
 	if err != nil {
 		return Result{}, err
@@ -122,6 +126,33 @@ func certifySource(source Source) (Result, error) {
 		return Result{}, err
 	}
 	return Result{ID: source.ID, Events: resultEvents, WorkUnits: work + 1}, nil
+}
+
+func terminalRefusalResult(id int, refusal rawRefusal, srcLen, workUnits int) (Result, error) {
+	if reasonScopes[refusal.code] != "terminal" ||
+		validateRawSpan(refusal.startByte, refusal.endByte, srcLen) != nil || workUnits < 2 {
+		return Result{}, errInvalidEmission
+	}
+	return Result{
+		ID: id,
+		Events: []Event{{
+			Kind:      "refusal",
+			Code:      refusal.code,
+			StartByte: refusal.startByte,
+			EndByte:   refusal.endByte,
+		}},
+		WorkUnits: workUnits,
+	}, nil
+}
+
+func visitorCapRefusal(refusals []rawRefusal) *rawRefusal {
+	for index := range refusals {
+		switch refusals[index].code {
+		case "depth-cap", "work-cap", "event-cap":
+			return &refusals[index]
+		}
+	}
+	return nil
 }
 
 func validateEventOrdering(events []Event) error {
