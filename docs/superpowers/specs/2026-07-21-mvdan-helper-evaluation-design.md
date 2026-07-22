@@ -129,8 +129,12 @@ the visitor. They inform certification; they are not exported.
 
 An ordered event stream per source with exactly two event kinds.
 
-`command_site`: ordinal id, span, assignment-prefix facts (name, value-known flag), and
-ordered argv word facts. Each word fact carries:
+`command_site`: ordinal id, span, assignment-prefix facts, and ordered argv word facts.
+Each assignment fact carries its name, its value-known flag, and its own
+`start_byte`/`end_byte` span under the same position-validation rules as word facts,
+because the amended section 5.2 rule anchors a refusal at the earliest dynamic
+assignment, which the command-site span alone cannot locate. (Amended 2026-07-21 after
+adversarial review of the frozen checkpoint.) Each word fact carries:
 
 - `text`: the exact final single argv string, provable under every environment (locale
   quotes, tilde expansion, parameters, substitutions, globs, and braces classified
@@ -276,7 +280,12 @@ entire response is discarded. Exit 0 is required even for all-refused batches; n
 always means batch failure.
 
 Numeric caps (checkpoint `limits.json`): aggregate request cap 8,388,608 bytes; stdout
-cap 16,777,216 bytes; stderr capture cap 65,536 bytes. The deadline formula: 2,000 ms
+cap 16,777,216 bytes; stderr capture cap 65,536 bytes; maximum sources per batch 4,096;
+maximum JSON nesting depth 64; per-site argv-word cap 4,096 and assignment cap 256. The
+count, depth, and per-array caps are enforced by both decoders before materializing
+collections, so the byte caps alone never bound allocation. (Caps enumerated 2026-07-21
+after adversarial review; section 4.2 always required these rejections, but the numbers
+were not previously frozen.) The deadline formula: 2,000 ms
 base, plus 25 ms per source, plus 1 ms per 4 KiB of aggregate request bytes, ceiling
 30,000 ms.
 
