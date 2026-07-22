@@ -3,8 +3,11 @@ package main
 
 import (
 	"os/exec"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"mvdan.cc/sh/v3/syntax"
 )
@@ -611,6 +614,13 @@ func TestEmitUnquotedNumericSpecialParametersAreIFSSplittable(t *testing.T) {
 }
 
 func TestBashUnquotedNumericExpansionsAreIFSSplittable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Bash differential is unavailable on native Windows")
+	}
+	bashPath, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("Bash differential is unavailable:", err)
+	}
 	tests := []struct {
 		name   string
 		script string
@@ -627,7 +637,7 @@ func TestBashUnquotedNumericExpansionsAreIFSSplittable(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			command := exec.Command("bash", "--noprofile", "--norc", "-c", test.script)
+			command := exec.Command(bashPath, "--noprofile", "--norc", "-c", test.script)
 			output, err := command.CombinedOutput()
 			if err != nil {
 				t.Fatalf("bash differential error = %v, output = %q", err, output)
@@ -1057,6 +1067,9 @@ func TestEmitANSIQuotedNonNULControlsRemainKnown(t *testing.T) {
 		{word: `$'pre\x30post'`, text: "pre0post"},
 		{word: `$'pre\u0030post'`, text: "pre0post"},
 		{word: `$'pre\U00000030post'`, text: "pre0post"},
+		{word: `$'pre\001post'`, text: "pre\x01post"},
+		{word: `$'pre\x01post'`, text: "pre\x01post"},
+		{word: `$'pre\u0001post'`, text: "pre\x01post"},
 	}
 	for _, test := range tests {
 		t.Run(test.word, func(t *testing.T) {
@@ -1256,6 +1269,128 @@ func TestEncodeResponseRejectsKnownNonSingleWord(t *testing.T) {
 	}
 }
 
+func TestBraceAnalysisFrameIsCompact(t *testing.T) {
+	if strconv.IntSize != 32 && strconv.IntSize != 64 {
+		t.Fatalf("unsupported machine int size = %d", strconv.IntSize)
+	}
+	const maxFrameBytes = 4 * unsafe.Sizeof(uint64(0))
+	if got := unsafe.Sizeof(braceAnalysisFrame{}); got > maxFrameBytes {
+		t.Fatalf("braceAnalysisFrame size = %d bytes, want <= %d", got, maxFrameBytes)
+	}
+}
+
+func TestBraceAnalysisStackBlockBoundariesAndZeroing(t *testing.T) {
+	blockSizes := []int{8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 4096, 4096}
+	var stack braceAnalysisStack
+	if stack.top() != nil || stack.len() != 0 {
+		t.Fatalf("empty stack = %#v, want nil top and zero length", stack)
+	}
+	if _, ok := stack.pop(); ok {
+		t.Fatal("empty stack pop succeeded")
+	}
+	total := 0
+	for blockIndex, blockSize := range blockSizes {
+		for slot := 0; slot < blockSize; slot++ {
+			total++
+			frame := newBraceAnalysisFrame()
+			frame.magnitudes[0] = uint64(total)
+			stack.push(frame)
+			if stack.len() != total || stack.top() == nil {
+				t.Fatalf("push %d left length %d and top %p", total, stack.len(), stack.top())
+			}
+			stack.top().magnitudes[1] = uint64(blockIndex + 1)
+		}
+		if len(stack.blocks) != blockIndex+1 || len(stack.blocks[blockIndex]) != blockSize {
+			t.Fatalf("block %d layout = %#v, want %d slots", blockIndex, stack.blocks, blockSize)
+		}
+	}
+	for blockIndex := len(blockSizes) - 1; blockIndex >= 0; blockIndex-- {
+		for slot := blockSizes[blockIndex] - 1; slot >= 0; slot-- {
+			retained := stack.top()
+			if retained == nil || retained.magnitudes[0] != uint64(total) ||
+				retained.magnitudes[1] != uint64(blockIndex+1) {
+				t.Fatalf("top before pop %d = %#v", total, retained)
+			}
+			popped, ok := stack.pop()
+			if !ok || popped.magnitudes[0] != uint64(total) ||
+				popped.magnitudes[1] != uint64(blockIndex+1) {
+				t.Fatalf("pop %d = (%#v, %t)", total, popped, ok)
+			}
+			if *retained != (braceAnalysisFrame{}) {
+				t.Fatalf("popped slot %d retains frame data: %#v", total, *retained)
+			}
+			total--
+			if stack.len() != total {
+				t.Fatalf("pop left length %d, want %d", stack.len(), total)
+			}
+		}
+		if len(stack.blocks) != blockIndex {
+			t.Fatalf("after block %d pop, blocks = %d, want %d", blockIndex, len(stack.blocks), blockIndex)
+		}
+	}
+	if stack.top() != nil || stack.len() != 0 {
+		t.Fatalf("drained stack = %#v, want nil top and zero length", stack)
+	}
+}
+
+func TestBraceExpansionMachineIntegerBoundaryMatrix(t *testing.T) {
+	maxMagnitude := uint64(^uint(0) >> 1)
+	minMagnitude := maxMagnitude + 1
+	maxInt := strconv.FormatUint(maxMagnitude, 10)
+	minInt := "-" + strconv.FormatUint(minMagnitude, 10)
+	positiveOverflow := strconv.FormatUint(minMagnitude, 10)
+	negativeOverflow := "-" + strconv.FormatUint(minMagnitude+1, 10)
+	tests := []struct {
+		word   string
+		text   string
+		active bool
+	}{
+		{word: "{+1..+3}", active: true},
+		{word: "{-01..-03}", active: true},
+		{word: "{0001..0003}", active: true},
+		{word: "{" + minInt + ".." + maxInt + "}", active: true},
+		{word: "{1..3..+2}", active: true},
+		{word: "{1..3.." + minInt + "}", active: true},
+		{word: "{1..3.." + maxInt + "}", active: true},
+		{word: "{a..z}", active: true},
+		{word: "{" + positiveOverflow + "..1}"},
+		{word: "{" + negativeOverflow + "..1}"},
+		{word: "{1..3.." + positiveOverflow + "}"},
+		{word: "{+..1}"},
+		{word: "{-..1}"},
+		{word: "{_..z}"},
+		{word: "{é..z}"},
+		{word: "{\"1\"..3}", text: "{1..3}"},
+		{word: "{{x}..z}"},
+		{word: "{a..{x}}"},
+		{word: "{"},
+		{word: "{{x}"},
+		{word: "{1..3"},
+	}
+	for _, test := range tests {
+		t.Run(test.word, func(t *testing.T) {
+			response, err := Certify(mustRequest(t, "echo "+test.word))
+			if err != nil {
+				t.Fatalf("Certify error = %v", err)
+			}
+			word := findCommandSite(t, response.Results[0], 0).Argv[1]
+			if test.active {
+				if word.Text != nil || word.Single {
+					t.Fatalf("active brace word = %#v, want dynamic and non-single", word)
+				}
+				return
+			}
+			wantText := test.word
+			if test.text != "" {
+				wantText = test.text
+			}
+			if word.Text == nil || *word.Text != wantText || !word.Single {
+				t.Fatalf("inactive brace word = %#v, want exact literal %q and single", word, wantText)
+			}
+		})
+	}
+}
+
 func TestWordClassificationAdversarialWorkIsLinear(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1304,6 +1439,11 @@ func BenchmarkWordClassificationAdversarial(b *testing.B) {
 	}{
 		{name: "80k-unmatched-glob-openers", word: strings.Repeat("[", 80_000)},
 		{name: "40k-nested-inactive-braces", word: strings.Repeat("{", 40_000) + "x" + strings.Repeat("}", 40_000)},
+		{
+			name: "source-cap-nested-inactive-braces",
+			word: strings.Repeat("{", (helperSourceCapBytes-len("echo ")-1)/2) + "x" +
+				strings.Repeat("}", (helperSourceCapBytes-len("echo ")-1)/2),
+		},
 	} {
 		b.Run(test.name, func(b *testing.B) {
 			source := "echo " + test.word

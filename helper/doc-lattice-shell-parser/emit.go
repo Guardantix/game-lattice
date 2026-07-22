@@ -875,84 +875,192 @@ type wordExpansionClassification struct {
 	tokenCount, operations  int
 }
 
-type braceElementAnalysis struct {
-	value []byte
-	valid bool
-}
+type braceEndpointState uint8
+
+const (
+	braceEndpointValid braceEndpointState = 1 << iota
+	braceEndpointInteger
+	braceEndpointDigit
+	braceEndpointNegative
+	braceEndpointOverflow
+	braceEndpointCharacter
+	braceEndpointValue
+)
+
+type braceFrameFlags uint8
+
+const (
+	braceFrameComma braceFrameFlags = 1 << iota
+	braceFrameInvalidSequence
+)
 
 type braceAnalysisFrame struct {
-	elements        [3]braceElementAnalysis
-	separators      int
-	comma           bool
-	invalidSequence bool
+	magnitudes [3]uint64
+	states     [3]braceEndpointState
+	separators uint8
+	flags      braceFrameFlags
+}
+
+func newBraceEndpointState() braceEndpointState {
+	return braceEndpointValid | braceEndpointInteger
 }
 
 func newBraceAnalysisFrame() braceAnalysisFrame {
 	frame := braceAnalysisFrame{}
-	frame.elements[0].valid = true
+	frame.states[0] = newBraceEndpointState()
 	return frame
+}
+
+func braceIntegerLimit(negative bool) uint64 {
+	if strconv.IntSize == 32 {
+		if negative {
+			return uint64(1) << 31
+		}
+		return (uint64(1) << 31) - 1
+	}
+	if negative {
+		return uint64(1) << 63
+	}
+	return (uint64(1) << 63) - 1
 }
 
 func (frame *braceAnalysisFrame) appendValue(value byte) {
 	if frame.separators > 2 {
-		frame.invalidSequence = true
+		frame.flags |= braceFrameInvalidSequence
 		return
 	}
-	element := &frame.elements[frame.separators]
-	if element.valid {
-		element.value = append(element.value, value)
+	index := int(frame.separators)
+	state := frame.states[index]
+	if state&braceEndpointValid == 0 {
+		return
 	}
+	hasValue := state&braceEndpointValue != 0
+	if !hasValue && isAssignmentNameStart(value) && value != '_' {
+		state |= braceEndpointCharacter
+	} else {
+		state &^= braceEndpointCharacter
+	}
+	if state&braceEndpointInteger != 0 {
+		switch {
+		case !hasValue && (value == '+' || value == '-'):
+			if value == '-' {
+				state |= braceEndpointNegative
+			}
+		case value >= '0' && value <= '9':
+			state |= braceEndpointDigit
+			digit := uint64(value - '0')
+			limit := braceIntegerLimit(state&braceEndpointNegative != 0)
+			magnitude := frame.magnitudes[index]
+			if magnitude > (limit-digit)/10 {
+				state |= braceEndpointOverflow
+			} else {
+				frame.magnitudes[index] = magnitude*10 + digit
+			}
+		default:
+			state &^= braceEndpointInteger
+		}
+	}
+	state |= braceEndpointValue
+	frame.states[index] = state
 }
 
 func (frame *braceAnalysisFrame) invalidateElement() {
 	if frame.separators > 2 {
-		frame.invalidSequence = true
+		frame.flags |= braceFrameInvalidSequence
 		return
 	}
-	frame.elements[frame.separators].valid = false
+	frame.states[frame.separators] &^= braceEndpointValid
 }
 
 func (frame *braceAnalysisFrame) addSeparator() {
 	frame.separators++
 	if frame.separators > 2 {
-		frame.invalidSequence = true
+		frame.flags |= braceFrameInvalidSequence
 		return
 	}
-	frame.elements[frame.separators].valid = true
+	frame.states[frame.separators] = newBraceEndpointState()
 }
 
 func (frame braceAnalysisFrame) active() bool {
-	if frame.comma {
+	if frame.flags&braceFrameComma != 0 {
 		return true
 	}
-	if frame.invalidSequence || frame.separators < 1 || frame.separators > 2 {
+	if frame.flags&braceFrameInvalidSequence != 0 || frame.separators < 1 || frame.separators > 2 {
 		return false
 	}
-	firstChar, firstOK := braceAnalysisEndpoint(frame.elements[0])
-	secondChar, secondOK := braceAnalysisEndpoint(frame.elements[1])
+	firstChar, firstOK := braceAnalysisEndpoint(frame.states[0])
+	secondChar, secondOK := braceAnalysisEndpoint(frame.states[1])
 	if !firstOK || !secondOK || firstChar != secondChar {
 		return false
 	}
-	if frame.separators == 2 {
-		step := frame.elements[2]
-		if !step.valid {
-			return false
-		}
-		_, err := strconv.Atoi(string(step.value))
-		return err == nil
-	}
-	return true
+	return frame.separators != 2 || braceAnalysisInteger(frame.states[2])
 }
 
-func braceAnalysisEndpoint(element braceElementAnalysis) (isChar bool, ok bool) {
-	if !element.valid {
-		return false, false
-	}
-	value := string(element.value)
-	if _, err := strconv.Atoi(value); err == nil {
+func braceAnalysisEndpoint(state braceEndpointState) (isChar bool, ok bool) {
+	if braceAnalysisInteger(state) {
 		return false, true
 	}
-	return true, len(value) == 1 && isAssignmentNameStart(value[0]) && value[0] != '_'
+	return true, state&braceEndpointValid != 0 && state&braceEndpointCharacter != 0
+}
+
+func braceAnalysisInteger(state braceEndpointState) bool {
+	required := braceEndpointValid | braceEndpointInteger | braceEndpointDigit
+	return state&required == required && state&braceEndpointOverflow == 0
+}
+
+const (
+	braceStackInitialBlock = 8
+	braceStackMaxBlock     = 4096
+)
+
+type braceAnalysisStack struct {
+	blocks [][]braceAnalysisFrame
+	used   int
+	length int
+}
+
+func (stack *braceAnalysisStack) len() int {
+	return stack.length
+}
+
+func (stack *braceAnalysisStack) top() *braceAnalysisFrame {
+	if stack.length == 0 {
+		return nil
+	}
+	return &stack.blocks[len(stack.blocks)-1][stack.used-1]
+}
+
+func (stack *braceAnalysisStack) push(frame braceAnalysisFrame) {
+	if len(stack.blocks) == 0 || stack.used == len(stack.blocks[len(stack.blocks)-1]) {
+		blockSize := braceStackInitialBlock
+		if len(stack.blocks) > 0 {
+			blockSize = min(len(stack.blocks[len(stack.blocks)-1])*2, braceStackMaxBlock)
+		}
+		stack.blocks = append(stack.blocks, make([]braceAnalysisFrame, blockSize))
+		stack.used = 0
+	}
+	stack.blocks[len(stack.blocks)-1][stack.used] = frame
+	stack.used++
+	stack.length++
+}
+
+func (stack *braceAnalysisStack) pop() (braceAnalysisFrame, bool) {
+	if stack.length == 0 {
+		return braceAnalysisFrame{}, false
+	}
+	lastBlock := len(stack.blocks) - 1
+	stack.used--
+	frame := stack.blocks[lastBlock][stack.used]
+	stack.blocks[lastBlock][stack.used] = braceAnalysisFrame{}
+	stack.length--
+	if stack.used == 0 {
+		stack.blocks[lastBlock] = nil
+		stack.blocks = stack.blocks[:lastBlock]
+		if lastBlock > 0 {
+			stack.used = len(stack.blocks[lastBlock-1])
+		}
+	}
+	return frame, true
 }
 
 func classifyWordExpansion(word *syntax.Word, src string) wordExpansionClassification {
@@ -965,7 +1073,7 @@ func classifyWordExpansion(word *syntax.Word, src string) wordExpansionClassific
 		return classification
 	}
 	bracketOpen := false
-	braceFrames := make([]braceAnalysisFrame, 0, 8)
+	var braceFrames braceAnalysisStack
 	for index := 0; index < len(tokens); index++ {
 		token := tokens[index]
 		classification.operations++
@@ -984,51 +1092,50 @@ func classifyWordExpansion(word *syntax.Word, src string) wordExpansionClassific
 			}
 		}
 		if !token.unquoted {
-			if len(braceFrames) > 0 {
-				braceFrames[len(braceFrames)-1].invalidateElement()
+			if frame := braceFrames.top(); frame != nil {
+				frame.invalidateElement()
 			}
 			continue
 		}
 		switch token.value {
 		case '{':
-			braceFrames = append(braceFrames, newBraceAnalysisFrame())
+			braceFrames.push(newBraceAnalysisFrame())
 			classification.operations++
 		case '}':
-			if len(braceFrames) == 0 {
+			frame, ok := braceFrames.pop()
+			if !ok {
 				continue
 			}
-			frame := braceFrames[len(braceFrames)-1]
-			braceFrames = braceFrames[:len(braceFrames)-1]
 			classification.operations++
 			if frame.active() {
 				classification.activeBrace = true
 				return classification
 			}
-			if len(braceFrames) > 0 {
-				braceFrames[len(braceFrames)-1].invalidateElement()
+			if parent := braceFrames.top(); parent != nil {
+				parent.invalidateElement()
 			}
 		case ',':
-			if len(braceFrames) > 0 {
-				braceFrames[len(braceFrames)-1].comma = true
+			if frame := braceFrames.top(); frame != nil {
+				frame.flags |= braceFrameComma
 			}
 		case '.':
-			if len(braceFrames) == 0 {
+			frame := braceFrames.top()
+			if frame == nil {
 				continue
 			}
 			if index+1 < len(tokens) && tokens[index+1].unquoted && tokens[index+1].value == '.' {
-				frame := &braceFrames[len(braceFrames)-1]
 				frame.addSeparator()
 				if index+2 < len(tokens) && tokens[index+2].unquoted && tokens[index+2].value == '.' {
-					frame.invalidSequence = true
+					frame.flags |= braceFrameInvalidSequence
 				}
 				index++
 				classification.operations++
 			} else {
-				braceFrames[len(braceFrames)-1].appendValue(token.value)
+				frame.appendValue(token.value)
 			}
 		default:
-			if len(braceFrames) > 0 {
-				braceFrames[len(braceFrames)-1].appendValue(token.value)
+			if frame := braceFrames.top(); frame != nil {
+				frame.appendValue(token.value)
 			}
 		}
 	}
