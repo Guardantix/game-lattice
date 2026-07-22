@@ -90,7 +90,7 @@ type Assignment struct {
 type Word struct {
 	// Text is the static text, or nil when dynamic.
 	Text *string `json:"text"`
-	// Single reports whether the word has one shell part.
+	// Single reports whether the word is guaranteed to expand to exactly one argv entry.
 	Single bool `json:"single"`
 	// StartByte is the inclusive UTF-8 byte offset.
 	StartByte int `json:"start_byte"`
@@ -154,12 +154,21 @@ type rawSource struct {
 
 type jsonFrame struct {
 	kind         json.Delim
+	wireObject   wireObjectKind
 	keys         map[string]struct{}
 	expectingKey bool
 	currentKey   string
 	sourcesArray bool
 	elementCount int
 }
+
+type wireObjectKind uint8
+
+const (
+	nonWireObject wireObjectKind = iota
+	requestWireObject
+	sourceWireObject
+)
 
 // DecodeRequest strictly decodes one frozen-protocol request document.
 func DecodeRequest(data []byte) (*Request, error) {
@@ -294,6 +303,7 @@ func inspectJSONStructure(data []byte) error {
 		if delimiter, ok := token.(json.Delim); ok {
 			switch delimiter {
 			case '{', '[':
+				wireObject := objectKindForValue(delimiter, frames)
 				isSources, err := beginContainerValue(frames)
 				if err != nil {
 					return err
@@ -307,7 +317,7 @@ func inspectJSONStructure(data []byte) error {
 				if len(frames)+1 > jsonMaxDepth {
 					return errors.New("request exceeds maximum JSON depth")
 				}
-				frame := jsonFrame{kind: delimiter, sourcesArray: isSources}
+				frame := jsonFrame{kind: delimiter, wireObject: wireObject, sourcesArray: isSources}
 				if delimiter == '{' {
 					frame.keys = make(map[string]struct{})
 					frame.expectingKey = true
@@ -345,6 +355,9 @@ func inspectJSONStructure(data []byte) error {
 			if _, exists := frame.keys[key]; exists {
 				return errors.New("request contains a duplicate object field")
 			}
+			if !wireFieldAllowed(frame.wireObject, key) {
+				return errors.New("request contains an unknown object field")
+			}
 			frame.keys[key] = struct{}{}
 			frame.currentKey = key
 			frame.expectingKey = false
@@ -360,6 +373,31 @@ func inspectJSONStructure(data []byte) error {
 		return errors.New("request is not valid JSON")
 	}
 	return nil
+}
+
+func objectKindForValue(delimiter json.Delim, frames []jsonFrame) wireObjectKind {
+	if delimiter != '{' {
+		return nonWireObject
+	}
+	if len(frames) == 0 {
+		return requestWireObject
+	}
+	parent := frames[len(frames)-1]
+	if parent.kind == '[' && parent.sourcesArray {
+		return sourceWireObject
+	}
+	return nonWireObject
+}
+
+func wireFieldAllowed(object wireObjectKind, key string) bool {
+	switch object {
+	case requestWireObject:
+		return key == "protocol_version" || key == "sources"
+	case sourceWireObject:
+		return key == "id" || key == "source"
+	default:
+		return true
+	}
 }
 
 func beginContainerValue(frames []jsonFrame) (bool, error) {

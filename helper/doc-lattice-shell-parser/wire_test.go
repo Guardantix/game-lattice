@@ -26,6 +26,24 @@ func TestDecodeRequestRejectsBadInputs(t *testing.T) {
 	}
 }
 
+func TestDecodeRequestRejectsCaseVariantFieldNames(t *testing.T) {
+	cases := map[string]string{
+		"root protocol version": `{"Protocol_Version":1,"sources":[{"id":0,"source":"a"}]}`,
+		"root sources":          `{"protocol_version":1,"Sources":[{"id":0,"source":"a"}]}`,
+		"source id":             `{"protocol_version":1,"sources":[{"ID":0,"source":"a"}]}`,
+		"source text":           `{"protocol_version":1,"sources":[{"id":0,"Source":"a"}]}`,
+		"root collision":        `{"protocol_version":1,"Protocol_Version":1,"sources":[{"id":0,"source":"a"}]}`,
+		"source collision":      `{"protocol_version":1,"sources":[{"id":0,"ID":0,"source":"a"}]}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeRequest([]byte(body)); err == nil {
+				t.Fatal("case-variant field name accepted")
+			}
+		})
+	}
+}
+
 func TestDecodeRequestAcceptsValid(t *testing.T) {
 	req, err := DecodeRequest([]byte(`{"protocol_version":1,"sources":[{"id":0,"source":"true"},{"id":1,"source":"x"}]}`))
 	if err != nil {
