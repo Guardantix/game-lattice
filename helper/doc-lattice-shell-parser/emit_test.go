@@ -819,6 +819,118 @@ func TestUnquotedLengthParameterAcceptsValidPinnedArithmeticIndexShapes(t *testi
 	}
 }
 
+func TestValidPinnedArithmeticIndexRejectsMalformedDescendantGraphs(t *testing.T) {
+	lit := func(start uint, value string) *syntax.Lit {
+		return &syntax.Lit{
+			ValuePos: syntax.NewPos(start, 1, start+1),
+			ValueEnd: syntax.NewPos(start+uint(len(value)), 1, start+uint(len(value))+1),
+			Value:    value,
+		}
+	}
+	word := func(start uint, value string) *syntax.Word {
+		return &syntax.Word{Parts: []syntax.WordPart{lit(start, value)}}
+	}
+	outer := func(index syntax.ArithmExpr) syntax.ArithmExpr {
+		return &syntax.ParenArithm{
+			Lparen: syntax.NewPos(1, 1, 2),
+			Rparen: syntax.NewPos(20, 1, 21),
+			X:      index,
+		}
+	}
+	var typedNilWord *syntax.Word
+	var typedNilUnary *syntax.UnaryArithm
+	var typedNilParameter *syntax.ParamExp
+	tests := []struct {
+		name  string
+		index syntax.ArithmExpr
+	}{
+		{name: "nested binary missing grandchild", index: outer(&syntax.BinaryArithm{
+			OpPos: syntax.NewPos(10, 1, 11), Op: syntax.Add, Y: word(11, "2"),
+		})},
+		{name: "nested binary typed nil grandchild", index: outer(&syntax.BinaryArithm{
+			OpPos: syntax.NewPos(10, 1, 11), Op: syntax.Add, X: typedNilWord, Y: word(11, "2"),
+		})},
+		{name: "nested unary missing grandchild", index: outer(&syntax.UnaryArithm{
+			OpPos: syntax.NewPos(9, 1, 10), Op: syntax.Minus,
+		})},
+		{name: "nested unary typed nil grandchild", index: outer(&syntax.UnaryArithm{
+			OpPos: syntax.NewPos(9, 1, 10), Op: syntax.Minus, X: typedNilWord,
+		})},
+		{name: "nested parenthesized missing grandchild", index: outer(&syntax.ParenArithm{
+			Lparen: syntax.NewPos(8, 1, 9), Rparen: syntax.NewPos(12, 1, 13),
+		})},
+		{name: "nested parenthesized typed nil grandchild", index: outer(&syntax.ParenArithm{
+			Lparen: syntax.NewPos(8, 1, 9), Rparen: syntax.NewPos(12, 1, 13), X: typedNilUnary,
+		})},
+		{name: "word missing middle part", index: &syntax.Word{Parts: []syntax.WordPart{
+			lit(2, "a"), nil, lit(18, "z"),
+		}}},
+		{name: "word typed nil middle part", index: &syntax.Word{Parts: []syntax.WordPart{
+			lit(2, "a"), typedNilParameter, lit(18, "z"),
+		}}},
+		{name: "word invalid middle span", index: &syntax.Word{Parts: []syntax.WordPart{
+			lit(2, "a"), &syntax.Lit{
+				ValuePos: syntax.NewPos(12, 1, 13), ValueEnd: syntax.NewPos(11, 1, 12), Value: "bad",
+			}, lit(18, "z"),
+		}}},
+		{name: "malformed nested parameter", index: &syntax.Word{Parts: []syntax.WordPart{
+			lit(2, "a"), &syntax.ParamExp{
+				Dollar: syntax.NewPos(5, 1, 6), Short: true,
+			}, lit(18, "z"),
+		}}},
+		{name: "malformed nested command substitution", index: &syntax.Word{Parts: []syntax.WordPart{
+			lit(2, "a"), &syntax.CmdSubst{
+				Left: syntax.NewPos(5, 1, 6), Right: syntax.NewPos(15, 1, 16), Stmts: []*syntax.Stmt{nil},
+			}, lit(18, "z"),
+		}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if validPinnedArithmeticIndex(test.index) {
+				t.Fatalf("malformed descendant graph rooted at %T unexpectedly validated", test.index)
+			}
+		})
+	}
+
+	t.Run("cycle", func(t *testing.T) {
+		cycle := &syntax.UnaryArithm{OpPos: syntax.NewPos(9, 1, 10), Op: syntax.Minus}
+		cycle.X = cycle
+		if validPinnedArithmeticIndex(outer(cycle)) {
+			t.Fatal("cyclic arithmetic index unexpectedly validated")
+		}
+	})
+
+	t.Run("shared child alias", func(t *testing.T) {
+		shared := word(9, "1")
+		index := &syntax.BinaryArithm{
+			OpPos: syntax.NewPos(10, 1, 11), Op: syntax.Add, X: shared, Y: shared,
+		}
+		if validPinnedArithmeticIndex(index) {
+			t.Fatal("aliased arithmetic child unexpectedly validated")
+		}
+	})
+
+	t.Run("over depth", func(t *testing.T) {
+		var index syntax.ArithmExpr = word(10, "1")
+		for range visitorDepthCap {
+			index = &syntax.UnaryArithm{OpPos: syntax.NewPos(9, 1, 10), Op: syntax.Minus, X: index}
+		}
+		if validPinnedArithmeticIndex(outer(index)) {
+			t.Fatal("over-depth arithmetic index unexpectedly validated")
+		}
+	})
+
+	t.Run("over node cap", func(t *testing.T) {
+		parts := make([]syntax.WordPart, visitorNodeCap)
+		for index := range parts {
+			parts[index] = lit(2, "x")
+		}
+		if validPinnedArithmeticIndex(&syntax.Word{Parts: parts}) {
+			t.Fatal("over-node arithmetic index unexpectedly validated")
+		}
+	})
+}
+
 func TestEmitLengthParameterIndexTraversesNestedExecution(t *testing.T) {
 	tests := []struct {
 		name   string

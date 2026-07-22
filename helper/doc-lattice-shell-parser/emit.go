@@ -702,33 +702,69 @@ func validPinnedArithmeticIndex(index syntax.ArithmExpr) (valid bool) {
 	if index == nil || syntaxNodeIsNil(index) {
 		return false
 	}
-	switch index := index.(type) {
-	case *syntax.Word:
-		if index == nil || len(index.Parts) == 0 {
-			return false
-		}
-	case *syntax.BinaryArithm:
-		if index == nil || index.X == nil || index.Y == nil ||
-			syntaxNodeIsNil(index.X) || syntaxNodeIsNil(index.Y) {
-			return false
-		}
-	case *syntax.ParenArithm:
-		if index == nil || index.X == nil || syntaxNodeIsNil(index.X) {
-			return false
-		}
-	case *syntax.UnaryArithm:
-		if index == nil || index.X == nil || syntaxNodeIsNil(index.X) {
-			return false
-		}
+	switch index.(type) {
+	case *syntax.Word, *syntax.BinaryArithm, *syntax.ParenArithm, *syntax.UnaryArithm:
+		return validArithmeticIndexSubtree(index)
 	default:
 		return false
 	}
+}
+
+type arithmeticIndexValidationFrame struct {
+	node        syntax.Node
+	depth, next int
+}
+
+func validArithmeticIndexSubtree(root syntax.Node) bool {
+	stack := []arithmeticIndexValidationFrame{{node: root, depth: 1, next: -1}}
+	seen := make(map[syntax.Node]struct{})
+	nodes := make([]syntax.Node, 0, min(visitorNodeCap, 64))
+	for len(stack) > 0 {
+		frame := &stack[len(stack)-1]
+		if frame.next < 0 {
+			name, known := syntaxNodeName(frame.node)
+			if !known || name == "" || frame.depth > visitorDepthCap || len(nodes) >= visitorNodeCap {
+				return false
+			}
+			if _, exists := seen[frame.node]; exists {
+				return false
+			}
+			if !localStructureValid(frame.node) {
+				return false
+			}
+			seen[frame.node] = struct{}{}
+			nodes = append(nodes, frame.node)
+			frame.next = 0
+		}
+		child, ok := nextStructuralChild(frame.node, &frame.next)
+		if !ok {
+			stack = stack[:len(stack)-1]
+			continue
+		}
+		if child == nil || syntaxNodeIsNil(child) {
+			return false
+		}
+		stack = append(stack, arithmeticIndexValidationFrame{
+			node: child, depth: frame.depth + 1, next: -1,
+		})
+	}
+	// Structural ownership and depth are known before invoking syntax span methods.
+	// Each node is checked once, and any recursive span chain is bounded by visitorDepthCap.
+	for _, node := range nodes {
+		if !syntaxNodeHasValidSpan(node) {
+			return false
+		}
+	}
+	return true
+}
+
+func syntaxNodeHasValidSpan(node syntax.Node) (valid bool) {
 	defer func() {
 		if recover() != nil {
 			valid = false
 		}
 	}()
-	start, end := index.Pos(), index.End()
+	start, end := node.Pos(), node.End()
 	return start.IsValid() && end.IsValid() && start.Offset() <= end.Offset()
 }
 
