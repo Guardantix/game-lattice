@@ -15,6 +15,17 @@ CHECKPOINT_MANIFEST = Path(
     "tests/fixtures/github_ci_successor_checkpoint/protocol/digest_manifest.json"
 )
 HELPER = Path("helper/doc-lattice-shell-parser")
+PINNED_PARSER_VERSION = "mvdan.cc/sh/v3@v3.13.1"
+
+
+def _string_dict(value: object) -> dict[str, object]:
+    """Validate and type a JSON object with string keys."""
+    assert isinstance(value, dict)
+    result: dict[str, object] = {}
+    for key, item in value.items():
+        assert isinstance(key, str)
+        result[key] = item
+    return result
 
 
 def _copy_digest_inputs(destination: Path) -> None:
@@ -26,6 +37,84 @@ def _copy_digest_inputs(destination: Path) -> None:
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO / relative, target)
+
+
+def _run_digest_cli(repo_root: Path) -> subprocess.CompletedProcess[str]:
+    """Run the digest checker against a repository tree."""
+    return subprocess.run(  # noqa: S603 - fixed interpreter and repository script
+        [
+            sys.executable,
+            str(REPO / "scripts/check_helper_digest.py"),
+            "--repo-root",
+            str(repo_root),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _build_response(
+    tmp_path: Path,
+    *,
+    environment_updates: dict[str, str] | None = None,
+    unset_environment: tuple[str, ...] = (),
+    source: str = "doc-lattice check",
+) -> dict[str, object]:
+    """Build the helper under an adversarial environment and return one response."""
+    binary = tmp_path / "shell-parser"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "GOCACHE": str(tmp_path / "gocache"),
+            "GOENV": "off",
+            "GOFLAGS": "",
+            "GOTOOLCHAIN": "local",
+            "GOWORK": "off",
+        }
+    )
+    if environment_updates is not None:
+        environment.update(environment_updates)
+    for name in unset_environment:
+        environment.pop(name, None)
+    build = subprocess.run(  # noqa: S603 - fixed repository build wrapper
+        [str(REPO / "scripts/build_successor_helper.sh"), str(binary)],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=REPO,
+        env=environment,
+    )
+    assert build.returncode == 0, build.stdout + build.stderr
+
+    request = json.dumps(
+        {"protocol_version": 1, "sources": [{"id": 0, "source": source}]},
+        separators=(",", ":"),
+    ).encode()
+    completed = subprocess.run(  # noqa: S603 - pytest-owned binary path
+        [str(binary)],
+        input=request,
+        check=False,
+        capture_output=True,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+    return _string_dict(json.loads(completed.stdout))
+
+
+def _overlay_attack(tmp_path: Path) -> Path:
+    """Create an overlay that forges the helper identity after digest computation."""
+    original = REPO / HELPER / "main.go"
+    forged = tmp_path / "forged-main.go"
+    source = original.read_text(encoding="utf-8")
+    old = "HelperVersion:   helperVersion,"
+    assert source.count(old) == 1
+    forged.write_text(source.replace(old, 'HelperVersion:   "forged-overlay",'), encoding="utf-8")
+    overlay = tmp_path / "overlay.json"
+    overlay.write_text(
+        json.dumps({"Replace": {str(original): str(forged)}}),
+        encoding="utf-8",
+    )
+    return overlay
 
 
 def test_digest_manifest_covers_all_non_test_go_sources() -> None:
@@ -78,53 +167,120 @@ def test_cli_rejects_an_uncovered_non_test_go_source(tmp_path: Path) -> None:
     ]
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-    result = subprocess.run(  # noqa: S603 - fixed interpreter and repository script
-        [
-            sys.executable,
-            str(REPO / "scripts/check_helper_digest.py"),
-            "--repo-root",
-            str(tmp_path),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    result = _run_digest_cli(tmp_path)
 
     assert result.returncode != 0
     assert result.stdout == ""
     assert "helper/doc-lattice-shell-parser/wire.go" in result.stderr
 
 
+def test_cli_rejects_changed_completeness_rule(tmp_path: Path) -> None:
+    """The CLI rejects a manifest whose frozen completeness rule was changed."""
+    _copy_digest_inputs(tmp_path)
+    manifest_path = tmp_path / CHECKPOINT_MANIFEST
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["completeness_rule"] = "accept uncovered helper sources"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = _run_digest_cli(tmp_path)
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "completeness_rule" in result.stderr
+
+
 def test_build_wrapper_injects_computed_digest(tmp_path: Path) -> None:
     """A real wrapper-built helper reports the exact manifest digest."""
-    binary = tmp_path / "shell-parser"
-    environment = os.environ.copy()
-    environment.update(
-        {
-            "GOCACHE": str(tmp_path / "gocache"),
-            "GOTOOLCHAIN": "local",
-            "GOWORK": "off",
-        }
+    response = _build_response(tmp_path, source="true")
+    assert response["helper_version"] == compute_digest(REPO)
+    assert response["parser_version"] == PINNED_PARSER_VERSION
+
+
+def test_build_wrapper_ignores_overlay_go_flag(tmp_path: Path) -> None:
+    """An inherited source overlay cannot forge the reported helper identity."""
+    overlay = _overlay_attack(tmp_path)
+
+    response = _build_response(
+        tmp_path,
+        environment_updates={"GOFLAGS": f"-overlay={overlay}"},
     )
-    build = subprocess.run(  # noqa: S603 - fixed repository build wrapper
-        [str(REPO / "scripts/build_successor_helper.sh"), str(binary)],
-        check=False,
+
+    assert response["helper_version"] == compute_digest(REPO)
+
+
+def test_build_wrapper_ignores_modfile_go_flag(tmp_path: Path) -> None:
+    """An inherited alternate modfile cannot redirect the release build graph."""
+    missing_modfile = tmp_path / "attacker.mod"
+
+    response = _build_response(
+        tmp_path,
+        environment_updates={"GOFLAGS": f"-modfile={missing_modfile}"},
+    )
+
+    assert response["parser_version"] == PINNED_PARSER_VERSION
+
+
+def test_build_wrapper_ignores_persisted_overlay_go_flag(tmp_path: Path) -> None:
+    """A persisted GOENV overlay cannot forge the reported helper identity."""
+    overlay = _overlay_attack(tmp_path)
+    goenv = tmp_path / "go.env"
+    goenv.write_text(f"GOFLAGS=-overlay={overlay}\n", encoding="utf-8")
+
+    response = _build_response(
+        tmp_path,
+        environment_updates={"GOENV": str(goenv)},
+        unset_environment=("GOFLAGS",),
+    )
+
+    assert response["helper_version"] == compute_digest(REPO)
+
+
+def test_build_wrapper_ignores_workspace_parser_replacement(tmp_path: Path) -> None:
+    """An inherited workspace cannot replace parser behavior outside the digest."""
+    neutral_environment = os.environ.copy()
+    neutral_environment.update(
+        {"GOENV": "off", "GOFLAGS": "", "GOTOOLCHAIN": "local", "GOWORK": "off"}
+    )
+    parser_module = subprocess.run(
+        ["/usr/local/go/bin/go", "list", "-m", "-f", "{{.Dir}}", "mvdan.cc/sh/v3"],
+        check=True,
         capture_output=True,
         text=True,
-        cwd=REPO,
-        env=environment,
+        cwd=REPO / HELPER,
+        env=neutral_environment,
+    ).stdout.strip()
+    parser_fork = tmp_path / "parser-fork"
+    shutil.copytree(parser_module, parser_fork)
+    parser_source = parser_fork / "syntax/parser.go"
+    parser_source.chmod(0o644)
+    source = parser_source.read_text(encoding="utf-8")
+    parse_call = "\t\tp.stmts(yield)\n"
+    assert source.count(parse_call) == 1
+    parser_source.write_text(source.replace(parse_call, ""), encoding="utf-8")
+    workspace = tmp_path / "go.work"
+    workspace.write_text(
+        "\n".join(
+            (
+                "go 1.26.5",
+                f"use {REPO / HELPER}",
+                f"replace mvdan.cc/sh/v3 => {parser_fork}",
+                "",
+            )
+        ),
+        encoding="utf-8",
     )
-    assert build.returncode == 0, build.stdout + build.stderr
 
-    request = b'{"protocol_version":1,"sources":[{"id":0,"source":"true"}]}'
-    completed = subprocess.run(  # noqa: S603 - pytest-owned binary path
-        [str(binary)],
-        input=request,
-        check=False,
-        capture_output=True,
+    response = _build_response(
+        tmp_path,
+        environment_updates={"GOWORK": str(workspace)},
     )
 
-    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
-    response = json.loads(completed.stdout)
-    assert response["helper_version"] == compute_digest(REPO)
-    assert response["parser_version"] == "mvdan.cc/sh/v3@v3.13.1"
+    assert response["parser_version"] == PINNED_PARSER_VERSION
+    results = response["results"]
+    assert isinstance(results, list)
+    result = _string_dict(results[0])
+    events = result["events"]
+    assert isinstance(events, list)
+    assert events
+    event = _string_dict(events[0])
+    assert event["kind"] == "command_site"

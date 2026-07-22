@@ -15,6 +15,11 @@ EXPECTED_ORDERING = "path-lexicographic"
 EXPECTED_DIGEST_DEFINITION = (
     "sha256 over newline-joined (path, file-sha256) pairs in path-lexicographic order"
 )
+EXPECTED_COMPLETENESS_RULE = (
+    "CI recomputes the digest from this manifest and independently asserts that every non-test "
+    ".go file under the helper module is covered by include minus exclude_globs; an uncovered "
+    "compiled source fails the build."
+)
 
 
 class DigestManifestError(ValueError):
@@ -52,6 +57,8 @@ def _load_manifest(repo_root: Path) -> DigestManifest:
         raise DigestManifestError(f"digest manifest must use {EXPECTED_ORDERING!r} ordering")
     if decoded.get("digest") != EXPECTED_DIGEST_DEFINITION:
         raise DigestManifestError("digest manifest has an unsupported digest definition")
+    if decoded.get("completeness_rule") != EXPECTED_COMPLETENESS_RULE:
+        raise DigestManifestError("digest manifest has an unsupported completeness_rule")
     return DigestManifest(
         include=_string_tuple(decoded.get("include"), "include"),
         exclude_globs=_string_tuple(decoded.get("exclude_globs"), "exclude_globs"),

@@ -31,5 +31,5 @@ if [[ ! "$digest" =~ ^[0-9a-f]{64}$ ]]; then
 fi
 
 cd "$repo_root/helper/doc-lattice-shell-parser"
-CGO_ENABLED=0 GOTOOLCHAIN="${GOTOOLCHAIN:-local}" GOWORK="${GOWORK:-off}" \
+CGO_ENABLED=0 GOENV=off GOFLAGS= GOTOOLCHAIN=local GOWORK=off \
     /usr/local/go/bin/go build -trimpath -ldflags "-X main.helperVersion=$digest" -o "$out" .
