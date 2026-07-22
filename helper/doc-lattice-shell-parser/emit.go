@@ -39,7 +39,24 @@ func certifySource(source Source) (Result, error) {
 		}, nil
 	}
 	statements, parseRefusal := parseStatements(source.Source)
-	sites, walkRefusals, work := walk(statements, source.Source)
+	guardRefusal, guardWork := scanHeredocGuard(source.Source, statements)
+	if guardRefusal != nil {
+		if reasonScopes[guardRefusal.code] != "terminal" ||
+			validateRawSpan(guardRefusal.startByte, guardRefusal.endByte, len(source.Source)) != nil {
+			return Result{}, errInvalidEmission
+		}
+		return Result{
+			ID: source.ID,
+			Events: []Event{{
+				Kind:      "refusal",
+				Code:      guardRefusal.code,
+				StartByte: guardRefusal.startByte,
+				EndByte:   guardRefusal.endByte,
+			}},
+			WorkUnits: guardWork + 2,
+		}, nil
+	}
+	sites, walkRefusals, work := walkWithInitialWork(statements, source.Source, guardWork)
 	events, err := emitCommandSites(sites, source.Source)
 	if err != nil {
 		return Result{}, err

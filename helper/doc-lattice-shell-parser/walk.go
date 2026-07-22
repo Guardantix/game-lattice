@@ -30,7 +30,12 @@ type walker struct {
 }
 
 func walk(stmts []*syntax.Stmt, src string) (sites []commandSite, refusals []rawRefusal, work int) {
+	return walkWithInitialWork(stmts, src, 0)
+}
+
+func walkWithInitialWork(stmts []*syntax.Stmt, src string, initialWork int) (sites []commandSite, refusals []rawRefusal, work int) {
 	w := newWalker(src)
+	w.work = initialWork
 	for _, stmt := range stmts {
 		if !w.certifyTree(stmt, 1) {
 			return w.sites, w.refusals, w.work
