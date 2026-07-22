@@ -22,18 +22,19 @@ type walker struct {
 	nodes      int
 	events     int
 	childSteps int
-	checkSteps int
 	workLimit  int
 	depthCap   int
 	eventCap   int
 	stop       bool
+	certified  map[syntax.Node]struct{}
 }
 
 func walk(stmts []*syntax.Stmt, src string) (sites []commandSite, refusals []rawRefusal, work int) {
 	w := newWalker(src)
-	if status := w.validateStatements(stmts); status != structureValid {
-		w.requestTerminal(nil, terminalCode(status), true)
-		return w.sites, w.refusals, w.work
+	for _, stmt := range stmts {
+		if !w.certifyGraph(stmt, 1) {
+			return w.sites, w.refusals, w.work
+		}
 	}
 	for _, stmt := range stmts {
 		if !w.enterChild() {
@@ -53,6 +54,7 @@ func newWalker(src string) *walker {
 		workLimit: visitorNodeCap,
 		depthCap:  visitorDepthCap,
 		eventCap:  eventCap,
+		certified: make(map[syntax.Node]struct{}),
 	}
 }
 
@@ -64,15 +66,7 @@ func (w *walker) dispatch(node syntax.Node, role string, depth int) {
 	if known && name == "" {
 		return
 	}
-	if !w.visit(node, depth) {
-		return
-	}
-	if w.events >= w.eventCap {
-		w.requestTerminal(node, "event-cap", false)
-		return
-	}
-	if status := w.validateNodeStructure(node); status != structureValid {
-		w.requestTerminal(node, terminalCode(status), true)
+	if !w.certifyGraph(node, depth) {
 		return
 	}
 	if !known {
@@ -295,10 +289,6 @@ func (w *walker) consumeWord(word *syntax.Word, depth int) {
 	if !w.visit(word, depth) {
 		return
 	}
-	if status := w.validateNodeStructure(word); status != structureValid {
-		w.requestTerminal(word, terminalCode(status), true)
-		return
-	}
 	for _, part := range word.Parts {
 		if !w.enterChild() {
 			return
@@ -319,10 +309,6 @@ func (w *walker) consumeWordPart(part syntax.WordPart, depth int) {
 		w.visit(part, depth)
 	case *syntax.DblQuoted:
 		if !w.visit(part, depth) {
-			return
-		}
-		if status := w.validateNodeStructure(part); status != structureValid {
-			w.requestTerminal(part, terminalCode(status), true)
 			return
 		}
 		for _, nested := range part.Parts {
@@ -350,21 +336,7 @@ func (w *walker) enterChild() bool {
 }
 
 func (w *walker) visit(node syntax.Node, depth int) bool {
-	if w.stop {
-		return false
-	}
-	w.work++
-	w.nodes++
-	w.depth = max(w.depth, depth)
-	if w.work > w.workLimit {
-		w.requestTerminal(node, "work-cap", false)
-		return false
-	}
-	if depth > w.depthCap {
-		w.requestTerminal(node, "depth-cap", false)
-		return false
-	}
-	return true
+	return w.certifyGraph(node, depth)
 }
 
 func (w *walker) emitSite(call *syntax.CallExpr) {
@@ -424,8 +396,8 @@ func (w *walker) nodeSpan(node syntax.Node) (int, int) {
 	}
 	limit := min(max(w.depthCap+1, 1), visitorDepthCap+1)
 	limit = min(limit, max(w.workLimit-w.work+1, 1))
-	start, startOK := boundedBoundary(node, false, limit)
-	end, endOK := boundedBoundary(node, true, limit)
+	start, startOK := boundedStart(node, limit)
+	end, endOK := boundedEnd(node, limit)
 	if !startOK || !endOK {
 		return 0, 0
 	}
@@ -434,650 +406,700 @@ func (w *walker) nodeSpan(node syntax.Node) (int, int) {
 	return start, end
 }
 
-type structureStatus uint8
-
-const (
-	structureValid structureStatus = iota
-	structureMalformed
-	structureExhausted
-)
-
-func terminalCode(status structureStatus) string {
-	if status == structureExhausted {
-		return "work-cap"
-	}
-	return "unsupported-construct"
+type certificationFrame struct {
+	node  syntax.Node
+	depth int
+	next  int
 }
 
-func (w *walker) checkNode(node syntax.Node, required bool) structureStatus {
-	checkLimit := min(visitorNodeCap, max(w.workLimit, 1))
-	if w.checkSteps >= checkLimit {
-		return structureExhausted
+// certifyGraph charges each real AST node once and caches that certification for semantic traversal.
+func (w *walker) certifyGraph(root syntax.Node, depth int) bool {
+	if w.stop {
+		return false
 	}
-	w.checkSteps++
-	if node == nil {
-		if required {
-			return structureMalformed
+	if root == nil || syntaxNodeIsNil(root) {
+		w.requestTerminal(nil, "unsupported-construct", true)
+		return false
+	}
+	stack := []certificationFrame{{node: root, depth: depth, next: -1}}
+	for len(stack) > 0 {
+		if w.stop {
+			return false
 		}
-		return structureValid
-	}
-	if syntaxNodeIsNil(node) {
-		return structureMalformed
-	}
-	return structureValid
-}
-
-func (w *walker) validateStatements(stmts []*syntax.Stmt) structureStatus {
-	for _, stmt := range stmts {
-		if status := w.checkNode(stmt, true); status != structureValid {
-			return status
+		frame := &stack[len(stack)-1]
+		if frame.next < 0 {
+			if w.nodeCertified(frame.node) {
+				if frame.depth > w.depthCap {
+					w.requestTerminal(frame.node, "depth-cap", false)
+					return false
+				}
+				stack = stack[:len(stack)-1]
+				continue
+			}
+			if !w.chargeNode(frame.node, frame.depth) {
+				return false
+			}
+			w.markNodeCertified(frame.node)
+			if !localStructureValid(frame.node) {
+				w.requestTerminal(frame.node, "unsupported-construct", true)
+				return false
+			}
+			frame.next = 0
 		}
-	}
-	return structureValid
-}
-
-func (w *walker) validateWords(words []*syntax.Word) structureStatus {
-	for _, word := range words {
-		if status := w.checkNode(word, true); status != structureValid {
-			return status
+		child, ok := nextStructuralChild(frame.node, &frame.next)
+		if !ok {
+			stack = stack[:len(stack)-1]
+			continue
 		}
-	}
-	return structureValid
-}
-
-func (w *walker) validateWordParts(parts []syntax.WordPart) structureStatus {
-	for _, part := range parts {
-		if status := w.checkNode(part, true); status != structureValid {
-			return status
+		if child == nil || syntaxNodeIsNil(child) {
+			w.requestTerminal(frame.node, "unsupported-construct", true)
+			return false
 		}
+		stack = append(stack, certificationFrame{node: child, depth: frame.depth + 1, next: -1})
 	}
-	return structureValid
+	return true
 }
 
-func (w *walker) validateNodeStructure(node syntax.Node) structureStatus {
+func (w *walker) chargeNode(node syntax.Node, depth int) bool {
+	if w.events >= w.eventCap {
+		w.requestTerminal(node, "event-cap", false)
+		return false
+	}
+	w.work++
+	w.nodes++
+	w.depth = max(w.depth, depth)
+	if w.work > w.workLimit {
+		w.requestTerminal(node, "work-cap", false)
+		return false
+	}
+	if depth > w.depthCap {
+		w.requestTerminal(node, "depth-cap", false)
+		return false
+	}
+	return true
+}
+
+func (w *walker) nodeCertified(node syntax.Node) bool {
+	name, known := syntaxNodeName(node)
+	if !known || name == "" {
+		return false
+	}
+	_, ok := w.certified[node]
+	return ok
+}
+
+func (w *walker) markNodeCertified(node syntax.Node) {
+	if name, known := syntaxNodeName(node); known && name != "" {
+		w.certified[node] = struct{}{}
+	}
+}
+
+func localStructureValid(node syntax.Node) bool {
+	present := func(child syntax.Node) bool {
+		return child != nil && !syntaxNodeIsNil(child)
+	}
 	switch node := node.(type) {
-	case *syntax.File:
-		return w.validateStatements(node.Stmts)
-	case *syntax.Stmt:
-		if status := w.checkNode(node.Cmd, false); status != structureValid {
-			return status
-		}
-		for _, redirect := range node.Redirs {
-			if status := w.checkNode(redirect, true); status != structureValid {
-				return status
-			}
-		}
 	case *syntax.Assign:
-		if node.Name == nil && node.Value == nil {
-			return structureMalformed
-		}
-		if status := w.checkNode(node.Index, false); status != structureValid {
-			return status
-		}
-		if node.Array != nil {
-			if status := w.checkNode(node.Array, true); status != structureValid {
-				return status
-			}
-		}
-		if node.Value != nil {
-			if status := w.checkNode(node.Value, true); status != structureValid {
-				return status
-			}
-		}
+		return node.Name != nil || node.Value != nil
 	case *syntax.Redirect:
-		if status := w.checkNode(node.Word, true); status != structureValid {
-			return status
-		}
-		if status := w.validateNodeStructure(node.Word); status != structureValid {
-			return status
-		}
-		if node.Hdoc != nil {
-			if status := w.validateNodeStructure(node.Hdoc); status != structureValid {
-				return status
-			}
-		}
+		return node.Word != nil
 	case *syntax.CallExpr:
-		if len(node.Assigns) == 0 && len(node.Args) == 0 {
-			return structureMalformed
-		}
-		for _, assign := range node.Assigns {
-			if status := w.checkNode(assign, true); status != structureValid {
-				return status
-			}
-		}
-		return w.validateWords(node.Args)
-	case *syntax.Block:
-		return w.validateStatements(node.Stmts)
-	case *syntax.Subshell:
-		return w.validateStatements(node.Stmts)
-	case *syntax.CmdSubst:
-		return w.validateStatements(node.Stmts)
+		return len(node.Assigns) > 0 || len(node.Args) > 0
 	case *syntax.FuncDecl:
-		return w.checkNode(node.Body, true)
-	case *syntax.IfClause:
-		if status := w.validateStatements(node.Cond); status != structureValid {
-			return status
-		}
-		if status := w.validateStatements(node.Then); status != structureValid {
-			return status
-		}
-		if node.Else != nil {
-			return w.checkNode(node.Else, true)
-		}
-		return structureValid
-	case *syntax.WhileClause:
-		if status := w.validateStatements(node.Cond); status != structureValid {
-			return status
-		}
-		return w.validateStatements(node.Do)
-	case *syntax.ForClause:
-		if status := w.checkNode(node.Loop, false); status != structureValid {
-			return status
-		}
-		return w.validateStatements(node.Do)
+		return node.Body != nil
 	case *syntax.WordIter:
-		if status := w.checkNode(node.Name, true); status != structureValid {
-			return status
-		}
-		return w.validateWords(node.Items)
-	case *syntax.CStyleLoop:
-		for _, child := range []syntax.Node{node.Init, node.Cond, node.Post} {
-			if status := w.checkNode(child, false); status != structureValid {
-				return status
-			}
-		}
+		return node.Name != nil
 	case *syntax.BinaryCmd:
-		if status := w.checkNode(node.X, true); status != structureValid {
-			return status
-		}
-		return w.checkNode(node.Y, true)
+		return node.X != nil && node.Y != nil
 	case *syntax.Word:
-		if len(node.Parts) == 0 {
-			return structureMalformed
-		}
-		return w.validateWordParts(node.Parts)
-	case *syntax.DblQuoted:
-		return w.validateWordParts(node.Parts)
+		return len(node.Parts) > 0
 	case *syntax.ParamExp:
-		if !node.Dollar.IsValid() && node.Param == nil {
-			return structureMalformed
-		}
-		if node.Short && node.Index == nil && node.Param == nil {
-			return structureMalformed
-		}
-		for _, child := range []syntax.Node{node.NestedParam, node.Index} {
-			if status := w.checkNode(child, false); status != structureValid {
-				return status
-			}
-		}
+		return (node.Dollar.IsValid() || node.Param != nil) && (!node.Short || node.Index != nil || node.Param != nil)
 	case *syntax.BinaryArithm:
-		if status := w.checkNode(node.X, true); status != structureValid {
-			return status
-		}
-		return w.checkNode(node.Y, true)
+		return present(node.X) && present(node.Y)
 	case *syntax.UnaryArithm:
-		return w.checkNode(node.X, true)
+		return present(node.X)
 	case *syntax.FlagsArithm:
-		if status := w.checkNode(node.Flags, true); status != structureValid {
-			return status
-		}
-		return w.checkNode(node.X, false)
+		return node.Flags != nil
 	case *syntax.CaseClause:
-		if status := w.checkNode(node.Word, true); status != structureValid {
-			return status
-		}
-		for _, item := range node.Items {
-			if status := w.checkNode(item, true); status != structureValid {
-				return status
-			}
-		}
+		return node.Word != nil
 	case *syntax.CaseItem:
-		if len(node.Patterns) == 0 {
-			return structureMalformed
-		}
-		if status := w.validateWords(node.Patterns); status != structureValid {
-			return status
-		}
-		return w.validateStatements(node.Stmts)
+		return len(node.Patterns) > 0
 	case *syntax.BinaryTest:
-		if status := w.checkNode(node.X, true); status != structureValid {
-			return status
-		}
-		return w.checkNode(node.Y, true)
+		return present(node.X) && present(node.Y)
 	case *syntax.UnaryTest:
-		return w.checkNode(node.X, true)
+		return present(node.X)
 	case *syntax.DeclClause:
-		if status := w.checkNode(node.Variant, true); status != structureValid {
-			return status
-		}
-		for _, arg := range node.Args {
-			if status := w.checkNode(arg, true); status != structureValid {
-				return status
-			}
-		}
+		return node.Variant != nil
 	case *syntax.ArrayElem:
-		if node.Index == nil && node.Value == nil {
-			return structureMalformed
-		}
-		if status := w.checkNode(node.Index, false); status != structureValid {
-			return status
-		}
-		if node.Value != nil {
-			return w.checkNode(node.Value, true)
-		}
-		return structureValid
+		return present(node.Index) || node.Value != nil
 	case *syntax.ExtGlob:
-		return w.checkNode(node.Pattern, true)
-	case *syntax.TimeClause:
-		if node.Stmt != nil {
-			return w.checkNode(node.Stmt, true)
-		}
-		return structureValid
+		return node.Pattern != nil
 	case *syntax.CoprocClause:
-		return w.checkNode(node.Stmt, true)
+		return node.Stmt != nil
 	case *syntax.LetClause:
-		if len(node.Exprs) == 0 {
-			return structureMalformed
-		}
-		for _, expr := range node.Exprs {
-			if status := w.checkNode(expr, true); status != structureValid {
-				return status
-			}
-		}
+		return len(node.Exprs) > 0
 	case *syntax.BraceExp:
-		if len(node.Elems) == 0 {
-			return structureMalformed
-		}
-		return w.validateWords(node.Elems)
+		return len(node.Elems) > 0
 	case *syntax.TestDecl:
-		return w.checkNode(node.Body, true)
+		return node.Body != nil
 	}
-	return structureValid
+	return true
 }
 
-func boundedBoundary(node syntax.Node, end bool, limit int) (int, bool) {
-	if !end {
-		return boundedStart(node, limit)
+// nextStructuralChild enumerates one edge at a time without materializing child slices.
+func nextStructuralChild(node syntax.Node, next *int) (syntax.Node, bool) {
+	for {
+		index := *next
+		*next = index + 1
+		switch node := node.(type) {
+		case *syntax.File:
+			if index < len(node.Stmts) {
+				return node.Stmts[index], true
+			}
+		case *syntax.Stmt:
+			if index == 0 {
+				if node.Cmd != nil {
+					return node.Cmd, true
+				}
+				continue
+			}
+			if index-1 < len(node.Redirs) {
+				return node.Redirs[index-1], true
+			}
+		case *syntax.Assign:
+			switch index {
+			case 0:
+				if node.Name != nil {
+					return node.Name, true
+				}
+			case 1:
+				if node.Index != nil {
+					return node.Index, true
+				}
+			case 2:
+				if node.Array != nil {
+					return node.Array, true
+				}
+			case 3:
+				if node.Value != nil {
+					return node.Value, true
+				}
+			default:
+				return nil, false
+			}
+			continue
+		case *syntax.Redirect:
+			switch index {
+			case 0:
+				if node.N != nil {
+					return node.N, true
+				}
+			case 1:
+				if node.Word != nil {
+					return node.Word, true
+				}
+			case 2:
+				if node.Hdoc != nil {
+					return node.Hdoc, true
+				}
+			default:
+				return nil, false
+			}
+			continue
+		case *syntax.CallExpr:
+			if index < len(node.Assigns) {
+				return node.Assigns[index], true
+			}
+			index -= len(node.Assigns)
+			if index < len(node.Args) {
+				return node.Args[index], true
+			}
+		case *syntax.Subshell:
+			if index < len(node.Stmts) {
+				return node.Stmts[index], true
+			}
+		case *syntax.Block:
+			if index < len(node.Stmts) {
+				return node.Stmts[index], true
+			}
+		case *syntax.IfClause:
+			if index < len(node.Cond) {
+				return node.Cond[index], true
+			}
+			index -= len(node.Cond)
+			if index < len(node.Then) {
+				return node.Then[index], true
+			}
+			if index == len(node.Then) && node.Else != nil {
+				return node.Else, true
+			}
+		case *syntax.WhileClause:
+			if index < len(node.Cond) {
+				return node.Cond[index], true
+			}
+			index -= len(node.Cond)
+			if index < len(node.Do) {
+				return node.Do[index], true
+			}
+		case *syntax.ForClause:
+			if index == 0 {
+				if node.Loop != nil {
+					return node.Loop, true
+				}
+				continue
+			}
+			if index-1 < len(node.Do) {
+				return node.Do[index-1], true
+			}
+		case *syntax.WordIter:
+			if index == 0 {
+				return node.Name, true
+			}
+			if index-1 < len(node.Items) {
+				return node.Items[index-1], true
+			}
+		case *syntax.CStyleLoop:
+			var child syntax.Node
+			switch index {
+			case 0:
+				child = node.Init
+			case 1:
+				child = node.Cond
+			case 2:
+				child = node.Post
+			default:
+				return nil, false
+			}
+			if child != nil {
+				return child, true
+			}
+			continue
+		case *syntax.BinaryCmd:
+			if index == 0 {
+				return node.X, true
+			}
+			if index == 1 {
+				return node.Y, true
+			}
+		case *syntax.FuncDecl:
+			offset := 0
+			if node.Name != nil {
+				if index == 0 {
+					return node.Name, true
+				}
+				offset = 1
+			}
+			nameIndex := index - offset
+			if nameIndex >= 0 && nameIndex < len(node.Names) {
+				return node.Names[nameIndex], true
+			}
+			if index == offset+len(node.Names) {
+				return node.Body, true
+			}
+		case *syntax.Word:
+			if index < len(node.Parts) {
+				return node.Parts[index], true
+			}
+		case *syntax.DblQuoted:
+			if index < len(node.Parts) {
+				return node.Parts[index], true
+			}
+		case *syntax.CmdSubst:
+			if index < len(node.Stmts) {
+				return node.Stmts[index], true
+			}
+		case *syntax.ParamExp:
+			switch index {
+			case 0:
+				if node.Flags != nil {
+					return node.Flags, true
+				}
+			case 1:
+				if node.Param != nil {
+					return node.Param, true
+				}
+			case 2:
+				if node.NestedParam != nil {
+					return node.NestedParam, true
+				}
+			case 3:
+				if node.Index != nil {
+					return node.Index, true
+				}
+			default:
+				modifierIndex := index - 4
+				if modifierIndex < len(node.Modifiers) {
+					return node.Modifiers[modifierIndex], true
+				}
+				return nil, false
+			}
+			continue
+		case *syntax.ArithmExp:
+			if index == 0 && node.X != nil {
+				return node.X, true
+			}
+		case *syntax.ArithmCmd:
+			if index == 0 && node.X != nil {
+				return node.X, true
+			}
+		case *syntax.BinaryArithm:
+			if index == 0 {
+				return node.X, true
+			}
+			if index == 1 {
+				return node.Y, true
+			}
+		case *syntax.UnaryArithm:
+			if index == 0 {
+				return node.X, true
+			}
+		case *syntax.ParenArithm:
+			if index == 0 && node.X != nil {
+				return node.X, true
+			}
+		case *syntax.FlagsArithm:
+			if index == 0 {
+				return node.Flags, true
+			}
+			if index == 1 && node.X != nil {
+				return node.X, true
+			}
+		case *syntax.CaseClause:
+			if index == 0 {
+				return node.Word, true
+			}
+			if index-1 < len(node.Items) {
+				return node.Items[index-1], true
+			}
+		case *syntax.CaseItem:
+			if index < len(node.Patterns) {
+				return node.Patterns[index], true
+			}
+			index -= len(node.Patterns)
+			if index < len(node.Stmts) {
+				return node.Stmts[index], true
+			}
+		case *syntax.TestClause:
+			if index == 0 && node.X != nil {
+				return node.X, true
+			}
+		case *syntax.BinaryTest:
+			if index == 0 {
+				return node.X, true
+			}
+			if index == 1 {
+				return node.Y, true
+			}
+		case *syntax.UnaryTest:
+			if index == 0 {
+				return node.X, true
+			}
+		case *syntax.ParenTest:
+			if index == 0 && node.X != nil {
+				return node.X, true
+			}
+		case *syntax.DeclClause:
+			if index == 0 {
+				return node.Variant, true
+			}
+			if index-1 < len(node.Args) {
+				return node.Args[index-1], true
+			}
+		case *syntax.ArrayExpr:
+			if index < len(node.Elems) {
+				return node.Elems[index], true
+			}
+		case *syntax.ArrayElem:
+			if index == 0 && node.Index != nil {
+				return node.Index, true
+			}
+			if index == 1 && node.Value != nil {
+				return node.Value, true
+			}
+			if index == 0 {
+				continue
+			}
+		case *syntax.ExtGlob:
+			if index == 0 {
+				return node.Pattern, true
+			}
+		case *syntax.ProcSubst:
+			if index < len(node.Stmts) {
+				return node.Stmts[index], true
+			}
+		case *syntax.TimeClause:
+			if index == 0 && node.Stmt != nil {
+				return node.Stmt, true
+			}
+		case *syntax.CoprocClause:
+			if index == 0 && node.Name != nil {
+				return node.Name, true
+			}
+			if index == 0 {
+				continue
+			}
+			if index == 1 {
+				return node.Stmt, true
+			}
+		case *syntax.LetClause:
+			if index < len(node.Exprs) {
+				return node.Exprs[index], true
+			}
+		case *syntax.BraceExp:
+			if index < len(node.Elems) {
+				return node.Elems[index], true
+			}
+		case *syntax.TestDecl:
+			if index == 0 && node.Description != nil {
+				return node.Description, true
+			}
+			if index == 0 {
+				continue
+			}
+			if index == 1 {
+				return node.Body, true
+			}
+		default:
+			return nil, false
+		}
+		return nil, false
 	}
-	current := node
-	adjust := 0
-	for range limit {
-		if current == nil || syntaxNodeIsNil(current) {
+}
+
+type endCandidate struct {
+	node     syntax.Node
+	adjust   int
+	useStart bool
+}
+
+// boundedEnd resolves recursive end methods with an explicit candidate stack.
+func boundedEnd(node syntax.Node, limit int) (int, bool) {
+	stack := []endCandidate{{node: node}}
+	best := 0
+	resolved := false
+	for steps := 0; len(stack) > 0; steps++ {
+		if steps >= limit {
 			return 0, false
 		}
-		switch node := current.(type) {
+		candidate := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if candidate.node == nil || syntaxNodeIsNil(candidate.node) {
+			return 0, false
+		}
+		if candidate.useStart {
+			start, ok := boundedStart(candidate.node, limit-steps)
+			if !ok {
+				return 0, false
+			}
+			best = max(best, start+candidate.adjust)
+			resolved = true
+			continue
+		}
+		addResult := func(pos syntax.Pos, adjust int) {
+			best = max(best, positionOffset(pos, candidate.adjust+adjust))
+			resolved = true
+		}
+		push := func(child syntax.Node, adjust int) {
+			stack = append(stack, endCandidate{node: child, adjust: candidate.adjust + adjust})
+		}
+		switch node := candidate.node.(type) {
 		case *syntax.File:
-			if end {
-				if len(node.Last) > 0 {
-					comment := node.Last[len(node.Last)-1]
-					return positionOffset(comment.Hash, adjust+1+len(comment.Text)), true
-				}
-				if len(node.Stmts) == 0 {
-					return 0, true
-				}
-				current = node.Stmts[len(node.Stmts)-1]
+			if len(node.Last) > 0 {
+				comment := node.Last[len(node.Last)-1]
+				addResult(comment.Hash, 1+len(comment.Text))
+			} else if len(node.Stmts) > 0 {
+				push(node.Stmts[len(node.Stmts)-1], 0)
 			} else {
-				if len(node.Stmts) > 0 {
-					current = node.Stmts[0]
-				} else if len(node.Last) > 0 {
-					return positionOffset(node.Last[0].Hash, adjust), true
-				} else {
-					return 0, true
-				}
+				resolved = true
 			}
 		case *syntax.Comment:
-			if end {
-				adjust += 1 + len(node.Text)
-			}
-			return positionOffset(node.Hash, adjust), true
+			addResult(node.Hash, 1+len(node.Text))
 		case *syntax.Stmt:
-			if !end {
-				return positionOffset(node.Position, adjust), true
-			}
 			if node.Semicolon.IsValid() {
 				delta := 1
 				if node.Coprocess || node.Disown {
 					delta++
 				}
-				return positionOffset(node.Semicolon, adjust+delta), true
+				addResult(node.Semicolon, delta)
+				continue
 			}
-			if len(node.Redirs) > 0 && node.Cmd != nil && !syntaxNodeIsNil(node.Cmd) {
-				lastRedirect := node.Redirs[len(node.Redirs)-1]
-				commandStart, commandOK := boundedStart(node.Cmd, limit)
-				redirectStart, redirectOK := boundedStart(lastRedirect, limit)
-				if commandOK && (!redirectOK || commandStart > redirectStart) {
-					current = node.Cmd
-				} else {
-					current = lastRedirect
-				}
-			} else if len(node.Redirs) > 0 {
-				current = node.Redirs[len(node.Redirs)-1]
-			} else if node.Cmd != nil {
-				current = node.Cmd
-			} else {
-				delta := 0
-				if node.Negated {
-					delta = 1
-				}
-				return positionOffset(node.Position, adjust+delta), true
+			delta := 0
+			if node.Negated {
+				delta = 1
+			}
+			addResult(node.Position, delta)
+			if node.Cmd != nil {
+				push(node.Cmd, 0)
+			}
+			if len(node.Redirs) > 0 {
+				push(node.Redirs[len(node.Redirs)-1], 0)
 			}
 		case *syntax.Assign:
-			if !end {
-				if node.Name != nil {
-					current = node.Name
-				} else {
-					current = node.Value
-				}
-			} else if node.Value != nil {
-				current = node.Value
+			if node.Value != nil {
+				push(node.Value, 0)
 			} else if node.Array != nil {
-				current = node.Array
+				push(node.Array, 0)
 			} else if node.Index != nil {
-				current = node.Index
-				adjust += 2
-			} else {
-				current = node.Name
+				push(node.Index, 2)
+			} else if node.Name != nil {
+				delta := 0
 				if !node.Naked {
-					adjust++
+					delta = 1
 				}
+				push(node.Name, delta)
+			} else {
+				return 0, false
 			}
 		case *syntax.Redirect:
-			if !end {
-				if node.N != nil {
-					current = node.N
-				} else {
-					return positionOffset(node.OpPos, adjust), true
-				}
-			} else if node.Hdoc != nil {
-				current = node.Hdoc
+			if node.Hdoc != nil {
+				push(node.Hdoc, 0)
 			} else {
-				current = node.Word
+				push(node.Word, 0)
 			}
 		case *syntax.CallExpr:
-			if !end {
-				if len(node.Assigns) > 0 {
-					current = node.Assigns[0]
-				} else if len(node.Args) > 0 {
-					current = node.Args[0]
-				} else {
-					return 0, false
-				}
-			} else if len(node.Args) > 0 {
-				current = node.Args[len(node.Args)-1]
+			if len(node.Args) > 0 {
+				push(node.Args[len(node.Args)-1], 0)
 			} else if len(node.Assigns) > 0 {
-				current = node.Assigns[len(node.Assigns)-1]
+				push(node.Assigns[len(node.Assigns)-1], 0)
 			} else {
 				return 0, false
 			}
 		case *syntax.Subshell:
-			if end {
-				return positionOffset(node.Rparen, adjust+1), true
-			}
-			return positionOffset(node.Lparen, adjust), true
+			addResult(node.Rparen, 1)
 		case *syntax.Block:
-			if end {
-				return positionOffset(node.Rbrace, adjust+1), true
-			}
-			return positionOffset(node.Lbrace, adjust), true
+			addResult(node.Rbrace, 1)
 		case *syntax.IfClause:
-			if end {
-				return positionOffset(node.FiPos, adjust+2), true
-			}
-			return positionOffset(node.Position, adjust), true
+			addResult(node.FiPos, 2)
 		case *syntax.WhileClause:
-			if end {
-				return positionOffset(node.DonePos, adjust+4), true
-			}
-			return positionOffset(node.WhilePos, adjust), true
+			addResult(node.DonePos, 4)
 		case *syntax.ForClause:
-			if end {
-				return positionOffset(node.DonePos, adjust+4), true
-			}
-			return positionOffset(node.ForPos, adjust), true
+			addResult(node.DonePos, 4)
 		case *syntax.WordIter:
-			if !end {
-				current = node.Name
-			} else if len(node.Items) > 0 {
-				current = node.Items[len(node.Items)-1]
+			if len(node.Items) > 0 {
+				push(node.Items[len(node.Items)-1], 0)
 			} else {
-				nameEnd, ok := positionOffset(node.Name.ValueEnd, 0), node.Name != nil
-				inEnd := positionOffset(node.InPos, 2)
-				if ok && nameEnd > inEnd {
-					return nameEnd + adjust, true
+				if node.Name == nil {
+					return 0, false
 				}
-				return inEnd + adjust, true
+				addResult(node.Name.ValueEnd, 0)
+				addResult(node.InPos, 2)
 			}
 		case *syntax.CStyleLoop:
-			if end {
-				return positionOffset(node.Rparen, adjust+2), true
-			}
-			return positionOffset(node.Lparen, adjust), true
+			addResult(node.Rparen, 2)
 		case *syntax.BinaryCmd:
-			if end {
-				current = node.Y
-			} else {
-				current = node.X
-			}
+			push(node.Y, 0)
 		case *syntax.FuncDecl:
-			if end {
-				current = node.Body
-			} else {
-				return positionOffset(node.Position, adjust), true
-			}
+			push(node.Body, 0)
 		case *syntax.Word:
 			if len(node.Parts) == 0 {
 				return 0, false
 			}
-			if end {
-				current = node.Parts[len(node.Parts)-1]
-			} else {
-				current = node.Parts[0]
-			}
+			push(node.Parts[len(node.Parts)-1], 0)
 		case *syntax.Lit:
-			if end {
-				return positionOffset(node.ValueEnd, adjust), true
-			}
-			return positionOffset(node.ValuePos, adjust), true
+			addResult(node.ValueEnd, 0)
 		case *syntax.SglQuoted:
-			if end {
-				return positionOffset(node.Right, adjust+1), true
-			}
-			return positionOffset(node.Left, adjust), true
+			addResult(node.Right, 1)
 		case *syntax.DblQuoted:
-			if end {
-				return positionOffset(node.Right, adjust+1), true
-			}
-			return positionOffset(node.Left, adjust), true
+			addResult(node.Right, 1)
 		case *syntax.CmdSubst:
-			if end {
-				return positionOffset(node.Right, adjust+1), true
-			}
-			return positionOffset(node.Left, adjust), true
+			addResult(node.Right, 1)
 		case *syntax.ParamExp:
-			if !end {
-				if node.Dollar.IsValid() {
-					return positionOffset(node.Dollar, adjust), true
-				}
-				current = node.Param
-			} else if !node.Short {
-				return positionOffset(node.Rbrace, adjust+1), true
+			if !node.Short {
+				addResult(node.Rbrace, 1)
 			} else if node.Index != nil {
-				current = node.Index
-				adjust++
+				push(node.Index, 1)
 			} else {
-				current = node.Param
+				push(node.Param, 0)
 			}
 		case *syntax.ArithmExp:
-			if end {
-				delta := 2
-				if node.Bracket {
-					delta = 1
-				}
-				return positionOffset(node.Right, adjust+delta), true
+			delta := 2
+			if node.Bracket {
+				delta = 1
 			}
-			return positionOffset(node.Left, adjust), true
+			addResult(node.Right, delta)
 		case *syntax.ArithmCmd:
-			if end {
-				return positionOffset(node.Right, adjust+2), true
-			}
-			return positionOffset(node.Left, adjust), true
+			addResult(node.Right, 2)
 		case *syntax.BinaryArithm:
-			if end {
-				current = node.Y
-			} else {
-				current = node.X
-			}
+			push(node.Y, 0)
 		case *syntax.UnaryArithm:
 			if node.Post {
-				if end {
-					return positionOffset(node.OpPos, adjust+2), true
-				}
-				current = node.X
-			} else if end {
-				current = node.X
+				addResult(node.OpPos, 2)
 			} else {
-				return positionOffset(node.OpPos, adjust), true
+				push(node.X, 0)
 			}
 		case *syntax.ParenArithm:
-			if end {
-				return positionOffset(node.Rparen, adjust+1), true
-			}
-			return positionOffset(node.Lparen, adjust), true
+			addResult(node.Rparen, 1)
 		case *syntax.FlagsArithm:
-			if !end {
-				current = node.Flags
-				adjust--
-			} else if node.X != nil {
-				current = node.X
+			if node.X != nil {
+				push(node.X, 0)
 			} else {
-				current = node.Flags
-				adjust++
+				push(node.Flags, 1)
 			}
 		case *syntax.CaseClause:
-			if end {
-				return positionOffset(node.Esac, adjust+4), true
-			}
-			return positionOffset(node.Case, adjust), true
+			addResult(node.Esac, 4)
 		case *syntax.CaseItem:
-			if !end {
-				if len(node.Patterns) == 0 {
-					return 0, false
-				}
-				current = node.Patterns[0]
-			} else if node.OpPos.IsValid() {
-				return positionOffset(node.OpPos, adjust+len(node.Op.String())), true
+			if node.OpPos.IsValid() {
+				addResult(node.OpPos, len(node.Op.String()))
 			} else if len(node.Last) > 0 {
 				comment := node.Last[len(node.Last)-1]
-				return positionOffset(comment.Hash, adjust+1+len(comment.Text)), true
+				addResult(comment.Hash, 1+len(comment.Text))
 			} else if len(node.Stmts) > 0 {
-				current = node.Stmts[len(node.Stmts)-1]
+				push(node.Stmts[len(node.Stmts)-1], 0)
 			} else {
-				return 0, true
+				resolved = true
 			}
 		case *syntax.TestClause:
-			if end {
-				return positionOffset(node.Right, adjust+2), true
-			}
-			return positionOffset(node.Left, adjust), true
+			addResult(node.Right, 2)
 		case *syntax.BinaryTest:
-			if end {
-				current = node.Y
-			} else {
-				current = node.X
-			}
+			push(node.Y, 0)
 		case *syntax.UnaryTest:
-			if end {
-				current = node.X
-			} else {
-				return positionOffset(node.OpPos, adjust), true
-			}
+			push(node.X, 0)
 		case *syntax.ParenTest:
-			if end {
-				return positionOffset(node.Rparen, adjust+1), true
-			}
-			return positionOffset(node.Lparen, adjust), true
+			addResult(node.Rparen, 1)
 		case *syntax.DeclClause:
-			if !end {
-				current = node.Variant
-			} else if len(node.Args) > 0 {
-				current = node.Args[len(node.Args)-1]
+			if len(node.Args) > 0 {
+				push(node.Args[len(node.Args)-1], 0)
 			} else {
-				current = node.Variant
+				push(node.Variant, 0)
 			}
 		case *syntax.ArrayExpr:
-			if end {
-				return positionOffset(node.Rparen, adjust+1), true
-			}
-			return positionOffset(node.Lparen, adjust), true
+			addResult(node.Rparen, 1)
 		case *syntax.ArrayElem:
-			if !end {
-				if node.Index != nil {
-					current = node.Index
-				} else {
-					current = node.Value
-				}
-			} else if node.Value != nil {
-				current = node.Value
+			if node.Value != nil {
+				push(node.Value, 0)
 			} else {
-				start, ok := boundedStart(node.Index, limit)
-				return start + adjust + 1, ok
+				stack = append(stack, endCandidate{node: node.Index, adjust: candidate.adjust + 1, useStart: true})
 			}
 		case *syntax.ExtGlob:
-			if end {
-				current = node.Pattern
-				adjust++
-			} else {
-				return positionOffset(node.OpPos, adjust), true
-			}
+			push(node.Pattern, 1)
 		case *syntax.ProcSubst:
-			if end {
-				return positionOffset(node.Rparen, adjust+1), true
-			}
-			return positionOffset(node.OpPos, adjust), true
+			addResult(node.Rparen, 1)
 		case *syntax.TimeClause:
-			if !end {
-				return positionOffset(node.Time, adjust), true
-			}
-			if node.Stmt == nil {
-				return positionOffset(node.Time, adjust+4), true
-			}
-			current = node.Stmt
-		case *syntax.CoprocClause:
-			if end {
-				current = node.Stmt
+			if node.Stmt != nil {
+				push(node.Stmt, 0)
 			} else {
-				return positionOffset(node.Coproc, adjust), true
+				addResult(node.Time, 4)
 			}
+		case *syntax.CoprocClause:
+			push(node.Stmt, 0)
 		case *syntax.LetClause:
-			if !end {
-				return positionOffset(node.Let, adjust), true
-			}
 			if len(node.Exprs) == 0 {
 				return 0, false
 			}
-			current = node.Exprs[len(node.Exprs)-1]
+			push(node.Exprs[len(node.Exprs)-1], 0)
 		case *syntax.BraceExp:
 			if len(node.Elems) == 0 {
 				return 0, false
 			}
-			if end {
-				current = node.Elems[len(node.Elems)-1]
-				adjust++
-			} else {
-				current = node.Elems[0]
-				adjust--
-			}
+			push(node.Elems[len(node.Elems)-1], 1)
 		case *syntax.TestDecl:
-			if end {
-				current = node.Body
-			} else {
-				return positionOffset(node.Position, adjust), true
-			}
+			push(node.Body, 0)
 		default:
 			return 0, false
 		}
 	}
-	return 0, false
+	return best, resolved
 }
 
 func boundedStart(node syntax.Node, limit int) (int, bool) {

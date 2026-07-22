@@ -2,6 +2,8 @@
 package main
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -30,9 +32,9 @@ func TestWalkRefusesUnmodeledConstruct(t *testing.T) {
 		t.Fatalf("parseStatements refusal = %#v, want none", refusal)
 	}
 
-	_, refusals, _ := walk(stmts, src)
-	if len(refusals) == 0 {
-		t.Fatal("walk returned no refusals, want a ProcSubst refusal")
+	sites, refusals, _ := walk(stmts, src)
+	if len(sites) != 1 || len(refusals) != 1 || refusals[0].code != "unsupported-construct" {
+		t.Fatalf("sites, refusals = (%d, %#v), want outer site then one ProcSubst refusal", len(sites), refusals)
 	}
 }
 
@@ -45,7 +47,7 @@ func TestWalkTraversesCommandSubstInArgv(t *testing.T) {
 
 	sites, refusals, _ := walk(stmts, src)
 	if len(refusals) != 0 || len(sites) != 2 {
-		t.Fatalf("walk returned %d sites and %d refusals, want 2 and 0", len(sites), len(refusals))
+		t.Fatalf("walk returned %d sites and refusals %#v, want 2 and none", len(sites), refusals)
 	}
 }
 
@@ -71,7 +73,7 @@ func TestWalkTraversesCommandSubstInAssignmentValue(t *testing.T) {
 
 	sites, refusals, _ := walk(stmts, src)
 	if len(refusals) != 0 || len(sites) != 2 {
-		t.Fatalf("walk returned %d sites and %d refusals, want 2 and 0", len(sites), len(refusals))
+		t.Fatalf("walk returned %d sites and refusals %#v, want 2 and none", len(sites), refusals)
 	}
 }
 
@@ -230,11 +232,13 @@ func TestWalkTerminalRefusalCapPrecedenceIsSingleEvent(t *testing.T) {
 		name      string
 		configure func(*walker)
 		wantCode  string
+		wantWork  int
 	}{
 		{
 			name:      "work cap replaces unsupported",
 			configure: func(w *walker) { w.workLimit = 1 },
 			wantCode:  "work-cap",
+			wantWork:  3,
 		},
 		{
 			name: "event cap wins over work cap",
@@ -243,6 +247,7 @@ func TestWalkTerminalRefusalCapPrecedenceIsSingleEvent(t *testing.T) {
 				w.eventCap = 0
 			},
 			wantCode: "event-cap",
+			wantWork: 1,
 		},
 	}
 	for _, test := range tests {
@@ -253,8 +258,8 @@ func TestWalkTerminalRefusalCapPrecedenceIsSingleEvent(t *testing.T) {
 			if len(w.refusals) != 1 || w.refusals[0].code != test.wantCode {
 				t.Fatalf("refusals = %#v, want one %s", w.refusals, test.wantCode)
 			}
-			if !w.stop || w.events != 1 || w.work != 2 {
-				t.Fatalf("stop, events, work = (%t, %d, %d), want (true, 1, 2)", w.stop, w.events, w.work)
+			if !w.stop || w.events != 1 || w.work != test.wantWork {
+				t.Fatalf("stop, events, work = (%t, %d, %d), want (true, 1, %d)", w.stop, w.events, w.work, test.wantWork)
 			}
 		})
 	}
@@ -322,7 +327,7 @@ func TestWalkWorkCapIncludesEmittedEvents(t *testing.T) {
 	}
 	call := &syntax.CallExpr{Args: []*syntax.Word{{Parts: []syntax.WordPart{lit}}}}
 	w := newWalker("x")
-	w.workLimit = 1
+	w.workLimit = 3
 	w.dispatch(call, "argv", 1)
 
 	if len(w.sites) != 1 {
@@ -334,8 +339,8 @@ func TestWalkWorkCapIncludesEmittedEvents(t *testing.T) {
 	if !w.stop {
 		t.Fatal("work-cap event did not stop traversal")
 	}
-	if w.nodes != 1 || w.events != 2 || w.work != 3 {
-		t.Fatalf("nodes, events, work = (%d, %d, %d), want (1, 2, 3)", w.nodes, w.events, w.work)
+	if w.nodes != 3 || w.events != 2 || w.work != 5 {
+		t.Fatalf("nodes, events, work = (%d, %d, %d), want (3, 2, 5)", w.nodes, w.events, w.work)
 	}
 }
 
@@ -346,7 +351,7 @@ func TestWalkEventCapPrecedesWorkCapAtEveryCrossing(t *testing.T) {
 		}}}
 		w := newWalker("x")
 		w.eventCap = 1
-		w.workLimit = 1
+		w.workLimit = 3
 		w.dispatch(&syntax.CallExpr{Args: []*syntax.Word{word}}, "argv", 1)
 		if len(w.sites) != 1 {
 			t.Fatalf("sites = %d, want the crossing site retained", len(w.sites))
@@ -409,6 +414,57 @@ func TestWalkBoundedSpansMatchParsedNodes(t *testing.T) {
 				t.Errorf("%T span = [%d, %d), want parsed [%d, %d)", node, gotStart, gotEnd, wantStart, wantEnd)
 			}
 			return true
+		})
+	}
+}
+
+func TestWalkStatementSpanMatchesTrailingAndInterleavedRedirects(t *testing.T) {
+	for _, src := range []string{
+		`echo >out after`,
+		`>lead echo after`,
+		`echo before >mid after`,
+	} {
+		t.Run(src, func(t *testing.T) {
+			stmts, refusal := parseStatements(src)
+			if refusal != nil {
+				t.Fatalf("parseStatements refusal = %#v, want none", refusal)
+			}
+			w := newWalker(src)
+			gotStart, gotEnd := w.nodeSpan(stmts[0])
+			wantStart := int(stmts[0].Pos().Offset())
+			wantEnd := int(stmts[0].End().Offset())
+			if gotStart != wantStart || gotEnd != wantEnd {
+				t.Fatalf("Stmt span = [%d, %d), want parsed [%d, %d)", gotStart, gotEnd, wantStart, wantEnd)
+			}
+		})
+	}
+}
+
+func TestWalkZeroValueNodesAreCapSafe(t *testing.T) {
+	nodes := []syntax.Node{
+		&syntax.File{}, &syntax.Comment{}, &syntax.Stmt{}, &syntax.Assign{}, &syntax.Redirect{},
+		&syntax.CallExpr{}, &syntax.Subshell{}, &syntax.Block{}, &syntax.IfClause{},
+		&syntax.WhileClause{}, &syntax.ForClause{}, &syntax.WordIter{}, &syntax.CStyleLoop{},
+		&syntax.BinaryCmd{}, &syntax.FuncDecl{}, &syntax.Word{}, &syntax.Lit{},
+		&syntax.SglQuoted{}, &syntax.DblQuoted{}, &syntax.CmdSubst{}, &syntax.ParamExp{},
+		&syntax.ArithmExp{}, &syntax.ArithmCmd{}, &syntax.BinaryArithm{}, &syntax.UnaryArithm{},
+		&syntax.ParenArithm{}, &syntax.FlagsArithm{}, &syntax.CaseClause{}, &syntax.CaseItem{},
+		&syntax.TestClause{}, &syntax.BinaryTest{}, &syntax.UnaryTest{}, &syntax.ParenTest{},
+		&syntax.DeclClause{}, &syntax.ArrayExpr{}, &syntax.ArrayElem{}, &syntax.ExtGlob{},
+		&syntax.ProcSubst{}, &syntax.TimeClause{}, &syntax.CoprocClause{}, &syntax.LetClause{},
+		&syntax.BraceExp{}, &syntax.TestDecl{},
+	}
+	if len(nodes) != 43 {
+		t.Fatalf("zero-value coverage = %d, want 43 pinned concrete types", len(nodes))
+	}
+	for _, node := range nodes {
+		t.Run(fmt.Sprintf("%T", node), func(t *testing.T) {
+			w := newWalker("")
+			w.workLimit = 0
+			w.dispatch(node, "zero-value-cap", 1)
+			if len(w.refusals) != 1 || w.refusals[0].code != "work-cap" {
+				t.Fatalf("refusals = %#v, want one work-cap", w.refusals)
+			}
 		})
 	}
 }
@@ -548,6 +604,114 @@ func TestWalkMalformedInteriorChildrenFailClosed(t *testing.T) {
 			t.Fatalf("span = [%d, %d), want clamped [0, 0)", got.startByte, got.endByte)
 		}
 	})
+}
+
+func TestWalkRejectsMalformedCallOwnedStructureBeforeSite(t *testing.T) {
+	lit := func() *syntax.Lit {
+		return &syntax.Lit{
+			ValuePos: syntax.NewPos(0, 1, 1), ValueEnd: syntax.NewPos(1, 1, 2), Value: "x",
+		}
+	}
+	var typedNilPart *syntax.DblQuoted
+	var typedNilIndex *syntax.UnaryArithm
+	tests := []struct {
+		name string
+		call *syntax.CallExpr
+	}{
+		{name: "empty word", call: &syntax.CallExpr{Args: []*syntax.Word{{}}}},
+		{name: "typed nil word part", call: &syntax.CallExpr{Args: []*syntax.Word{{Parts: []syntax.WordPart{typedNilPart}}}}},
+		{name: "empty assignment", call: &syntax.CallExpr{Assigns: []*syntax.Assign{{}}}},
+		{name: "typed nil assignment index", call: &syntax.CallExpr{Assigns: []*syntax.Assign{{Name: lit(), Index: typedNilIndex}}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			w := newWalker("x")
+			w.dispatch(test.call, "argv", 1)
+			if len(w.sites) != 0 {
+				t.Fatalf("sites = %#v, want no site for malformed call-owned structure", w.sites)
+			}
+			if len(w.refusals) != 1 || w.refusals[0].code != "unsupported-construct" {
+				t.Fatalf("refusals = %#v, want one unsupported-construct", w.refusals)
+			}
+			if got := w.refusals[0]; got.startByte != 0 || got.endByte != 0 {
+				t.Fatalf("span = [%d, %d), want [0, 0)", got.startByte, got.endByte)
+			}
+		})
+	}
+}
+
+func TestWalkStructuralCertificationUsesPublicWorkEnvelope(t *testing.T) {
+	word := func(offset uint) *syntax.Word {
+		return &syntax.Word{Parts: []syntax.WordPart{&syntax.Lit{
+			ValuePos: syntax.NewPos(offset, 1, offset+1),
+			ValueEnd: syntax.NewPos(offset+1, 1, offset+2),
+			Value:    "x",
+		}}}
+	}
+	args := make([]*syntax.Word, 64)
+	for index := range args {
+		args[index] = word(uint(index))
+	}
+
+	t.Run("flat call cap", func(t *testing.T) {
+		w := newWalker(strings.Repeat("x", len(args)))
+		w.workLimit = 4
+		w.dispatch(&syntax.CallExpr{Args: args}, "argv", 1)
+		if len(w.sites) != 0 {
+			t.Fatalf("sites = %d, want none before full call certification", len(w.sites))
+		}
+		if len(w.refusals) != 1 || w.refusals[0].code != "work-cap" {
+			t.Fatalf("refusals = %#v, want one work-cap", w.refusals)
+		}
+		if w.nodes != 5 || w.events != 1 || w.work != 6 {
+			t.Fatalf("nodes, events, work = (%d, %d, %d), want charged crossing (5, 1, 6)", w.nodes, w.events, w.work)
+		}
+	})
+
+	t.Run("uncapped flat call", func(t *testing.T) {
+		w := newWalker(strings.Repeat("x", len(args)))
+		w.dispatch(&syntax.CallExpr{Args: args}, "argv", 1)
+		if len(w.refusals) != 0 || len(w.sites) != 1 {
+			t.Fatalf("sites, refusals = (%d, %#v), want one and none", len(w.sites), w.refusals)
+		}
+		if w.nodes != 129 || w.events != 1 || w.work != 130 {
+			t.Fatalf("nodes, events, work = (%d, %d, %d), want unique-node accounting (129, 1, 130)", w.nodes, w.events, w.work)
+		}
+	})
+}
+
+func TestWalkTopLevelCertificationChargesBeforeCap(t *testing.T) {
+	stmts := make([]*syntax.Stmt, visitorNodeCap+1)
+	for index := range stmts {
+		stmts[index] = &syntax.Stmt{}
+	}
+	sites, refusals, work := walk(stmts, "")
+	if len(sites) != 0 || len(refusals) != 1 || refusals[0].code != "work-cap" {
+		t.Fatalf("sites, refusals = (%d, %#v), want none and one work-cap", len(sites), refusals)
+	}
+	if work != visitorNodeCap+2 {
+		t.Fatalf("work = %d, want charged node crossing plus terminal event %d", work, visitorNodeCap+2)
+	}
+}
+
+func TestWalkCertificationChargesSharedNodesOnceAndBreaksCycles(t *testing.T) {
+	lit := &syntax.Lit{
+		ValuePos: syntax.NewPos(0, 1, 1), ValueEnd: syntax.NewPos(1, 1, 2), Value: "x",
+	}
+	word := &syntax.Word{Parts: []syntax.WordPart{lit}}
+	w := newWalker("x")
+	w.dispatch(&syntax.CallExpr{Args: []*syntax.Word{word, word}}, "argv", 1)
+	if w.nodes != 3 || w.events != 1 || w.work != 4 {
+		t.Fatalf("shared nodes, events, work = (%d, %d, %d), want unique accounting (3, 1, 4)", w.nodes, w.events, w.work)
+	}
+
+	cycle := &syntax.UnaryArithm{OpPos: syntax.NewPos(0, 1, 1)}
+	cycle.X = cycle
+	w = newWalker("x")
+	w.dispatch(cycle, "word-part", 1)
+	if w.nodes != 1 || w.events != 1 || w.work != 2 || len(w.refusals) != 1 {
+		t.Fatalf("cycle accounting = nodes %d, events %d, work %d, refusals %#v; want 1, 1, 2, one", w.nodes, w.events, w.work, w.refusals)
+	}
 }
 
 func TestWalkBoundsRecursiveSpanBeforeCaps(t *testing.T) {
@@ -730,11 +894,11 @@ func TestWalkBoundsStructuralPreflightAtCaps(t *testing.T) {
 		w := newWalker("x")
 		w.eventCap = 0
 		w.dispatch(&syntax.CallExpr{Args: args}, "argv", 1)
-		if w.checkSteps != 0 {
-			t.Fatalf("structural checks = %d, want none after event cap", w.checkSteps)
-		}
 		if len(w.refusals) != 1 || w.refusals[0].code != "event-cap" {
 			t.Fatalf("refusals = %#v, want one event-cap", w.refusals)
+		}
+		if w.nodes != 0 || w.events != 1 || w.work != 1 {
+			t.Fatalf("nodes, events, work = (%d, %d, %d), want no node scan and one event", w.nodes, w.events, w.work)
 		}
 	})
 
@@ -742,14 +906,14 @@ func TestWalkBoundsStructuralPreflightAtCaps(t *testing.T) {
 		w := newWalker("x")
 		w.workLimit = 1
 		w.dispatch(&syntax.CallExpr{Args: args}, "argv", 1)
-		if w.checkSteps != 1 {
-			t.Fatalf("structural checks = %d, want work-bounded 1", w.checkSteps)
-		}
 		if len(w.sites) != 0 {
 			t.Fatalf("sites = %d, want none before incomplete certification", len(w.sites))
 		}
 		if len(w.refusals) != 1 || w.refusals[0].code != "work-cap" {
 			t.Fatalf("refusals = %#v, want one work-cap", w.refusals)
+		}
+		if w.nodes != 2 || w.events != 1 || w.work != 3 {
+			t.Fatalf("nodes, events, work = (%d, %d, %d), want charged crossing (2, 1, 3)", w.nodes, w.events, w.work)
 		}
 	})
 }
