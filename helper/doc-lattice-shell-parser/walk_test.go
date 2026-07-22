@@ -224,6 +224,38 @@ func TestWalkOuterQuotedParameterProcessSubstitutionIsLiteral(t *testing.T) {
 	}
 }
 
+func TestWalkNestedQuoteContextControlsCollapsedProcessSubstitution(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		refuse bool
+	}{
+		{name: "quoted nested expansion", source: `echo ${x:+"${y:+<(doc-lattice check)}"}; echo later`},
+		{name: "quoted nested original", source: `echo ${x:+"${y/<(doc-lattice check)/safe}"}; echo later`},
+		{name: "quoted nested replacement", source: `echo ${x:+"${y/safe/<(doc-lattice check)}"}; echo later`},
+		{name: "quoted nested continued", source: "echo ${x:+\"${y:+<\\\n(doc-lattice check)}\"}; echo later"},
+		{name: "unquoted nested expansion", source: `echo ${x:+${y:+<(doc-lattice check)}}; echo later`, refuse: true},
+		{name: "unquoted nested original", source: `echo ${x:+${y/<(doc-lattice check)/safe}}; echo later`, refuse: true},
+		{name: "unquoted nested replacement", source: `echo ${x:+${y/safe/<(doc-lattice check)}}; echo later`, refuse: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			stmts, parseRefusal := parseStatements(test.source)
+			if parseRefusal != nil {
+				t.Fatalf("parse refusal = %#v", parseRefusal)
+			}
+			sites, refusals, _ := walk(stmts, test.source)
+			wantSites := 2
+			if test.refuse {
+				wantSites = 1
+			}
+			if len(sites) != wantSites || len(refusals) != btoi(test.refuse) {
+				t.Fatalf("walk = %d sites, refusals %#v; want %d sites and refuse=%t", len(sites), refusals, wantSites, test.refuse)
+			}
+		})
+	}
+}
+
 func TestParseRejectsProcessSubstitutionInParameterIndex(t *testing.T) {
 	const src = `echo ${x[<(doc-lattice check)]}`
 	_, refusal := parseStatements(src)
@@ -241,6 +273,40 @@ func TestWalkTraversesCommandSubstitutionInReplacementWord(t *testing.T) {
 	sites, refusals, _ := walk(stmts, src)
 	if len(sites) != 2 || len(refusals) != 0 {
 		t.Fatalf("walk returned %d sites and refusals %#v, want outer and nested command sites", len(sites), refusals)
+	}
+}
+
+func TestWalkRefusesOpaqueExtGlobExecutionAndStopsLaterSites(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		refuse bool
+	}{
+		{name: "command substitution", source: `A=*($(doc-lattice check)|b) echo outer; echo later`, refuse: true},
+		{name: "backticks", source: "A=*(`doc-lattice check`|b) echo outer; echo later", refuse: true},
+		{name: "input process", source: `A=*(<(doc-lattice check)|b) echo outer; echo later`, refuse: true},
+		{name: "output process", source: `A=*(>(doc-lattice check)|b) echo outer; echo later`, refuse: true},
+		{name: "continued process", source: "A=*(<\\\n(doc-lattice check)|b) echo outer; echo later", refuse: true},
+		{name: "escaped process", source: `A=*(\<(doc-lattice check)|b) echo outer; echo later`},
+		{name: "quoted process", source: `A=*("<(doc-lattice check)"|b) echo outer; echo later`},
+		{name: "single quoted command", source: `A=*('$(doc-lattice check)'|b) echo outer; echo later`},
+		{name: "escaped dollar", source: `A=*(\$(doc-lattice check)|b) echo outer; echo later`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			stmts, parseRefusal := parseStatements(test.source)
+			if parseRefusal != nil {
+				t.Fatalf("parse refusal = %#v", parseRefusal)
+			}
+			sites, refusals, _ := walk(stmts, test.source)
+			wantSites := 2
+			if test.refuse {
+				wantSites = 1
+			}
+			if len(sites) != wantSites || len(refusals) != btoi(test.refuse) {
+				t.Fatalf("walk = %d sites, refusals %#v; want %d sites and refuse=%t", len(sites), refusals, wantSites, test.refuse)
+			}
+		})
 	}
 }
 

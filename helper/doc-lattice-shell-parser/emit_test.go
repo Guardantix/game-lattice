@@ -261,6 +261,7 @@ func TestEmitAssignmentExtGlobContexts(t *testing.T) {
 		source string
 		text   string
 		known  bool
+		refuse bool
 	}{
 		{source: `A=*(a|b)`, text: `*(a|b)`, known: true},
 		{source: `A=@(a|b)`, text: `@(a|b)`, known: true},
@@ -270,10 +271,16 @@ func TestEmitAssignmentExtGlobContexts(t *testing.T) {
 		{source: `A=*(a|@(b|c))`, text: `*(a|@(b|c))`, known: true},
 		{source: `A=*(a|"b")`, text: `*(a|b)`, known: true},
 		{source: `A=*(a|\|)`, text: `*(a||)`, known: true},
+		{source: `A=*(a|$)`, text: `*(a|$)`, known: true},
+		{source: `A=*(a|\$X)`, text: `*(a|$X)`, known: true},
+		{source: `A=*($'a\n'|b)`, text: "*(a\n|b)", known: true},
+		{source: `A=*($'a\0b'|c)`, text: `*(a|c)`, known: true},
+		{source: `A=*(pre$'\x2d'post|b)`, text: `*(pre-post|b)`, known: true},
 		{source: `A=*($X|b)`, known: false},
-		{source: `A=*($(printf a)|b)`, known: false},
-		{source: `A=*($((1+2))|b)`, known: false},
-		{source: `A=*(<(printf a)|b)`, known: false},
+		{source: `A=*($"translated"|b)`, known: false},
+		{source: `A=*($(printf a)|b)`, known: false, refuse: true},
+		{source: `A=*($((1+2))|b)`, known: false, refuse: true},
+		{source: `A=*(<(printf a)|b)`, known: false, refuse: true},
 		{source: `A=~/*(a|b)`, known: false},
 	}
 	for _, test := range tests {
@@ -283,14 +290,26 @@ func TestEmitAssignmentExtGlobContexts(t *testing.T) {
 				t.Fatalf("parse refusal = %#v", parseRefusal)
 			}
 			sites, refusals, _ := walk(statements, test.source)
-			if len(refusals) != 0 || len(sites) != 1 || len(sites[0].assignments) != 1 {
+			if len(refusals) != btoi(test.refuse) || len(sites) != 1 || len(sites[0].assignments) != 1 {
 				t.Fatalf("walk = sites %#v, refusals %#v", sites, refusals)
+			}
+			if test.refuse {
+				return
 			}
 			value, known := literalWordInContext(sites[0].assignments[0].Value, test.source, assignmentExpansion)
 			if known != test.known || known && value != test.text {
 				t.Fatalf("assignment value = %q, known=%t; want %q, known=%t", value, known, test.text, test.known)
 			}
 		})
+	}
+}
+
+func TestLiteralAssignmentExtGlobRejectsMalformedAST(t *testing.T) {
+	tests := []*syntax.ExtGlob{nil, {}, {Pattern: &syntax.Lit{Value: "x"}}}
+	for index, extglob := range tests {
+		if value, known := literalAssignmentExtGlob(extglob, "*(x)"); known || value != "" {
+			t.Fatalf("case %d = %q, known=%t; want defensive unknown", index, value, known)
+		}
 	}
 }
 
@@ -380,6 +399,10 @@ func TestEmitQuotedIndirectParameterNeverOverclaimsSingle(t *testing.T) {
 		{word: `"${ref}"`, single: true},
 		{word: `"${!scalar_ref}"`, single: false},
 		{word: `"${!array_ref}"`, single: false},
+		{word: `"${!arr[@]}"`, single: false},
+		{word: `"${!arr[*]}"`, single: true},
+		{word: `"${!prefix@}"`, single: false},
+		{word: `"${!prefix*}"`, single: true},
 		{word: `"prefix-${!ref}-suffix"`, single: false},
 	}
 	for _, test := range tests {

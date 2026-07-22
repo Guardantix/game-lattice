@@ -295,7 +295,7 @@ func literalAssignmentExtGlob(extglob *syntax.ExtGlob, src string) (string, bool
 				quote = unquoted
 				continue
 			}
-			if char == '$' || char == '`' {
+			if char == '`' || char == '$' && dollarStartsExpansion(raw, index) {
 				return "", false
 			}
 			if char == '\\' && index+1 < len(raw) {
@@ -318,8 +318,21 @@ func literalAssignmentExtGlob(extglob *syntax.ExtGlob, src string) (string, bool
 			quote = singleQuoted
 		case '"':
 			quote = doubleQuoted
-		case '$', '`':
+		case '`':
 			return "", false
+		case '$':
+			if index+1 < len(raw) && raw[index+1] == '\'' {
+				decoded, close, ok := decodeANSIQuoted(raw, index+2)
+				if !ok {
+					return "", false
+				}
+				value.WriteString(decoded)
+				index = close
+			} else if dollarStartsExpansion(raw, index) {
+				return "", false
+			} else {
+				value.WriteByte(char)
+			}
 		case '\\':
 			if index+1 >= len(raw) {
 				return "", false
@@ -341,6 +354,33 @@ func literalAssignmentExtGlob(extglob *syntax.ExtGlob, src string) (string, bool
 		return "", false
 	}
 	return value.String(), true
+}
+
+func dollarStartsExpansion(raw string, index int) bool {
+	if index < 0 || index+1 >= len(raw) || raw[index] != '$' {
+		return false
+	}
+	next := raw[index+1]
+	return next == '{' || next == '(' || next == '"' || next == '_' || next >= 'a' && next <= 'z' || next >= 'A' && next <= 'Z' || next >= '0' && next <= '9' || strings.ContainsRune("@*#?-$!", rune(next))
+}
+
+func decodeANSIQuoted(raw string, start int) (string, int, bool) {
+	for close := start; close < len(raw); close++ {
+		if raw[close] == '\\' {
+			close++
+			continue
+		}
+		if raw[close] != '\'' {
+			continue
+		}
+		value, _, err := expand.Format(nil, raw[start:close], nil)
+		if err != nil {
+			return "", 0, false
+		}
+		value, _, _ = strings.Cut(value, "\x00")
+		return value, close, true
+	}
+	return "", 0, false
 }
 
 func decodedLiteral(literal *syntax.Lit, src string, doubleQuoted bool) (string, bool) {
@@ -508,6 +548,12 @@ func quotedParameterMayExpandToManyAtDepth(parameter *syntax.ParamExp, depth int
 		return true
 	}
 	if parameter.Excl {
+		if parameter.Names == syntax.NamesPrefix {
+			return false
+		}
+		if index, ok := parameter.Index.(*syntax.Word); ok && index != nil && index.Lit() == "*" {
+			return false
+		}
 		return true
 	}
 	if parameter.Length || parameter.Width || parameter.IsSet {

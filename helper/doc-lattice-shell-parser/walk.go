@@ -324,11 +324,79 @@ func (w *walker) consumeWordPart(part syntax.WordPart, depth int, quoted bool) {
 		w.dispatch(part, "body-statements", depth)
 	case *syntax.ProcSubst:
 		w.dispatch(part, "word-part", depth)
+	case *syntax.ExtGlob:
+		if extGlobHasOpaqueExecution(part, w.src) {
+			w.dispatch(part, "opaque-execution", depth)
+		} else if w.visit(part, depth) {
+			w.consumeNestedExecution(part, depth, quoted)
+		}
 	default:
 		if w.visit(part, depth) {
 			w.consumeNestedExecution(part, depth, quoted)
 		}
 	}
+}
+
+func extGlobHasOpaqueExecution(extglob *syntax.ExtGlob, src string) bool {
+	if extglob == nil {
+		return true
+	}
+	start, end, err := validatedSpan(extglob, len(src))
+	if err != nil {
+		return true
+	}
+	raw := src[start:end]
+	const (
+		unquoted = iota
+		singleQuoted
+		doubleQuoted
+	)
+	quote := unquoted
+	var opener byte
+	for index := 0; index < len(raw); index++ {
+		char := raw[index]
+		if quote == singleQuoted {
+			if char == '\'' {
+				quote = unquoted
+			}
+			continue
+		}
+		if char == '\\' && index+1 < len(raw) {
+			if raw[index+1] == '\n' {
+				index++
+				continue
+			}
+			opener = 0
+			index++
+			continue
+		}
+		if char == '"' {
+			if quote == doubleQuoted {
+				quote = unquoted
+			} else {
+				quote = doubleQuoted
+			}
+			opener = 0
+			continue
+		}
+		if quote == unquoted && char == '\'' {
+			quote = singleQuoted
+			opener = 0
+			continue
+		}
+		if char == '`' || char == '$' && index+1 < len(raw) && raw[index+1] == '(' {
+			return true
+		}
+		if quote == unquoted && char == '(' && opener != 0 {
+			return true
+		}
+		if quote == unquoted && (char == '<' || char == '>') {
+			opener = char
+		} else {
+			opener = 0
+		}
+	}
+	return false
 }
 
 func (w *walker) consumeNestedExecution(node syntax.Node, depth int, quoted bool) {
@@ -349,6 +417,10 @@ func (w *walker) consumeNestedExecutionIn(node syntax.Node, depth int, parameter
 		if parameter, ok := node.(*syntax.ParamExp); ok {
 			childIsParameterOperand = parameterWordOperand(parameter, child)
 		}
+		childQuoted := quoted
+		if _, ok := child.(*syntax.DblQuoted); ok {
+			childQuoted = true
+		}
 		switch child := child.(type) {
 		case *syntax.CmdSubst:
 			w.dispatch(child, "body-statements", depth+1)
@@ -359,7 +431,7 @@ func (w *walker) consumeNestedExecutionIn(node syntax.Node, depth int, parameter
 				w.dispatch(child, "parameter-operand-process-substitution", depth+1)
 			}
 		default:
-			w.consumeNestedExecutionIn(child, depth+1, childIsParameterOperand, quoted)
+			w.consumeNestedExecutionIn(child, depth+1, childIsParameterOperand, childQuoted)
 		}
 		if w.stop {
 			return
