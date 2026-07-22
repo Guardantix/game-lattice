@@ -1,0 +1,34 @@
+{
+  "rows": [
+    {
+      "case": "assignments-only",
+      "outcome": "no-command-no-refusal",
+      "spec": "S5.2: assignments with no argv produce no command and no refusal."
+    },
+    {
+      "case": "assignments-plus-argv-literal",
+      "outcome": "certify-with-invocations",
+      "spec": "S5.2 (amended 2026-07-21 by owner ratification during the Tier 3B predeclaration adjudication): assignments plus argv where every assignment has a statically known name and a fully literal value (value-known true for all) certify with the resolved argv and no refusal; a literal prefix such as PATH=x never hides the invocation, it is still reported."
+    },
+    {
+      "case": "assignments-plus-argv-dynamic",
+      "outcome": "assignment-prefix-refusal-retain-argv",
+      "spec": "S5.2 (amended 2026-07-21 by owner ratification during the Tier 3B predeclaration adjudication): assignments plus argv where any assignment value is dynamic or not statically known refuse assignment-prefix at the earliest such assignment while the certified argv is still resolved so a definite finding is retained."
+    },
+    {
+      "case": "first-word-unknown",
+      "outcome": "unstable-first-word",
+      "spec": "S5.2: a first argv word with text=None refuses unstable-first-word with no string-based head logic."
+    },
+    {
+      "case": "multi-cardinality-word",
+      "outcome": "splitting-unsafe-word",
+      "spec": "S5.2: any word with single=False refuses the appropriate expansion or splitting refusal at that word."
+    },
+    {
+      "case": "ir-invariant",
+      "outcome": "text-implies-single",
+      "spec": "S5.2: the IR invariant text is not None implies single is True is enforced at the boundary."
+    }
+  ]
+}

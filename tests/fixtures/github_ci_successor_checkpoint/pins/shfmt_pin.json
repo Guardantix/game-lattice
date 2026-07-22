@@ -1,0 +1,8 @@
+{
+  "version": "3.13.1",
+  "binary": "shfmt_v3.13.1_linux_amd64",
+  "binary_sha256": "fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1",
+  "command_line": ["shfmt", "--to-json", "--filename", "stdin.bash"],
+  "role": "syntax-differential-oracle",
+  "source": "https://github.com/mvdan/sh/releases/tag/v3.13.1 (gh release download v3.13.1 --repo mvdan/sh --pattern shfmt_v3.13.1_linux_amd64; sha256sum)"
+}

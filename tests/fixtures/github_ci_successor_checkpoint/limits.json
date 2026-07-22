@@ -1,0 +1,26 @@
+{
+  "python_source_cap_chars": 1048576,
+  "helper_source_cap_bytes": 4194304,
+  "aggregate_request_cap_bytes": 8388608,
+  "stdout_cap_bytes": 16777216,
+  "stderr_capture_cap_bytes": 65536,
+  "deadline_ms": {
+    "base": 2000,
+    "per_source": 25,
+    "per_4096_bytes": 1,
+    "ceiling": 30000
+  },
+  "statement_cap": 65536,
+  "statement_cap_note": "carried forward from tests/fixtures/github_ci_checkpoint/limits.json (D3 checkpoint), which pins 65536, not the 4096 default",
+  "visitor_node_cap": 100000,
+  "visitor_depth_cap": 200,
+  "event_cap": 10000,
+  "work_units": {
+    "definition": "helper: one unit per visited node plus one per emitted event; python policy: one unit per ScanWord examined by the precheck and resolver",
+    "helper_field": "work_units",
+    "block_scan_field": "work_charged"
+  },
+  "peak_rss_max_bytes": 268435456,
+  "e2e_median_ceiling_ms": 750,
+  "e2e_repetitions_per_python": 50
+}

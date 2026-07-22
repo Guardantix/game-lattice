@@ -1,0 +1,7 @@
+{
+  "module": "mvdan.cc/sh/v3",
+  "version": "v3.13.1",
+  "sum": "h1:DP3TfgZhDkT7lerUdnp6PTGKyxxzz6T+cOlY/xEvfWk=",
+  "gomod_sum": "h1:lXJ8SexMvEVcHCoDvAGLZgFJ9Wsm2sulmoNEXGhYZD0=",
+  "source": "https://proxy.golang.org (go mod download -json mvdan.cc/sh/v3@v3.13.1)"
+}

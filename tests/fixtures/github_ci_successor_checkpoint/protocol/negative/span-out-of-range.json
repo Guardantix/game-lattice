@@ -1,0 +1,1 @@
+{"protocol_version":1,"helper_version":"0000000000000000000000000000000000000000000000000000000000000000","parser_version":"mvdan.cc/sh/v3@v3.13.1","results":[{"id":0,"events":[{"kind":"refusal","code":"syntax-error","start_byte":10,"end_byte":5}],"work_units":1}]}

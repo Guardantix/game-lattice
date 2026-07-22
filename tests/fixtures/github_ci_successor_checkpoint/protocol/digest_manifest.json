@@ -1,0 +1,15 @@
+{
+  "ordering": "path-lexicographic",
+  "include": [
+    "helper/doc-lattice-shell-parser/main.go",
+    "helper/doc-lattice-shell-parser/internal/certify/",
+    "helper/doc-lattice-shell-parser/go.mod",
+    "helper/doc-lattice-shell-parser/go.sum",
+    "tests/fixtures/github_ci_successor_checkpoint/protocol/schema.json",
+    "tests/fixtures/github_ci_successor_checkpoint/protocol/encoder.json",
+    "tests/fixtures/github_ci_successor_checkpoint/tables/",
+    "tests/fixtures/github_ci_successor_checkpoint/limits.json"
+  ],
+  "exclude_globs": ["**/*_test.go", "**/testdata/**"],
+  "digest": "sha256 over newline-joined (path, file-sha256) pairs in path-lexicographic order"
+}

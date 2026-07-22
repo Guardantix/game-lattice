@@ -1,0 +1,20 @@
+{
+  "tier3b": {
+    "fixtures": 20,
+    "max_total_indeterminate": 2,
+    "max_newly_indeterminate": 2,
+    "false_positive": 0,
+    "false_safe": 0
+  },
+  "false_safe_anywhere": 0,
+  "tier_predicates": {
+    "gate1": "Corpus: every labeled case produces its complete predeclared (status, invocations, reason-category) tuple.",
+    "gate2": "Replay: the full inventory (580-entry baseline plus post-#103 entries) matches the S6.4 tuple comparison with zero divergences outside predeclared categories.",
+    "gate3": "Tier 1 rendered managed workflows: exactly the (ci, false), (check, false), and (lint, false) findings with zero diagnostics.",
+    "gate4": "Tier 2 checked-in PR workflows: exactly the predeclared pruning and not-applicable outcome, zero findings, zero diagnostics.",
+    "gate5": "Tier 3A documented conformance: complete tuples, zero unexpected.",
+    "gate6": "Tier 3B envelope fixtures: at most 2/20 total indeterminate, at most 2/20 newly indeterminate, false-positive exactly zero, false-safe exactly zero.",
+    "gate7": "Differential oracles: pinned Bash and shfmt on representative and disagreement cases, zero false-safe.",
+    "gate8": "Offset oracle: multibyte text, parse errors, nested sites, and template positions before, inside, and after {0} produce exact expected raw-text indices."
+  }
+}

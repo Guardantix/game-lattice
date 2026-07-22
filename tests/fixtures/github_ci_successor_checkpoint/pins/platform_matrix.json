@@ -1,0 +1,14 @@
+{
+  "targets": [
+    {"triple": "x86_64-unknown-linux-gnu", "wheel_tag": "manylinux_2_28_x86_64",
+     "runner_label": "ubuntu-24.04", "build_container": null},
+    {"triple": "aarch64-unknown-linux-gnu", "wheel_tag": "manylinux_2_28_aarch64",
+     "runner_label": "ubuntu-24.04-arm", "build_container": null},
+    {"triple": "x86_64-apple-darwin", "wheel_tag": "macosx_13_0_x86_64",
+     "runner_label": "macos-15-intel", "build_container": null},
+    {"triple": "aarch64-apple-darwin", "wheel_tag": "macosx_14_0_arm64",
+     "runner_label": "macos-15", "build_container": null},
+    {"triple": "x86_64-pc-windows-msvc", "wheel_tag": "win_amd64",
+     "runner_label": "windows-2025", "build_container": null}
+  ]
+}

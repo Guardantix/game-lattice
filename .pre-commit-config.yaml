@@ -3,12 +3,14 @@ repos:
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
+        exclude: '^tests/fixtures/github_ci_successor_checkpoint/protocol/negative/'
       - id: end-of-file-fixer
-        exclude: '^docs/research/2026-07-bash-parser-benchmark/'
+        exclude: '^(docs/research/2026-07-bash-parser-benchmark/|tests/fixtures/github_ci_successor_checkpoint/protocol/negative/)'
       - id: check-yaml
       - id: check-toml
       - id: check-added-large-files
         args: ['--maxkb=500']
+        exclude: '^tests/fixtures/github_ci_successor_checkpoint/protocol/negative/max-length-four-byte-source\.json$'
       - id: no-commit-to-branch
         args: ['--branch', 'main']
       - id: check-merge-conflict

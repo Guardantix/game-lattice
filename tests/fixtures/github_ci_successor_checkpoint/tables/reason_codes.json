@@ -1,0 +1,137 @@
+{
+  "rows": [
+    {
+      "code": "syntax-error",
+      "scope": "terminal",
+      "stable_reason": "The parser could not parse this source, so its execution cannot be inspected.",
+      "scan_reason_category": "syntax-error",
+      "d4_mapping": "uninspectable"
+    },
+    {
+      "code": "unsupported-construct",
+      "scope": "terminal",
+      "stable_reason": "This source uses a shell construct the certifier does not model, so it cannot be inspected.",
+      "scan_reason_category": "unsupported-construct",
+      "d4_mapping": "uninspectable"
+    },
+    {
+      "code": "parser-divergence-guard",
+      "scope": "terminal",
+      "stable_reason": "A heredoc backslash-newline continuation makes the parse diverge from Bash, so this source is refused.",
+      "scan_reason_category": "parser-divergence-guard",
+      "d4_mapping": "uninspectable"
+    },
+    {
+      "code": "source-cap",
+      "scope": "terminal",
+      "stable_reason": "This source exceeds the per-source byte cap, so it is not inspected.",
+      "scan_reason_category": "cap-exceeded",
+      "d4_mapping": "uninspectable"
+    },
+    {
+      "code": "statement-cap",
+      "scope": "terminal",
+      "stable_reason": "This source exceeds the statement cap, so it is not inspected.",
+      "scan_reason_category": "cap-exceeded",
+      "d4_mapping": "uninspectable"
+    },
+    {
+      "code": "depth-cap",
+      "scope": "terminal",
+      "stable_reason": "This source nests deeper than the depth cap allows, so it is not inspected.",
+      "scan_reason_category": "cap-exceeded",
+      "d4_mapping": "uninspectable"
+    },
+    {
+      "code": "work-cap",
+      "scope": "terminal",
+      "stable_reason": "Certifying this source exceeds the work-unit cap, so it is not inspected.",
+      "scan_reason_category": "cap-exceeded",
+      "d4_mapping": "uninspectable"
+    },
+    {
+      "code": "event-cap",
+      "scope": "terminal",
+      "stable_reason": "This source emits more events than the event cap allows, so it is not inspected.",
+      "scan_reason_category": "cap-exceeded",
+      "d4_mapping": "uninspectable"
+    },
+    {
+      "code": "redirect-unsupported",
+      "scope": "subtree-local",
+      "stable_reason": "This redirect uses an operator the certifier does not model, so its subtree is refused.",
+      "scan_reason_category": "unsupported-operator",
+      "d4_mapping": "uninspectable"
+    },
+    {
+      "code": "expansion-unsupported",
+      "scope": "subtree-local",
+      "stable_reason": "This expansion is one the certifier does not model, so its subtree is refused.",
+      "scan_reason_category": "unsupported-expansion",
+      "d4_mapping": "uninspectable"
+    },
+    {
+      "code": "dispatcher-payload",
+      "scope": "command-local",
+      "stable_reason": "A recognized dispatcher command carries a marker, so its payload is refused rather than parsed.",
+      "scan_reason_category": "dispatcher-payload",
+      "d4_mapping": "uninspectable"
+    },
+    {
+      "code": "dispatcher-selector-unresolved",
+      "scope": "command-local",
+      "stable_reason": "A dispatcher option is option-like but not statically resolvable, so the command is refused.",
+      "scan_reason_category": "policy-unresolvable",
+      "d4_mapping": "uninspectable"
+    },
+    {
+      "code": "marker-head-look-alike",
+      "scope": "command-local",
+      "stable_reason": "This head matches the marker pattern but is neither doc-lattice nor a known launcher, so it is refused.",
+      "scan_reason_category": "marker-head-look-alike",
+      "d4_mapping": "uninspectable"
+    },
+    {
+      "code": "assignment-prefix",
+      "scope": "command-local",
+      "stable_reason": "This command has an assignment prefix with a dynamic or not statically known value, so that assignment is refused while the argv stays resolved.",
+      "scan_reason_category": "assignment-prefix",
+      "d4_mapping": "uninspectable"
+    },
+    {
+      "code": "unstable-first-word",
+      "scope": "command-local",
+      "stable_reason": "The first word does not resolve to a known text, so no head can be read from it.",
+      "scan_reason_category": "unstable-first-word",
+      "d4_mapping": "uninspectable"
+    },
+    {
+      "code": "splitting-unsafe-word",
+      "scope": "command-local",
+      "stable_reason": "This word can expand to more than one argument, so the command cannot be resolved safely.",
+      "scan_reason_category": "splitting-unsafe-word",
+      "d4_mapping": "uninspectable"
+    },
+    {
+      "code": "policy-unresolvable",
+      "scope": "command-local",
+      "stable_reason": "This looks like a doc-lattice launch but cannot be resolved under the floor, so it is refused.",
+      "scan_reason_category": "policy-unresolvable",
+      "d4_mapping": "uninspectable"
+    },
+    {
+      "code": "control-flow-keyword",
+      "scope": "command-local",
+      "stable_reason": "This command word is a control-flow keyword, so it is refused rather than treated as a head.",
+      "scan_reason_category": "control-flow-keyword",
+      "d4_mapping": "uninspectable"
+    },
+    {
+      "code": "unquoted-expansion-in-command-word",
+      "scope": "command-local",
+      "stable_reason": "The command word carries an unquoted expansion, so the head cannot be read safely.",
+      "scan_reason_category": "unquoted-expansion-in-command-word",
+      "d4_mapping": "uninspectable"
+    }
+  ]
+}

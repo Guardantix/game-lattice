@@ -1,0 +1,85 @@
+{
+  "tier": "tier3a-documented-conformance",
+  "derivation": "Each D3 tier3a_cases.json case is re-derived through the same successor delta rules as the acceptance corpus (Task 6). Twelve of thirteen carry through unchanged; only uvx-continuation flips from D3 uninspectable to certified because the real Bash parser joins the backslash-newline command continuation the D3 heuristic refused.",
+  "cases": [
+    {
+      "id": "direct-audit",
+      "expected_status": "certified",
+      "expected_invocations": [["ci", false]],
+      "derivation": "Plain doc-lattice head with the ci audit subcommand resolves directly under a traversed argv."
+    },
+    {
+      "id": "direct-check",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false]],
+      "derivation": "Plain doc-lattice check resolves directly under a traversed argv."
+    },
+    {
+      "id": "direct-lint",
+      "expected_status": "certified",
+      "expected_invocations": [["lint", false]],
+      "derivation": "Plain doc-lattice lint resolves directly under a traversed argv."
+    },
+    {
+      "id": "uvx-pinned-audit",
+      "expected_status": "certified",
+      "expected_invocations": [["ci", false]],
+      "derivation": "The uvx launcher with --python and --from==2.0.0 resolves to doc-lattice ci audit; all option values are statically known literals, so the invocation certifies."
+    },
+    {
+      "id": "uvx-continuation",
+      "expected_status": "certified",
+      "expected_invocations": [["ci", false]],
+      "derivation": "Successor improvement (S3.1): the real Bash parser joins the backslash-newline command continuation, so the two physical lines form one uvx doc-lattice ci audit command that certifies. Flips from the D3 recording of uninspectable / unsupported-operator."
+    },
+    {
+      "id": "uv-run-help",
+      "expected_status": "certified",
+      "expected_invocations": [],
+      "derivation": "uv run doc-lattice --help carries no subcommand invocation; the source certifies with no retained invocation."
+    },
+    {
+      "id": "uv-run-no-sync",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false]],
+      "derivation": "uv run --no-sync is a supported launcher form resolving to doc-lattice check."
+    },
+    {
+      "id": "uv-tool-run-long-form",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false]],
+      "derivation": "uv tool run is a supported launcher long form resolving to doc-lattice check."
+    },
+    {
+      "id": "dynamic-non-policy-arg",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false]],
+      "derivation": "doc-lattice check --config \"$CFG\": the quoted \"$CFG\" is single=True (one argv entry) and is the value of a non-policy option, so the check invocation certifies with dry_run false."
+    },
+    {
+      "id": "conditional-list-and",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false], ["lint", false]],
+      "derivation": "S3.2 traverses both && operands of the BinaryCmd; doc-lattice check and doc-lattice lint each certify."
+    },
+    {
+      "id": "conditional-list-or",
+      "expected_status": "certified",
+      "expected_invocations": [["lint", false]],
+      "derivation": "S3.2 traverses the || operands; doc-lattice lint certifies and the exit 1 fallback carries no marker."
+    },
+    {
+      "id": "offline-template-block",
+      "expected_status": "certified",
+      "expected_invocations": [["ci", false], ["check", false], ["lint", false]],
+      "derivation": "The offline template block resolves three sequential uvx doc-lattice invocations (ci audit, check, lint), each with statically known launcher option values."
+    },
+    {
+      "id": "linear-template-quoted-path",
+      "expected_status": "uninspectable",
+      "expected_invocations": [],
+      "reason_category": "unstable-first-word",
+      "derivation": "The head word \"$RUNNER_TEMP/doc-lattice-venv/bin/doc-lattice\" carries a dynamic parameter, so its final text is not statically known (text=None); S5.2 refuses unstable-first-word. Unchanged from the D3 recording."
+    }
+  ]
+}

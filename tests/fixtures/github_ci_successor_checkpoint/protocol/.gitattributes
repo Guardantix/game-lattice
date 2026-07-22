@@ -1,0 +1,3 @@
+# Raw wire-protocol negative fixtures: preserve bytes exactly (some are deliberately
+# invalid UTF-8 or contain a lone surrogate; git must never normalize their line endings).
+negative/* -text

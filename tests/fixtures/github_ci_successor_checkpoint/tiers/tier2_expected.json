@@ -1,0 +1,24 @@
+{
+  "tier": "tier2-checked-in-pr-workflows",
+  "findings": [],
+  "diagnostics": 0,
+  "workflows": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "triggers": ["push", "pull_request"],
+      "pr_events": ["pull_request"],
+      "reachable_steps": [
+        {"job": "code-quality", "steps": [2, 3, 4, 5, 6, 7, 8]},
+        {"job": "security-scan", "steps": [1]},
+        {"job": "tests", "steps": [2, 3, 4]},
+        {"job": "build-release", "steps": [2, 3]},
+        {"job": "publish", "steps": []}
+      ],
+      "pruned_jobs": ["release"],
+      "marker_gated_sources": [],
+      "batched_sources": [],
+      "derivation": "ci.yml is the only checked-in workflow with a pull_request trigger. Its jobs code-quality, security-scan, tests, build-release, and publish are PR-reachable, but none of their run steps carry a direct doc-lattice marker (D2 raw marker facts empty on every PR-reachable body and template). The only marker-bearing execution sources (the complex Bash, steps 4/7/10) live in the release job, which is push-only and pruned by D1 for the pull_request event. With no PR-reachable marker-bearing source, D6 batches nothing: marker_gated_sources and batched_sources are empty, and the audit yields zero findings and zero diagnostics."
+    }
+  ],
+  "derivation": "Tier 2 enumerates every checked-in workflow carrying a PR trigger. Exactly one qualifies (.github/workflows/ci.yml). Applying D1 PR-reachability, D2 raw marker facts, and the D6 composition table, every PR-reachable step is marker-free and the sole marker-bearing job (release) is pruned as push-only, so the repository audit is clean: zero findings, zero diagnostics. This matches the current clean ci audit; no zeros were forced."
+}

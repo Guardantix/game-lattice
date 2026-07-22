@@ -1,0 +1,134 @@
+{
+  "tier": "tier3b-envelope-fixtures",
+  "budget": {
+    "fixtures": 20,
+    "max_total_indeterminate": 2,
+    "predeclared_uninspectable": 2,
+    "headroom": 0
+  },
+  "derivation": "Each of the 20 mined envelope fixtures' run blocks is re-derived through the successor delta rules. Eighteen certify the substituted doc-lattice check invocation; two (fixtures 05 and 14) stay uninspectable on S5.2 single=False words. Fixture 02, the third member of the D3 rejection trio, now certifies under the two 2026-07-21 owner ratifications (Assign-value traverse plus literal-assignment-prefix certification), bringing the predeclared uninspectable count to exactly 2 of 20 - meeting the budget at zero headroom.",
+  "fixtures": [
+    {
+      "id": "fixture-01",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false]],
+      "derivation": "uv run doc-lattice check . resolves directly under a traversed argv."
+    },
+    {
+      "id": "fixture-02",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false]],
+      "derivation": "ENVS_JSON=$(NO_COLOR=1 uvx doc-lattice check show --json | jq ...): the outer assignment value now traverses (Assign-value traverse ratified 2026-07-21), and the inner command NO_COLOR=1 uvx doc-lattice check show carries only a statically known literal assignment prefix, so the literal-assignment-prefix ratification (2026-07-21) certifies the resolved uvx doc-lattice check invocation with no assignment-prefix refusal. Both ratifications are required: the value traverse alone left the inner NO_COLOR=1 prefix refusing. This fixture is the sole reason the count is 2 rather than 3; it holds the budget at zero headroom."
+    },
+    {
+      "id": "fixture-03",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false]],
+      "derivation": "uvx doc-lattice check --all-files resolves directly; --all-files is a non-policy literal option."
+    },
+    {
+      "id": "fixture-04",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false]],
+      "derivation": "uvx doc-lattice check -r requirements.txt resolves directly; -r and its literal value are non-policy."
+    },
+    {
+      "id": "fixture-05",
+      "expected_status": "uninspectable",
+      "expected_invocations": [],
+      "reason_category": "splitting-unsafe-word",
+      "derivation": "pyodide() { uvx --from doc-lattice --with pyodide-build doc-lattice check \"$@\"; }: the FuncDecl body traverses (a genuine improvement over D3, which could not parse the function) and resolves doc-lattice check, but the trailing \"$@\" is the canonical multi-cardinality word - single=False, expanding to every positional parameter - so S5.2 refuses splitting-unsafe-word. Since \"$@\" could inject --dry-run, certifying dry_run=false would be a false-safe (forbidden, false_safe=0), so no invocation is retained. This is one of exactly two predeclared uninspectable fixtures; with fixture 14 it consumes the entire 2/20 budget, leaving zero headroom."
+    },
+    {
+      "id": "fixture-06",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false]],
+      "derivation": "uvx doc-lattice check --html report.html \"reproducible-$name-a/...\" \"...\": the trailing filename words are double-quoted (single=True) dynamic non-policy arguments, so the check invocation certifies."
+    },
+    {
+      "id": "fixture-07",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false]],
+      "derivation": "uvx doc-lattice check resolves directly."
+    },
+    {
+      "id": "fixture-08",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false]],
+      "derivation": "uvx doc-lattice check . resolves directly."
+    },
+    {
+      "id": "fixture-09",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false]],
+      "derivation": "uvx doc-lattice check . resolves directly."
+    },
+    {
+      "id": "fixture-10",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false]],
+      "derivation": "uvx doc-lattice check . resolves directly."
+    },
+    {
+      "id": "fixture-11",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false]],
+      "derivation": "uvx doc-lattice check resolves directly."
+    },
+    {
+      "id": "fixture-12",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false]],
+      "derivation": "uvx doc-lattice check -s pyodide resolves directly; -s and its literal value are non-policy."
+    },
+    {
+      "id": "fixture-13",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false]],
+      "derivation": "uvx --from doc-lattice doc-lattice check --no-commit --no-tag --no-push resolves directly; every option is a non-policy literal."
+    },
+    {
+      "id": "fixture-14",
+      "expected_status": "uninspectable",
+      "expected_invocations": [],
+      "reason_category": "unsupported-expansion",
+      "derivation": "uvx --with=tox-uv doc-lattice check -e ${{ env.TOX_PYTHON }}: the successor resolves doc-lattice check but the trailing unquoted ${{ env.TOX_PYTHON }} is not a statically resolvable single-cardinality word (single=False, and the ${{ ... }} form is an unmodeled parameter expansion), so S5.2 refuses. Because the unresolvable trailing word could inject a policy token, certifying would risk a false-safe (false_safe=0), so no invocation is retained. This is one of exactly two predeclared uninspectable fixtures; with fixture 05 it consumes the entire 2/20 budget, leaving zero headroom. The reason category is provisional pending the pinned parser's handling of the unquoted GitHub-expression word; the uninspectable status and the 2/20 count are pinned regardless."
+    },
+    {
+      "id": "fixture-15",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false]],
+      "derivation": "uvx doc-lattice check --check . resolves directly; --check is a non-policy literal option."
+    },
+    {
+      "id": "fixture-16",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false]],
+      "derivation": "uvx doc-lattice check --all-files --show-diff-on-failure resolves directly; both options are non-policy literals."
+    },
+    {
+      "id": "fixture-17",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false]],
+      "derivation": "doc-lattice check --cov=src/guardian_ai --cov-report=xml resolves directly under a plain head; both options are non-policy literals."
+    },
+    {
+      "id": "fixture-18",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false]],
+      "derivation": "doc-lattice check resolves directly under a plain head."
+    },
+    {
+      "id": "fixture-19",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false]],
+      "derivation": "mkdir -p reports then doc-lattice check --disable-warnings --html=reports/report.html: the mkdir statement carries no marker; the second statement resolves check with non-policy literal options."
+    },
+    {
+      "id": "fixture-20",
+      "expected_status": "certified",
+      "expected_invocations": [["check", false]],
+      "derivation": "doc-lattice check --maxfail=1 --disable-warnings --cache-clear || true: S3.2 traverses the || operands; the first resolves check with non-policy literal options and the || true fallback carries no marker."
+    }
+  ]
+}

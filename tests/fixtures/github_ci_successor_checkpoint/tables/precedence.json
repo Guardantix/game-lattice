@@ -1,0 +1,32 @@
+{
+  "chain": [
+    "doc-lattice-or-launcher-resolution",
+    "dispatcher-payload",
+    "marker-head-look-alike",
+    "off-floor-wrapper",
+    "not-candidate"
+  ],
+  "spec": "S6.3 frozen policy precedence chain.",
+  "steps": [
+    {
+      "step": "doc-lattice-or-launcher-resolution",
+      "spec": "S6.3: exact doc-lattice and launcher resolution runs first."
+    },
+    {
+      "step": "dispatcher-payload",
+      "spec": "S6.3: the dispatcher rule (S6.1) applies before any head look-alike."
+    },
+    {
+      "step": "marker-head-look-alike",
+      "spec": "S6.3: a marker-matching head that is not doc-lattice or a launcher refuses here."
+    },
+    {
+      "step": "off-floor-wrapper",
+      "spec": "S6.3: the existing off-floor wrapper handling applies next."
+    },
+    {
+      "step": "not-candidate",
+      "spec": "S6.3: a command matching no earlier stage is not a candidate."
+    }
+  ]
+}

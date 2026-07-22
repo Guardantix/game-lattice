@@ -1,0 +1,14 @@
+{
+  "plain_heads": ["eval", "source", "."],
+  "shell_heads": ["bash", "sh", "dash", "zsh"],
+  "shell_requires_c_option": true,
+  "c_option_grammar": {
+    "short_flag": "-c",
+    "cluster_rule": "a short option cluster containing c (for example -lc, -xec) matches",
+    "value_options_before_c": "any option-like word may precede; a word that is option-like but not statically resolvable refuses as dispatcher-selector-unresolved",
+    "double_dash": "-- ends option parsing; -c after -- does not match",
+    "exe_and_case": "head matched on casefolded basename with optional .exe suffix"
+  },
+  "argv_wide_marker_rule": true,
+  "pinned_false_positive": "bash -c 'echo ok' doc-lattice refuses although the operand is $0"
+}

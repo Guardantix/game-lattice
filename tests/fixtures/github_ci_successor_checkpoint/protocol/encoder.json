@@ -1,0 +1,8 @@
+{
+  "ensure_ascii": false,
+  "allow_nan": false,
+  "bom": false,
+  "separators": [",", ":"],
+  "caps_measured_in": "utf-8-bytes",
+  "surrogate_check": "reject-before-encoding"
+}

@@ -1,0 +1,292 @@
+{
+  "families": {
+    "dispatcher": [
+      {
+        "id": "bash-c-marker-payload",
+        "source": "bash -c 'doc-lattice linear'",
+        "label": "intentional-exit-2",
+        "expected_status": "uninspectable",
+        "expected_invocations": [],
+        "reason_category": "dispatcher-payload",
+        "spec": "S6.1: bash is a recognized shell dispatcher head and -c matches the frozen option grammar; the marker-bearing payload doc-lattice linear is refused command-local as dispatcher-payload rather than parsed recursively."
+      },
+      {
+        "id": "eval-marker-payload",
+        "source": "eval \"doc-lattice $X\"",
+        "label": "intentional-exit-2",
+        "expected_status": "uninspectable",
+        "expected_invocations": [],
+        "reason_category": "dispatcher-payload",
+        "spec": "S6.1/S6.2: eval is a plain dispatcher head; the argv-wide marker is caught on the word's raw-source segment (text is null because of $X), so the command refuses dispatcher-payload."
+      },
+      {
+        "id": "sh-cluster-lc",
+        "source": "sh -lc 'doc-lattice reconcile'",
+        "label": "intentional-exit-2",
+        "expected_status": "uninspectable",
+        "expected_invocations": [],
+        "reason_category": "dispatcher-payload",
+        "spec": "S6.1: the -lc short-option cluster contains c, so the -c grammar matches under the cluster rule; the marker payload refuses dispatcher-payload."
+      },
+      {
+        "id": "bash-c-operand-false-positive",
+        "source": "bash -c 'echo ok' doc-lattice",
+        "label": "intentional-exit-2",
+        "expected_status": "uninspectable",
+        "expected_invocations": [],
+        "reason_category": "dispatcher-payload",
+        "pinned_false_positive": true,
+        "spec": "S6.1: the pinned deliberate false positive; the trailing operand doc-lattice becomes $0 and is not executed source, yet the argv-wide marker rule still refuses dispatcher-payload."
+      },
+      {
+        "id": "bash-norc-c",
+        "source": "bash --norc -c 'doc-lattice check'",
+        "label": "intentional-exit-2",
+        "expected_status": "uninspectable",
+        "expected_invocations": [],
+        "reason_category": "dispatcher-payload",
+        "spec": "S6.1: --norc is a value-less long option that precedes -c without ending option parsing, so -c matches and the marker payload refuses dispatcher-payload."
+      },
+      {
+        "id": "bash-dynamic-selector",
+        "source": "bash $OPT 'doc-lattice lint'",
+        "label": "intentional-exit-2",
+        "expected_status": "uninspectable",
+        "expected_invocations": [],
+        "reason_category": "policy-unresolvable",
+        "spec": "S6.1: $OPT is dynamic selector syntax in a marker-bearing dispatcher command; rather than silently missing -c it refuses dispatcher-selector-unresolved. Code dispatcher-selector-unresolved maps to scan_reason_category policy-unresolvable (tables/reason_codes.json), which is the value this row's reason_category records."
+      },
+      {
+        "id": "marker-free-dispatch",
+        "source": "bash -c 'echo hello'  # doc-lattice check runs elsewhere",
+        "label": "outside-direct-marker-contract",
+        "expected_status": "not_applicable",
+        "expected_invocations": [],
+        "spec": "S6.1 last sentence: the dispatcher command bash -c 'echo hello' is marker-free so it stays outside the direct-invocation contract; the doc-lattice text lives only in the trailing comment, which is inert raw text and not a command word, so the source is not_applicable with no invocation and no refusal."
+      },
+      {
+        "id": "source-plain-head-marker-argv",
+        "source": "source ./doc-lattice-env.sh",
+        "label": "intentional-exit-2",
+        "expected_status": "uninspectable",
+        "expected_invocations": [],
+        "reason_category": "dispatcher-payload",
+        "spec": "S6.1: source is a plain dispatcher head; the argv word ./doc-lattice-env.sh carries the marker (doc-lattice matches doc[-_.]+lattice in its raw-source segment), so the argv-wide rule refuses dispatcher-payload."
+      }
+    ],
+    "look_alike": [
+      {
+        "id": "underscore-head",
+        "source": "doc_lattice check",
+        "label": "intentional-exit-2",
+        "expected_status": "uninspectable",
+        "expected_invocations": [],
+        "reason_category": "marker-head-look-alike",
+        "spec": "S6.3: doc_lattice matches the direct-marker pattern doc[-_.]+lattice, but its casefolded basename is not in _DOC_LATTICE_HEADS {doc-lattice, doc-lattice.exe} and it is no launcher, so the head refuses marker-head-look-alike, not not_candidate."
+      },
+      {
+        "id": "dotted-wrapper-head",
+        "source": "./doc.lattice-wrapper run",
+        "label": "intentional-exit-2",
+        "expected_status": "uninspectable",
+        "expected_invocations": [],
+        "reason_category": "marker-head-look-alike",
+        "spec": "S6.3: the basename doc.lattice-wrapper matches doc[-_.]+lattice yet is neither doc-lattice nor a launcher, so the head refuses marker-head-look-alike."
+      },
+      {
+        "id": "exe-head-certifies",
+        "source": "doc-lattice.exe check",
+        "label": "must-certify",
+        "expected_status": "certified",
+        "expected_invocations": [
+          [
+            "check",
+            false
+          ]
+        ],
+        "spec": "S6.3 / head rules: the .exe basename casefolds to doc-lattice.exe, which is in _DOC_LATTICE_HEADS, so the head resolves to doc-lattice and certifies the check invocation rather than refusing as a look-alike."
+      },
+      {
+        "id": "casefold-head-certifies",
+        "source": "DOC-LATTICE lint",
+        "label": "must-certify",
+        "expected_status": "certified",
+        "expected_invocations": [
+          [
+            "lint",
+            false
+          ]
+        ],
+        "spec": "S6.3 / head rules: heads are matched on casefolded basename; DOC-LATTICE casefolds to doc-lattice, which is in _DOC_LATTICE_HEADS, so it resolves as the doc-lattice head and certifies lint instead of refusing as a look-alike."
+      }
+    ],
+    "heredoc_guard": [
+      {
+        "id": "benchmark-false-safe",
+        "source": "cat <<EOF\n$\\\n(doc-lattice linear)\nEOF\n",
+        "label": "intentional-exit-2",
+        "expected_status": "uninspectable",
+        "expected_invocations": [],
+        "reason_category": "parser-divergence-guard",
+        "forbidden_outcome": "certified-empty",
+        "spec": "S3.4: the documented permanent regression; the backslash-newline continuation in the unquoted-heredoc body reassembles $(doc-lattice linear), which mvdan tokenizes literally, so the raw-source guard fires a terminal parser-divergence-guard refusal. Clean-empty certification here is an automatic evaluation failure, hence forbidden_outcome certified-empty."
+      },
+      {
+        "id": "quoted-delim-inert",
+        "source": "cat <<'EOF'\n$\\\n(doc-lattice linear)\nEOF\n",
+        "label": "must-certify",
+        "expected_status": "certified",
+        "expected_invocations": [],
+        "spec": "S3.4 / D2 subtlety: the single-quoted delimiter <<'EOF' makes the heredoc body inert data, and the raw-source guard only inspects confirmed unquoted-heredoc spans. D2 gates on raw text, and the raw text does still contain the marker, but it lives in an inert quoted-heredoc body that is never a command word, so the guard does not fire and no invocation is produced. The correct tuple is certified with zero invocations, not intentional-exit-2."
+      },
+      {
+        "id": "plain-cmdsubst-no-continuation",
+        "source": "cat <<EOF\n$(doc-lattice check)\nEOF\n",
+        "label": "must-certify",
+        "expected_status": "certified",
+        "expected_invocations": [
+          [
+            "check",
+            false
+          ]
+        ],
+        "spec": "S3.2 traverse rule: an unquoted-heredoc body with no backslash-newline continuation is a real command-substitution execution source, so the guard stays silent and doc-lattice check certifies."
+      }
+    ],
+    "malformed_tail": [
+      {
+        "id": "check-then-unterminated-cmdsubst",
+        "source": "doc-lattice check; echo \"$(",
+        "label": "intentional-exit-2",
+        "expected_status": "uninspectable",
+        "expected_invocations": [
+          [
+            "check",
+            false
+          ]
+        ],
+        "reason_category": "syntax-error",
+        "spec": "S3.1 / S5.3: statement 1 doc-lattice check is a completed top-level statement and is retained; the trailing echo \"$( is an unterminated command substitution whose parse error emits exactly one terminal syntax-error refusal. The retained finding is still reported and exit 2 is forced. Family mirror of the stmtsseq canonical."
+      },
+      {
+        "id": "linear-then-unterminated-subshell",
+        "source": "doc-lattice linear && (",
+        "label": "intentional-exit-2",
+        "expected_status": "uninspectable",
+        "expected_invocations": [],
+        "reason_category": "syntax-error",
+        "spec": "S3.1: per S3.1, doc-lattice linear && ( is one incomplete top-level statement (a BinaryCmd whose right arm never parses), so StmtsSeq yields nothing before the error and no evidence is retained; contrast with the semicolon-closed canonical fixture, where the completed left statement is retained ahead of its own unterminated tail."
+      },
+      {
+        "id": "reconcile-then-reserved-do",
+        "source": "doc-lattice reconcile --dry-run; do",
+        "label": "intentional-exit-2",
+        "expected_status": "uninspectable",
+        "expected_invocations": [
+          [
+            "reconcile",
+            true
+          ]
+        ],
+        "reason_category": "syntax-error",
+        "spec": "S3.1 / S5.3: doc-lattice reconcile --dry-run is a completed statement retained as [reconcile, dry_run=true]; a bare do at statement start is a reserved word where a command is expected. mvdan.cc/sh mirrors bash, which reports 'syntax error near unexpected token do', so the parser raises a terminal ParseError rather than accepting a command named do. The tail is therefore syntax-error, not the command-local control-flow-keyword code, which would require a certified command word that never exists here."
+      }
+    ],
+    "offset_oracle": [
+      {
+        "id": "emoji-before-marker",
+        "source": "echo \"😀\"; $X doc-lattice check",
+        "label": "intentional-exit-2",
+        "expected_status": "uninspectable",
+        "expected_refusal_raw_index": 10,
+        "reason_category": "unstable-first-word",
+        "spec": "S5.2 / S9 gate 8 (multibyte text): statement 1 echo \"[emoji]\" certifies; statement 2's first word $X has text=None so it refuses unstable-first-word. The emoji is one Python character, so the refusal is at raw character index 10: e0 c1 h2 o3 space4 quote5 emoji6 quote7 semicolon8 space9 dollar10. The UTF-8 byte offset would be 13; the character-index oracle is what D4 uses."
+      },
+      {
+        "id": "multibyte-assignment-prefix",
+        "source": "echo \"café\"; VAR=\"naïve\" doc-lattice check",
+        "label": "intentional-exit-2",
+        "expected_status": "uninspectable",
+        "expected_refusal_raw_index": 13,
+        "reason_category": "assignment-prefix",
+        "spec": "S5.2 / S9 gate 8 (multibyte value): statement 2 VAR=\"naive\" doc-lattice check refuses assignment-prefix at the earliest assignment while the argv doc-lattice check stays resolved. The accented e is one character, so VAR begins at raw character index 13: e0 c1 h2 o3 space4 quote5 c6 a7 f8 e-acute9 quote10 semicolon11 space12 V13. The UTF-8 byte offset would be 14."
+      },
+      {
+        "id": "template-before-sentinel",
+        "source": "bash $PRE {0}",
+        "label": "intentional-exit-2",
+        "expected_status": "uninspectable",
+        "expected_refusal_raw_index": 5,
+        "reason_category": "policy-unresolvable",
+        "template": true,
+        "spec": "S5.2 / S6.1 / S9 gate 8 (before {0}): the authored shell template is bash $PRE {0}; $PRE is dynamic selector syntax preceding the payload in a marker-bearing dispatcher command (the run body {0} carries the marker), so it refuses dispatcher-selector-unresolved. The refusal precedes {0} and uses the identity projection, mapping to raw character index 5: b0 a1 s2 h3 space4 dollar5. Code dispatcher-selector-unresolved maps to scan_reason_category policy-unresolvable (tables/reason_codes.json), which is the value this row's reason_category records."
+      },
+      {
+        "id": "template-inside-sentinel",
+        "source": "bash -c {0}",
+        "label": "intentional-exit-2",
+        "expected_status": "uninspectable",
+        "expected_refusal_raw_index": 8,
+        "reason_category": "dispatcher-payload",
+        "template": true,
+        "spec": "S5.2 / S6.1 / S9 gate 8 (inside {0}): bash -c {0} is a dispatcher (bash plus -c) whose payload is the run body that {0} represents. When that run body carries the marker, the dispatcher-payload refusal span lands inside the substituted sentinel; per S5.2 an offset inside a synthetic sentinel maps to the corresponding {0} start, so the raw index is 8, the brace of {0}: b0 a1 s2 h3 space4 dash5 c6 space7 brace8. The sentinel's own literal content is excluded from marker provenance (S6.2); the payload refusal comes from the authored run body."
+      },
+      {
+        "id": "template-after-sentinel",
+        "source": "bash -e {0} $EXTRA",
+        "label": "intentional-exit-2",
+        "expected_status": "uninspectable",
+        "expected_refusal_raw_index": 12,
+        "reason_category": "splitting-unsafe-word",
+        "template": true,
+        "spec": "S5.2 / S9 gate 8 (after {0}): the authored template is bash -e {0} $EXTRA; {0} substitutes the run-body sentinel. The trailing unquoted expansion $EXTRA has single=False so it refuses splitting-unsafe-word at that word; the refusal lies in the run-body region after the sentinel and uses the identity projection, mapping to raw character index 12: b0 a1 s2 h3 space4 dash5 e6 space7 brace8 zero9 brace10 space11 dollar12."
+      },
+      {
+        "id": "parse-error-cmdsubst",
+        "source": "doc-lattice check; echo \"$(",
+        "label": "intentional-exit-2",
+        "expected_status": "uninspectable",
+        "expected_refusal_raw_index": 25,
+        "reason_category": "syntax-error",
+        "spec": "S5.2 / S9 gate 8 (parse error): the terminal syntax-error for the unterminated command substitution anchors at its opening $( token. The prefix doc-lattice check; echo \" is 25 characters, so $ sits at raw character index 25. The site check is retained per S3.1; this row pins the refusal offset."
+      },
+      {
+        "id": "nested-site-refusal",
+        "source": "echo \"$(doc-lattice check && $Y)\"",
+        "label": "intentional-exit-2",
+        "expected_status": "uninspectable",
+        "expected_refusal_raw_index": 29,
+        "reason_category": "unstable-first-word",
+        "spec": "S5.2 / S9 gate 8 (nested sites): inside the command substitution, doc-lattice check certifies as a nested site, and the right operand of && is $Y whose text=None refuses unstable-first-word. The projection preserves the nested offset, mapping to raw character index 29 (the $ of $Y) in echo \"$(doc-lattice check && $Y)\"."
+      }
+    ],
+    "stmtsseq": [
+      {
+        "id": "canonical-drain-dedup",
+        "source": "doc-lattice check; echo \"$(",
+        "label": "intentional-exit-2",
+        "expected_status": "uninspectable",
+        "expected_invocations": [
+          [
+            "check",
+            false
+          ]
+        ],
+        "reason_category": "syntax-error",
+        "pin_upgrade_tripwire": true,
+        "spec": "S3.1: the canonical StmtsSeq drain-and-deduplicate fixture. Statement 1 certifies a site (check retained); the unterminated tail yields the first non-nil error, the co-yielded statement is discarded, the iterator is fully drained without accepting later statements, and duplicate terminal errors are deduplicated so exactly one terminal syntax-error is emitted at the first error position. Hard pin-upgrade tripwire: any parser pin change must re-verify this before the pin lands."
+      }
+    ],
+    "encoder_composition": [
+      {
+        "id": "max-length-four-byte-source",
+        "fixture_path": "protocol/negative/max-length-four-byte-source",
+        "assertion": "encoded request byte length < 8388608",
+        "label": "outside-direct-marker-contract",
+        "expected_status": "not_applicable",
+        "expected_invocations": [],
+        "spec": "S4.2 / S5.1: the max-length four-byte-character source (1,048,576 astral characters = 4,194,304 UTF-8 bytes) pins the encoder composition. With ensure_ascii=False the canonical request encodes to 4,194,359 bytes, under the 8,388,608 aggregate cap, so the per-source and aggregate byte caps compose; default ASCII escaping would break the four-bytes-per-character worst case. Per S5.1 the all-astral source is marker-free, so it stays outside the direct-invocation contract: not_applicable with no invocation, not a must-certify scan."
+      }
+    ]
+  }
+}

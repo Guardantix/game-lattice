@@ -1,0 +1,223 @@
+"""Generate the frozen raw negative fixtures for the successor wire protocol (S4.2).
+
+Each fixture is a single document representing one malformed or edge-sized side of the
+wire: either the request bytes a future Go decoder must reject, or the response bytes a
+future Python decoder must reject. The binary fixtures (``invalid-utf8.bin``,
+``lone-surrogate.bin``) are written with explicit byte escapes because they are not valid
+UTF-8 text and cannot round-trip through ``json.dumps``. The ``max-length-four-byte-source``
+fixture is a legitimate, maximally sized request that pins the S4.2 per-source/aggregate
+byte-cap composition; this script asserts that composition at generation time so a future
+change to the caps or the encoding rule is caught here rather than silently drifting.
+
+Run with ``python scripts/generate_protocol_negatives.py`` to regenerate all twelve fixtures
+in ``tests/fixtures/github_ci_successor_checkpoint/protocol/negative/``.
+"""
+
+import json
+from pathlib import Path
+
+CHECKPOINT = Path(__file__).parent.parent / "tests" / "fixtures" / "github_ci_successor_checkpoint"
+NEGATIVE = CHECKPOINT / "protocol" / "negative"
+
+AGGREGATE_REQUEST_CAP_BYTES = 8_388_608
+PER_SOURCE_CHARACTER_CAP = 1_048_576
+
+
+def write_text(name: str, content: str) -> None:
+    """Write a text-mode negative fixture verbatim, without a trailing-newline rewrite."""
+    (NEGATIVE / name).write_text(content, encoding="utf-8")
+
+
+def write_bytes(name: str, content: bytes) -> None:
+    """Write a binary-mode negative fixture verbatim."""
+    (NEGATIVE / name).write_bytes(content)
+
+
+def generate_duplicate_keys() -> None:
+    """Request: the ``id`` key repeats within one source object (Go decoder target)."""
+    write_text(
+        "duplicate-keys.json",
+        '{"protocol_version":1,"sources":[{"id":0,"source":"true","id":0}]}',
+    )
+
+
+def generate_invalid_utf8() -> None:
+    """Request: a lone 0xFF byte breaks strict UTF-8 inside the source string."""
+    prefix = b'{"protocol_version":1,"sources":[{"id":0,"source":"X'
+    suffix = b'X"}]}'
+    write_bytes("invalid-utf8.bin", prefix + b"\xff" + suffix)
+
+
+def generate_lone_surrogate() -> None:
+    """Request: a UTF-8-shaped encoding of the lone surrogate U+D800 (ED A0 80)."""
+    prefix = b'{"protocol_version":1,"sources":[{"id":0,"source":"X'
+    suffix = b'X"}]}'
+    write_bytes("lone-surrogate.bin", prefix + b"\xed\xa0\x80" + suffix)
+
+
+def generate_trailing_document() -> None:
+    """Request: a valid document immediately followed by a second JSON value."""
+    first = json.dumps(
+        {"protocol_version": 1, "sources": [{"id": 0, "source": "true"}]},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    write_text("trailing-document.json", first + '{"unexpected":true}')
+
+
+def generate_wrong_type_bool_as_int() -> None:
+    """Response: a result ``id`` is JSON ``true`` instead of an integer."""
+    write_text(
+        "wrong-type-bool-as-int.json",
+        json.dumps(
+            {
+                "protocol_version": 1,
+                "helper_version": "0" * 64,
+                "parser_version": "mvdan.cc/sh/v3@v3.13.1",
+                "results": [{"id": True, "events": [], "work_units": 1}],
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+    )
+
+
+def generate_non_contiguous_ids() -> None:
+    """Request: source ids 0 and 2, skipping 1."""
+    write_text(
+        "non-contiguous-ids.json",
+        json.dumps(
+            {
+                "protocol_version": 1,
+                "sources": [{"id": 0, "source": "true"}, {"id": 2, "source": "false"}],
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+    )
+
+
+def generate_empty_batch() -> None:
+    """Request: an empty ``sources`` array."""
+    write_text(
+        "empty-batch.json",
+        json.dumps(
+            {"protocol_version": 1, "sources": []}, ensure_ascii=False, separators=(",", ":")
+        ),
+    )
+
+
+def generate_nan_number() -> None:
+    """Response: ``work_units`` is the non-finite token ``NaN``."""
+    write_text(
+        "nan-number.json",
+        '{"protocol_version":1,"helper_version":"' + "0" * 64 + '",'
+        '"parser_version":"mvdan.cc/sh/v3@v3.13.1",'
+        '"results":[{"id":0,"events":[],"work_units":NaN}]}',
+    )
+
+
+def generate_unknown_field() -> None:
+    """Request: an undeclared top-level field."""
+    write_text(
+        "unknown-field.json",
+        json.dumps(
+            {
+                "protocol_version": 1,
+                "sources": [{"id": 0, "source": "true"}],
+                "unexpected": True,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+    )
+
+
+def generate_out_of_order_results() -> None:
+    """Response: results carry ids 1 then 0 instead of ascending order."""
+    write_text(
+        "out-of-order-results.json",
+        json.dumps(
+            {
+                "protocol_version": 1,
+                "helper_version": "0" * 64,
+                "parser_version": "mvdan.cc/sh/v3@v3.13.1",
+                "results": [
+                    {"id": 1, "events": [], "work_units": 1},
+                    {"id": 0, "events": [], "work_units": 1},
+                ],
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+    )
+
+
+def generate_span_out_of_range() -> None:
+    """Response: an event's ``start_byte`` exceeds its ``end_byte`` (S3.3 range rule)."""
+    write_text(
+        "span-out-of-range.json",
+        json.dumps(
+            {
+                "protocol_version": 1,
+                "helper_version": "0" * 64,
+                "parser_version": "mvdan.cc/sh/v3@v3.13.1",
+                "results": [
+                    {
+                        "id": 0,
+                        "events": [
+                            {
+                                "kind": "refusal",
+                                "code": "syntax-error",
+                                "start_byte": 10,
+                                "end_byte": 5,
+                            }
+                        ],
+                        "work_units": 1,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+    )
+
+
+def generate_max_length_four_byte_source() -> None:
+    """Request: one source at the 1,048,576-character / 4,194,304-byte per-source cap.
+
+    Pins the S4.2 cap composition: the inherited Python character cap (four-byte-worst-case)
+    composes with the aggregate request byte cap once the canonical encoder rules
+    (``ensure_ascii=False``, compact separators) are applied.
+    """
+    source = "\U0001f600" * PER_SOURCE_CHARACTER_CAP
+    assert len(source) == PER_SOURCE_CHARACTER_CAP
+    assert len(source.encode("utf-8")) == 4 * PER_SOURCE_CHARACTER_CAP
+    request = {"protocol_version": 1, "sources": [{"id": 0, "source": source}]}
+    encoded = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    assert len(encoded) < AGGREGATE_REQUEST_CAP_BYTES, (
+        f"max-length-four-byte-source request is {len(encoded)} bytes, "
+        f"at or over the aggregate cap of {AGGREGATE_REQUEST_CAP_BYTES}"
+    )
+    write_bytes("max-length-four-byte-source.json", encoded)
+
+
+def main() -> None:
+    """Regenerate every negative fixture."""
+    NEGATIVE.mkdir(parents=True, exist_ok=True)
+    generate_duplicate_keys()
+    generate_invalid_utf8()
+    generate_lone_surrogate()
+    generate_trailing_document()
+    generate_wrong_type_bool_as_int()
+    generate_non_contiguous_ids()
+    generate_empty_batch()
+    generate_nan_number()
+    generate_unknown_field()
+    generate_out_of_order_results()
+    generate_span_out_of_range()
+    generate_max_length_four_byte_source()
+
+
+if __name__ == "__main__":
+    main()

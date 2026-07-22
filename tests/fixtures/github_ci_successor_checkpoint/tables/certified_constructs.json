@@ -1,0 +1,533 @@
+{
+  "parser": "mvdan.cc/sh/v3@v3.13.1",
+  "traversal_convention": {
+    "container_rule": "S3.2: a node with a traverse disposition consumes its child words, word-parts, and role-covered children directly within that role, and it recurses into nested statement-bearing parts (for example, a CmdSubst embedded inside a Word) without re-dispatching those children through this table.",
+    "wildcard_rule": "S3.2: a row with role \"*\" applies only when the node is encountered in a role not covered by any explicit (node, role) row in this table, so a wildcard refuse row never overrides in-role consumption performed by a traverse container."
+  },
+  "exported_node_types": [
+    "ArithmCmd",
+    "ArithmExp",
+    "ArithmExpr",
+    "ArrayElem",
+    "ArrayExpr",
+    "Assign",
+    "BinAritOperator",
+    "BinaryArithm",
+    "BinaryCmd",
+    "BinaryTest",
+    "BinCmdOperator",
+    "BinTestOperator",
+    "Block",
+    "BraceExp",
+    "CallExpr",
+    "CaseClause",
+    "CaseItem",
+    "CaseOperator",
+    "CmdSubst",
+    "Command",
+    "Comment",
+    "CoprocClause",
+    "CStyleLoop",
+    "DblQuoted",
+    "DeclClause",
+    "Expansion",
+    "ExtGlob",
+    "File",
+    "FlagsArithm",
+    "ForClause",
+    "FuncDecl",
+    "GlobOperator",
+    "IfClause",
+    "LangError",
+    "LangVariant",
+    "LetClause",
+    "Lit",
+    "Loop",
+    "Node",
+    "ParamExp",
+    "ParenArithm",
+    "ParenTest",
+    "ParExpOperator",
+    "ParNamesOperator",
+    "ParseError",
+    "Parser",
+    "ParserOption",
+    "Pos",
+    "Printer",
+    "PrinterOption",
+    "ProcOperator",
+    "ProcSubst",
+    "QuoteError",
+    "Redirect",
+    "RedirOperator",
+    "Replace",
+    "SglQuoted",
+    "Slice",
+    "Stmt",
+    "Subshell",
+    "TestClause",
+    "TestDecl",
+    "TestExpr",
+    "TimeClause",
+    "UnAritOperator",
+    "UnaryArithm",
+    "UnaryTest",
+    "UnTestOperator",
+    "WhileClause",
+    "Word",
+    "WordIter",
+    "WordPart"
+  ],
+  "rows": [
+    {
+      "node": "File",
+      "role": "top-level-statements",
+      "disposition": "traverse",
+      "spec": "S3.2 traverse: statement-bearing execution source. The file body is the top-level statement list that hosts every source."
+    },
+    {
+      "node": "Stmt",
+      "role": "command-and-redirects",
+      "disposition": "traverse",
+      "spec": "S3.2 traverse: statement-bearing execution source. A statement wraps one command plus its redirects; both are walked in source order."
+    },
+    {
+      "node": "CallExpr",
+      "role": "argv",
+      "disposition": "traverse",
+      "spec": "S3.2 traverse: statement-bearing execution source. The argv words are the command site the certifier emits."
+    },
+    {
+      "node": "BinaryCmd",
+      "role": "operand-statements",
+      "disposition": "traverse",
+      "spec": "S3.2 traverse: statement-bearing execution source. The && || and | operands are statements; a pipeline is modeled here via Stmt."
+    },
+    {
+      "node": "Block",
+      "role": "body-statements",
+      "disposition": "traverse",
+      "spec": "S3.2 traverse: statement-bearing execution source. A brace block runs its body in the current shell."
+    },
+    {
+      "node": "Subshell",
+      "role": "body-statements",
+      "disposition": "traverse",
+      "spec": "S3.2 traverse: statement-bearing execution source. A subshell runs its body statements as real execution sources."
+    },
+    {
+      "node": "CmdSubst",
+      "role": "body-statements",
+      "disposition": "traverse",
+      "spec": "S3.2 traverse: statement-bearing execution source. A command substitution hosts statements that execute."
+    },
+    {
+      "node": "FuncDecl",
+      "role": "body",
+      "disposition": "traverse",
+      "spec": "S3.2 traverse: statement-bearing execution source. A function body is a statement-bearing execution source."
+    },
+    {
+      "node": "IfClause",
+      "role": "condition-and-body",
+      "disposition": "traverse",
+      "spec": "S3.2 traverse: statement-bearing execution source. The condition and then/elif/else bodies are executed statements."
+    },
+    {
+      "node": "WhileClause",
+      "role": "condition-and-body",
+      "disposition": "traverse",
+      "spec": "S3.2 traverse: statement-bearing execution source. The while or until condition and loop body are executed statements."
+    },
+    {
+      "node": "ForClause",
+      "role": "loop-body-and-selector",
+      "disposition": "traverse",
+      "spec": "S3.2 traverse: statement-bearing execution source. The loop body plus the selector words are executed sources and condition words."
+    },
+    {
+      "node": "CaseClause",
+      "role": "selector-word",
+      "disposition": "traverse",
+      "spec": "S3.2 traverse: statement-bearing execution source. The case selector word can host a command substitution."
+    },
+    {
+      "node": "CaseItem",
+      "role": "patterns-and-body",
+      "disposition": "traverse",
+      "spec": "S3.2 traverse: statement-bearing execution source. Each case item runs its body statements; its pattern words can host expansions."
+    },
+    {
+      "node": "WordIter",
+      "role": "loop-items",
+      "disposition": "traverse",
+      "spec": "S3.2 traverse: statement-bearing execution source. The for-in selector words are condition and selector words per S3.2."
+    },
+    {
+      "node": "Redirect",
+      "role": "target-word-expansion",
+      "disposition": "traverse",
+      "spec": "S3.2 traverse: statement-bearing execution source. A redirect target word expansion can host a command substitution."
+    },
+    {
+      "node": "Redirect",
+      "role": "unquoted-heredoc-body",
+      "disposition": "traverse",
+      "spec": "S3.2 traverse: statement-bearing execution source. An unquoted-delimiter heredoc body expands and can host an execution source."
+    },
+    {
+      "node": "Assign",
+      "role": "value",
+      "disposition": "traverse",
+      "spec": "Owner-ratified 2026-07-21 during Task 8 Tier 3B adjudication: assignment-value word-parts are consumed in-role and embedded CmdSubst recurses, exactly as argv; ratified against S3.2."
+    },
+    {
+      "node": "Comment",
+      "role": "*",
+      "disposition": "ignore",
+      "spec": "S3.2 ignore: provably cannot host an execution source. A comment is inert text and cannot host an execution source."
+    },
+    {
+      "node": "SglQuoted",
+      "role": "data",
+      "disposition": "ignore",
+      "spec": "S3.2 ignore: provably cannot host an execution source. Single-quoted content is literal data with no expansion."
+    },
+    {
+      "node": "Redirect",
+      "role": "quoted-heredoc-body",
+      "disposition": "ignore",
+      "spec": "S3.2 ignore: provably cannot host an execution source. A quoted-delimiter heredoc body is literal data with no expansion."
+    },
+    {
+      "node": "ArithmCmd",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. An arithmetic command (( )) is an unsupported execution semantic."
+    },
+    {
+      "node": "ArithmExp",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. An arithmetic expansion operand is not statically resolvable in general."
+    },
+    {
+      "node": "ArithmExpr",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. The arithmetic-expression interface covers operands the certifier does not model."
+    },
+    {
+      "node": "ArrayElem",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. An array element value can host a command substitution but is refused fail-closed pending corpus evaluation (uncertain: could be traverse)."
+    },
+    {
+      "node": "ArrayExpr",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. An array literal can host a command substitution but is refused fail-closed pending corpus evaluation (uncertain: could be traverse)."
+    },
+    {
+      "node": "Assign",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. An assignment encountered in a role other than value is refused fail-closed; the value role is separately covered by its own explicit traverse row (owner-ratified 2026-07-21)."
+    },
+    {
+      "node": "BinAritOperator",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. An arithmetic binary operator enum is not an execution source."
+    },
+    {
+      "node": "BinaryArithm",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A binary arithmetic node is an unmodeled arithmetic operand."
+    },
+    {
+      "node": "BinaryTest",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A binary test node inside [[ ]] is an unmodeled construct."
+    },
+    {
+      "node": "BinCmdOperator",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A binary command operator enum is not an execution source."
+    },
+    {
+      "node": "BinTestOperator",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A test binary operator enum is not an execution source."
+    },
+    {
+      "node": "BraceExp",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A brace expansion can widen a word to many arguments; refused fail-closed."
+    },
+    {
+      "node": "CaseOperator",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A case terminator operator enum is not an execution source."
+    },
+    {
+      "node": "Command",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. The command interface default arm refuses every unmodeled command node."
+    },
+    {
+      "node": "CoprocClause",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A coproc clause is an unsupported execution semantic."
+    },
+    {
+      "node": "CStyleLoop",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A C-style for (( )) loop header is an unmodeled arithmetic construct."
+    },
+    {
+      "node": "DblQuoted",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A double-quoted word can host a command substitution but is refused fail-closed pending corpus evaluation (uncertain: could be traverse)."
+    },
+    {
+      "node": "DeclClause",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A declare/local/export clause is an unsupported execution semantic."
+    },
+    {
+      "node": "Expansion",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A parameter-expansion operator part is not statically resolvable in general."
+    },
+    {
+      "node": "ExtGlob",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. An extended glob is an unmodeled matching construct."
+    },
+    {
+      "node": "FlagsArithm",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. An arithmetic flags node is an unmodeled arithmetic operand."
+    },
+    {
+      "node": "GlobOperator",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A glob operator enum is not an execution source."
+    },
+    {
+      "node": "LangError",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A language-variant error type is not a syntax node."
+    },
+    {
+      "node": "LangVariant",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A language-variant enum is not a syntax node."
+    },
+    {
+      "node": "LetClause",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A let clause is an unsupported arithmetic execution semantic."
+    },
+    {
+      "node": "Lit",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. Literal argv text is collected under a traversed command site; a standalone literal is refused fail-closed (uncertain: inert, could be ignore)."
+    },
+    {
+      "node": "Loop",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. The loop interface default arm refuses every unmodeled loop header."
+    },
+    {
+      "node": "Node",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. The node interface default arm refuses every unknown or future node kind."
+    },
+    {
+      "node": "ParamExp",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A parameter expansion is collected as an argv word fact under a traversed command site; standalone it is refused fail-closed (uncertain: could be traverse)."
+    },
+    {
+      "node": "ParenArithm",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A parenthesized arithmetic node is an unmodeled arithmetic operand."
+    },
+    {
+      "node": "ParenTest",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A parenthesized test node is an unmodeled construct."
+    },
+    {
+      "node": "ParExpOperator",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A parameter-expansion operator enum is not an execution source."
+    },
+    {
+      "node": "ParNamesOperator",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A parameter-names operator enum is not an execution source."
+    },
+    {
+      "node": "ParseError",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A parse-error type is not a syntax node; a parse failure is a syntax-error refusal."
+    },
+    {
+      "node": "Parser",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. The parser struct is not a syntax node."
+    },
+    {
+      "node": "ParserOption",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A parser-option function type is not a syntax node."
+    },
+    {
+      "node": "Pos",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A position value is not a syntax node."
+    },
+    {
+      "node": "Printer",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. The printer struct is not a syntax node."
+    },
+    {
+      "node": "PrinterOption",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A printer-option function type is not a syntax node."
+    },
+    {
+      "node": "ProcOperator",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A process-substitution operator enum is not an execution source."
+    },
+    {
+      "node": "ProcSubst",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A process substitution spawns a process and is an unsupported execution semantic."
+    },
+    {
+      "node": "QuoteError",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A quote-error type is not a syntax node; it is a syntax-error refusal."
+    },
+    {
+      "node": "RedirOperator",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A redirect operator enum is not an execution source."
+    },
+    {
+      "node": "Replace",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A parameter-replacement part is not statically resolvable in general."
+    },
+    {
+      "node": "Slice",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A parameter-slice part is not statically resolvable in general."
+    },
+    {
+      "node": "TestClause",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A test clause [[ ]] is an unsupported execution semantic."
+    },
+    {
+      "node": "TestDecl",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A test declaration is an unmodeled construct."
+    },
+    {
+      "node": "TestExpr",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. The test-expression interface covers unmodeled test operands."
+    },
+    {
+      "node": "TimeClause",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A time clause is an unsupported execution semantic."
+    },
+    {
+      "node": "UnAritOperator",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A unary arithmetic operator enum is not an execution source."
+    },
+    {
+      "node": "UnaryArithm",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A unary arithmetic node is an unmodeled arithmetic operand."
+    },
+    {
+      "node": "UnaryTest",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A unary test node is an unmodeled construct."
+    },
+    {
+      "node": "UnTestOperator",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A test unary operator enum is not an execution source."
+    },
+    {
+      "node": "Word",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. A word is collected under a traversed command, redirect, or selector context; a standalone word is refused fail-closed (uncertain: could be traverse)."
+    },
+    {
+      "node": "WordPart",
+      "role": "*",
+      "disposition": "refuse",
+      "spec": "S3.2 refuse: fail-closed default for a construct outside the traverse and ignore sets. The word-part interface default arm refuses every unmodeled word part."
+    }
+  ]
+}

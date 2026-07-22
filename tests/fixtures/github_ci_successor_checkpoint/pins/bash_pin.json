@@ -1,0 +1,8 @@
+{
+  "version": "5.2.21",
+  "container": "ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90",
+  "container_digest": "sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90",
+  "binary_sha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+  "role": "semantic-differential-oracle",
+  "source": "tests/fixtures/github_ci_checkpoint/bash_pin.json (D3 frozen artifact)"
+}

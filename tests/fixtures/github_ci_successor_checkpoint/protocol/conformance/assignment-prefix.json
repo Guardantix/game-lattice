@@ -1,0 +1,50 @@
+{
+  "request": {
+    "protocol_version": 1,
+    "sources": [
+      {
+        "id": 0,
+        "source": "X=1 doc-lattice lint"
+      }
+    ]
+  },
+  "response": {
+    "protocol_version": 1,
+    "helper_version": "b7e2f4a10000000000000000000000000000000000000000000000005678abcd",
+    "parser_version": "mvdan.cc/sh/v3@v3.13.1",
+    "results": [
+      {
+        "id": 0,
+        "events": [
+          {
+            "kind": "command_site",
+            "ordinal": 0,
+            "start_byte": 0,
+            "end_byte": 20,
+            "assignments": [
+              {
+                "name": "X",
+                "value_known": true
+              }
+            ],
+            "argv": [
+              {
+                "text": "doc-lattice",
+                "single": true,
+                "start_byte": 4,
+                "end_byte": 15
+              },
+              {
+                "text": "lint",
+                "single": true,
+                "start_byte": 16,
+                "end_byte": 20
+              }
+            ]
+          }
+        ],
+        "work_units": 2
+      }
+    ]
+  }
+}

@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://doc-lattice.dev/schemas/successor-helper-protocol-v1.json",
+  "title": "doc-lattice successor helper wire protocol (version 1)",
+  "description": "Frozen request/response contract between helper_supervisor.py and the Go helper (S3.3, S4.1, S4.2).",
+  "oneOf": [
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/response" }
+  ],
+  "$defs": {
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "sources"],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/source" }
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "source"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 0 },
+        "source": { "type": "string" }
+      }
+    },
+    "response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "helper_version", "parser_version", "results"],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "helper_version": { "type": "string" },
+        "parser_version": { "type": "string" },
+        "results": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/result" }
+        }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "events", "work_units"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 0 },
+        "events": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/event" }
+        },
+        "work_units": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "event": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "ordinal", "start_byte", "end_byte", "assignments", "argv"],
+          "properties": {
+            "kind": { "const": "command_site", "enum": ["command_site"] },
+            "ordinal": { "type": "integer", "minimum": 0 },
+            "start_byte": { "type": "integer", "minimum": 0 },
+            "end_byte": { "type": "integer", "minimum": 0 },
+            "assignments": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/assignment" }
+            },
+            "argv": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/word" }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "code", "start_byte", "end_byte"],
+          "properties": {
+            "kind": { "const": "refusal", "enum": ["refusal"] },
+            "code": { "type": "string" },
+            "start_byte": { "type": "integer", "minimum": 0 },
+            "end_byte": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
+    "assignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "value_known"],
+      "properties": {
+        "name": { "type": "string" },
+        "value_known": { "type": "boolean" }
+      }
+    },
+    "word": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "single", "start_byte", "end_byte"],
+      "properties": {
+        "text": { "type": ["string", "null"] },
+        "single": { "type": "boolean" },
+        "start_byte": { "type": "integer", "minimum": 0 },
+        "end_byte": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

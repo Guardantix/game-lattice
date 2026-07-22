@@ -1,0 +1,32 @@
+{
+  "tier": "tier1-managed-workflows",
+  "findings": [
+    ["ci", false],
+    ["check", false],
+    ["lint", false]
+  ],
+  "diagnostics": 0,
+  "workflows": [
+    {
+      "kind": "offline",
+      "certified_source": "run_body",
+      "job": "check",
+      "step_index": 2,
+      "invocations": [
+        ["ci", false],
+        ["check", false],
+        ["lint", false]
+      ],
+      "derivation": "render_workflows(OWNER/REPO, 2.0.0) offline workflow: the check job step 2 run_body is a single certified execution source resolving the managed audit-check-lint sequence; D1 keeps the job PR-reachable and D6 batches the bash run body. No diagnostics."
+    },
+    {
+      "kind": "linear",
+      "certified_source": null,
+      "job": "linear",
+      "pruned": true,
+      "invocations": [],
+      "derivation": "render_workflows linear workflow: the linear job is not PR-reachable and is pruned by D1, so it contributes no scanned source and no diagnostic. It never enters the Tier 1 findings."
+    }
+  ],
+  "derivation": "Tier 1 renders the two managed workflows with doc_lattice.github_ci.render.render_workflows and evaluates them through the D1+D6 harness. Only the offline workflow's check-job run body is PR-reachable and marker-bearing; it certifies the exact managed sequence [ci, check, lint]. The linear workflow's sole job is pruned. Findings pin that sequence; diagnostics are zero."
+}
