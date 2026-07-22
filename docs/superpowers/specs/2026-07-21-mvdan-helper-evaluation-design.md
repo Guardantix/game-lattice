@@ -422,6 +422,13 @@ while preventing the `{0}` sentinel (`__doc_lattice_script__`) from manufacturin
 dispatcher or head-look-alike refusal, because projection maps sentinel-interior spans to
 the authored `{0}`.
 
+Ordering clarification (added 2026-07-21 after adversarial review): this word-level rule
+refines policy decisions within sources that D2 already batched. It never resurrects a
+source whose authored raw text carries no marker; such a source is dropped at collection
+(section 5.1) before the helper runs, so no word-level resolution can apply to it. The
+`doc-"lattice"` contraction therefore remains a named D2 contract removal, exactly as
+ratified for the predecessor evaluation.
+
 ### 6.3 Head look-alike symmetry
 
 Applied only to known, authored head text: a head word matching the marker pattern that
