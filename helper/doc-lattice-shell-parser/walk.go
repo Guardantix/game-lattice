@@ -322,8 +322,36 @@ func (w *walker) consumeWordPart(part syntax.WordPart, depth int) {
 		}
 	case *syntax.CmdSubst:
 		w.dispatch(part, "body-statements", depth)
-	default:
+	case *syntax.ProcSubst:
 		w.dispatch(part, "word-part", depth)
+	default:
+		if w.visit(part, depth) {
+			w.consumeNestedExecution(part, depth)
+		}
+	}
+}
+
+func (w *walker) consumeNestedExecution(node syntax.Node, depth int) {
+	next := 0
+	for {
+		child, ok := nextStructuralChild(node, &next)
+		if !ok {
+			return
+		}
+		if !w.enterChild() {
+			return
+		}
+		switch child := child.(type) {
+		case *syntax.CmdSubst:
+			w.dispatch(child, "body-statements", depth+1)
+		case *syntax.ProcSubst:
+			w.dispatch(child, "word-part", depth+1)
+		default:
+			w.consumeNestedExecution(child, depth+1)
+		}
+		if w.stop {
+			return
+		}
 	}
 }
 

@@ -32,6 +32,9 @@ func TestEmitMultiPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Certify error = %v", err)
 	}
+	if events := response.Results[0].Events; len(events) != 1 || events[0].Kind != "command_site" {
+		t.Fatalf("events = %#v, want exactly the command_site fixture event", events)
+	}
 	site := findCommandSite(t, response.Results[0], 0)
 	if site.StartByte != 0 || site.EndByte != 26 {
 		t.Fatalf("site span = [%d, %d), want [0, 26)", site.StartByte, site.EndByte)
@@ -122,15 +125,97 @@ func TestEmitAssignmentColonTildeIsDynamic(t *testing.T) {
 	}
 }
 
+func TestEmitAssignmentGlobLiteralIsKnown(t *testing.T) {
+	response, err := Certify(mustRequest(t, `A=*.go`))
+	if err != nil {
+		t.Fatalf("Certify error = %v", err)
+	}
+	site := findCommandSite(t, response.Results[0], 0)
+	if len(site.Assignments) != 1 || !site.Assignments[0].ValueKnown {
+		t.Fatalf("assignments = %#v, want literal glob value known", site.Assignments)
+	}
+}
+
+func TestEmitArgvTildeAfterEqualsIsDynamic(t *testing.T) {
+	response, err := Certify(mustRequest(t, `echo x=~`))
+	if err != nil {
+		t.Fatalf("Certify error = %v", err)
+	}
+	word := findCommandSite(t, response.Results[0], 0).Argv[1]
+	if word.Text != nil || word.Single {
+		t.Fatalf("assignment-shaped argv word = %#v, want unknown text and cardinality", word)
+	}
+}
+
 func TestEmitDynamicDoubleQuotedWordIsSingle(t *testing.T) {
 	const src = `doc-lattice "$CMD"`
 	response, err := Certify(mustRequest(t, src))
 	if err != nil {
 		t.Fatalf("Certify error = %v", err)
 	}
+	if events := response.Results[0].Events; len(events) != 1 || events[0].Kind != "command_site" {
+		t.Fatalf("events = %#v, want exactly the dynamic-word fixture event", events)
+	}
 	word := findCommandSite(t, response.Results[0], 0).Argv[1]
 	if word.Text != nil || !word.Single || word.StartByte != 12 || word.EndByte != 18 {
 		t.Fatalf("dynamic quoted word = %#v, want nil text, single, span [12, 18)", word)
+	}
+}
+
+func TestEmitArgvTildeContexts(t *testing.T) {
+	tests := []struct {
+		word   string
+		text   *string
+		single bool
+	}{
+		{word: `x=~`, text: nil, single: false},
+		{word: `x=a:~user`, text: nil, single: false},
+		{word: `x=\~`, text: stringPointer(`x=~`), single: true},
+		{word: `x=a:\~`, text: stringPointer(`x=a:~`), single: true},
+		{word: `x="~"`, text: stringPointer(`x=~`), single: true},
+		{word: `plain:~`, text: stringPointer(`plain:~`), single: true},
+	}
+	for _, test := range tests {
+		t.Run(test.word, func(t *testing.T) {
+			response, err := Certify(mustRequest(t, `echo `+test.word))
+			if err != nil {
+				t.Fatalf("Certify error = %v", err)
+			}
+			word := findCommandSite(t, response.Results[0], 0).Argv[1]
+			if word.Single != test.single || (word.Text == nil) != (test.text == nil) || word.Text != nil && *word.Text != *test.text {
+				t.Fatalf("word facts = %#v, want text %v and single=%t", word, test.text, test.single)
+			}
+		})
+	}
+}
+
+func stringPointer(value string) *string { return &value }
+
+func TestEmitAssignmentValueExpansionContexts(t *testing.T) {
+	tests := []struct {
+		source string
+		known  bool
+	}{
+		{source: `A=*.go`, known: true},
+		{source: `A=\*.go`, known: true},
+		{source: `A={a,b}`, known: false},
+		{source: `A=~`, known: false},
+		{source: `A=/bin:~user`, known: false},
+		{source: `A=$X`, known: false},
+		{source: `A=$(printf x)`, known: false},
+		{source: `A=$((1+1))`, known: false},
+	}
+	for _, test := range tests {
+		t.Run(test.source, func(t *testing.T) {
+			response, err := Certify(mustRequest(t, test.source))
+			if err != nil {
+				t.Fatalf("Certify error = %v", err)
+			}
+			assignment := findCommandSite(t, response.Results[0], 0).Assignments[0]
+			if assignment.ValueKnown != test.known {
+				t.Fatalf("assignment = %#v, want value_known=%t", assignment, test.known)
+			}
+		})
 	}
 }
 
@@ -190,6 +275,44 @@ func TestEmitQuotedAndUnquotedSplittingHazards(t *testing.T) {
 	}
 }
 
+func TestEmitQuotedParameterOperandAtIsNotSingle(t *testing.T) {
+	response, err := Certify(mustRequest(t, `echo "${x:+$@}"`))
+	if err != nil {
+		t.Fatalf("Certify error = %v", err)
+	}
+	word := findCommandSite(t, response.Results[0], 0).Argv[1]
+	if word.Text != nil || word.Single {
+		t.Fatalf("quoted parameter operand = %#v, want unknown text and cardinality", word)
+	}
+}
+
+func TestEmitQuotedNestedParameterCardinality(t *testing.T) {
+	tests := []struct {
+		word   string
+		single bool
+	}{
+		{word: `"${x:+$@}"`, single: false},
+		{word: `"${x:+${array[@]}}"`, single: false},
+		{word: `"${x/a/$@}"`, single: false},
+		{word: `"${x:+${!prefix@}}"`, single: false},
+		{word: `"${x:+$*}"`, single: true},
+		{word: `"${x:+${array[*]}}"`, single: true},
+		{word: `"${x:+$(printf x)}"`, single: true},
+	}
+	for _, test := range tests {
+		t.Run(test.word, func(t *testing.T) {
+			response, err := Certify(mustRequest(t, `echo `+test.word))
+			if err != nil {
+				t.Fatalf("Certify error = %v", err)
+			}
+			word := findCommandSite(t, response.Results[0], 0).Argv[1]
+			if word.Text != nil || word.Single != test.single {
+				t.Fatalf("word facts = %#v, want nil text and single=%t", word, test.single)
+			}
+		})
+	}
+}
+
 func TestEmitEscapedAndQuotedLiteralMetacharacters(t *testing.T) {
 	tests := []struct {
 		word string
@@ -210,6 +333,52 @@ func TestEmitEscapedAndQuotedLiteralMetacharacters(t *testing.T) {
 			word := findCommandSite(t, response.Results[0], 0).Argv[1]
 			if word.Text == nil || *word.Text != test.text || !word.Single {
 				t.Fatalf("word facts = %#v, want text %q and single", word, test.text)
+			}
+		})
+	}
+}
+
+func TestEmitIncompleteBraceSequenceIsLiteral(t *testing.T) {
+	response, err := Certify(mustRequest(t, `echo {a..}`))
+	if err != nil {
+		t.Fatalf("Certify error = %v", err)
+	}
+	word := findCommandSite(t, response.Results[0], 0).Argv[1]
+	if word.Text == nil || *word.Text != "{a..}" || !word.Single {
+		t.Fatalf("incomplete brace sequence = %#v, want known literal {a..} and single", word)
+	}
+}
+
+func TestEmitBraceExpansionMatrix(t *testing.T) {
+	tests := []struct {
+		word   string
+		text   *string
+		single bool
+	}{
+		{word: `{a,b}`, text: nil, single: false},
+		{word: `{a,'b'}`, text: nil, single: false},
+		{word: `{a..z}`, text: nil, single: false},
+		{word: `{1..3}`, text: nil, single: false},
+		{word: `{1..3..2}`, text: nil, single: false},
+		{word: `{a..}`, text: stringPointer(`{a..}`), single: true},
+		{word: `{..b}`, text: stringPointer(`{..b}`), single: true},
+		{word: `{a..1}`, text: stringPointer(`{a..1}`), single: true},
+		{word: `{1..3..x}`, text: stringPointer(`{1..3..x}`), single: true},
+		{word: `{a..\c}`, text: stringPointer(`{a..c}`), single: true},
+		{word: `{a.."c"}`, text: stringPointer(`{a..c}`), single: true},
+		{word: `{a}`, text: stringPointer(`{a}`), single: true},
+		{word: `\{a,b\}`, text: stringPointer(`{a,b}`), single: true},
+		{word: `"{a,b}"`, text: stringPointer(`{a,b}`), single: true},
+	}
+	for _, test := range tests {
+		t.Run(test.word, func(t *testing.T) {
+			response, err := Certify(mustRequest(t, `echo `+test.word))
+			if err != nil {
+				t.Fatalf("Certify error = %v", err)
+			}
+			word := findCommandSite(t, response.Results[0], 0).Argv[1]
+			if word.Single != test.single || (word.Text == nil) != (test.text == nil) || word.Text != nil && *word.Text != *test.text {
+				t.Fatalf("word facts = %#v, want text %v and single=%t", word, test.text, test.single)
 			}
 		})
 	}

@@ -4,6 +4,7 @@ package main
 import (
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 
 	"mvdan.cc/sh/v3/expand"
@@ -11,6 +12,13 @@ import (
 )
 
 var errInvalidEmission = errors.New("invalid syntax facts")
+
+type wordExpansionContext uint8
+
+const (
+	argvExpansion wordExpansionContext = iota
+	assignmentExpansion
+)
 
 type orderedEvent struct {
 	event           Event
@@ -191,41 +199,24 @@ func wordIsStaticLiteral(word *syntax.Word, src string) bool {
 	if word == nil {
 		return true
 	}
-	_, known := literalWord(word, src)
-	return known && !hasAssignmentColonTilde(word, src)
-}
-
-func hasAssignmentColonTilde(word *syntax.Word, src string) bool {
-	for _, part := range word.Parts {
-		literal, ok := part.(*syntax.Lit)
-		if !ok || literal == nil || !literal.Pos().IsValid() || !literal.End().IsValid() {
-			continue
-		}
-		start, end := int(literal.Pos().Offset()), int(literal.End().Offset())
-		if start < 0 || start > end || end > len(src) {
-			continue
-		}
-		raw := src[start:end]
-		for index := 0; index+1 < len(raw); index++ {
-			if raw[index] == '\\' {
-				index++
-				continue
-			}
-			if raw[index] == ':' && raw[index+1] == '~' {
-				return true
-			}
-		}
-	}
-	return false
+	_, known := literalWordInContext(word, src, assignmentExpansion)
+	return known
 }
 
 func literalWord(word *syntax.Word, src string) (string, bool) {
+	return literalWordInContext(word, src, argvExpansion)
+}
+
+func literalWordInContext(word *syntax.Word, src string, context wordExpansionContext) (string, bool) {
 	if word == nil {
 		return "", true
 	}
+	if wordHasActiveTilde(word, src, context) || wordHasActiveBrace(word, src) {
+		return "", false
+	}
 	var value strings.Builder
 	for _, part := range word.Parts {
-		partValue, ok := literalWordPart(part, src, false, word)
+		partValue, ok := literalWordPart(part, src, false, context)
 		if !ok {
 			return "", false
 		}
@@ -234,10 +225,10 @@ func literalWord(word *syntax.Word, src string) (string, bool) {
 	return value.String(), true
 }
 
-func literalWordPart(part syntax.WordPart, src string, quoted bool, word *syntax.Word) (string, bool) {
+func literalWordPart(part syntax.WordPart, src string, quoted bool, context wordExpansionContext) (string, bool) {
 	switch part := part.(type) {
 	case *syntax.Lit:
-		if part != nil && (quoted || !unquotedLiteralIsDynamic(part, word, src)) {
+		if part != nil && (quoted || !unquotedLiteralIsDynamic(part, src, context)) {
 			return decodedLiteral(part, src, quoted)
 		}
 	case *syntax.SglQuoted:
@@ -258,7 +249,7 @@ func literalWordPart(part syntax.WordPart, src string, quoted bool, word *syntax
 		}
 		var value strings.Builder
 		for _, nested := range part.Parts {
-			nestedValue, ok := literalWordPart(nested, src, true, word)
+			nestedValue, ok := literalWordPart(nested, src, true, context)
 			if !ok {
 				return "", false
 			}
@@ -300,13 +291,13 @@ func decodedLiteral(literal *syntax.Lit, src string, doubleQuoted bool) (string,
 }
 
 func wordIsSingle(word *syntax.Word, src string) bool {
-	if word == nil || len(word.Parts) == 0 {
+	if word == nil || len(word.Parts) == 0 || wordHasActiveTilde(word, src, argvExpansion) || wordHasActiveBrace(word, src) {
 		return false
 	}
 	for _, part := range word.Parts {
 		switch part := part.(type) {
 		case *syntax.Lit:
-			if part == nil || unquotedLiteralIsDynamic(part, word, src) {
+			if part == nil || unquotedLiteralIsDynamic(part, src, argvExpansion) {
 				return false
 			}
 		case *syntax.SglQuoted:
@@ -326,6 +317,50 @@ func wordIsSingle(word *syntax.Word, src string) bool {
 		}
 	}
 	return true
+}
+
+func wordHasActiveTilde(word *syntax.Word, src string, context wordExpansionContext) bool {
+	eligible := true
+	assignmentLike := context == assignmentExpansion
+	for _, part := range word.Parts {
+		literal, ok := part.(*syntax.Lit)
+		if !ok || literal == nil {
+			eligible = false
+			continue
+		}
+		if !literal.Pos().IsValid() || !literal.End().IsValid() {
+			return true
+		}
+		start, end := int(literal.Pos().Offset()), int(literal.End().Offset())
+		if start < 0 || start > end || end > len(src) {
+			return true
+		}
+		raw := src[start:end]
+		for index := 0; index < len(raw); index++ {
+			if raw[index] == '\\' {
+				index++
+				eligible = false
+				continue
+			}
+			if raw[index] == '~' && eligible {
+				return true
+			}
+			switch raw[index] {
+			case '=':
+				if context == argvExpansion {
+					assignmentLike = true
+					eligible = true
+				} else {
+					eligible = false
+				}
+			case ':':
+				eligible = assignmentLike
+			default:
+				eligible = false
+			}
+		}
+	}
+	return false
 }
 
 func doubleQuotedIsSingle(quoted *syntax.DblQuoted) bool {
@@ -352,7 +387,14 @@ func doubleQuotedIsSingle(quoted *syntax.DblQuoted) bool {
 }
 
 func quotedParameterMayExpandToMany(parameter *syntax.ParamExp) bool {
+	return quotedParameterMayExpandToManyAtDepth(parameter, 0)
+}
+
+func quotedParameterMayExpandToManyAtDepth(parameter *syntax.ParamExp, depth int) bool {
 	if parameter == nil || parameter.Param == nil {
+		return true
+	}
+	if depth > visitorDepthCap {
 		return true
 	}
 	if parameter.Length || parameter.Width || parameter.IsSet {
@@ -362,11 +404,55 @@ func quotedParameterMayExpandToMany(parameter *syntax.ParamExp) bool {
 		return true
 	}
 	index, ok := parameter.Index.(*syntax.Word)
-	return ok && index != nil && index.Lit() == "@"
+	if ok && index != nil && index.Lit() == "@" {
+		return true
+	}
+	if parameter.NestedParam != nil && quotedWordPartMayExpandToMany(parameter.NestedParam, depth+1) {
+		return true
+	}
+	if ok && quotedWordMayExpandToMany(index, depth+1) {
+		return true
+	}
+	if parameter.Repl != nil && (quotedWordMayExpandToMany(parameter.Repl.Orig, depth+1) || quotedWordMayExpandToMany(parameter.Repl.With, depth+1)) {
+		return true
+	}
+	return parameter.Exp != nil && quotedWordMayExpandToMany(parameter.Exp.Word, depth+1)
 }
 
-func unquotedLiteralIsDynamic(literal *syntax.Lit, word *syntax.Word, src string) bool {
-	if literal == nil || word == nil || !literal.Pos().IsValid() || !literal.End().IsValid() || !word.Pos().IsValid() {
+func quotedWordMayExpandToMany(word *syntax.Word, depth int) bool {
+	if word == nil {
+		return false
+	}
+	if depth > visitorDepthCap {
+		return true
+	}
+	for _, part := range word.Parts {
+		if quotedWordPartMayExpandToMany(part, depth+1) {
+			return true
+		}
+	}
+	return false
+}
+
+func quotedWordPartMayExpandToMany(part syntax.WordPart, depth int) bool {
+	if part == nil || syntaxNodeIsNil(part) || depth > visitorDepthCap {
+		return true
+	}
+	switch part := part.(type) {
+	case *syntax.ParamExp:
+		return quotedParameterMayExpandToManyAtDepth(part, depth+1)
+	case *syntax.DblQuoted:
+		for _, nested := range part.Parts {
+			if quotedWordPartMayExpandToMany(nested, depth+1) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func unquotedLiteralIsDynamic(literal *syntax.Lit, src string, context wordExpansionContext) bool {
+	if literal == nil || !literal.Pos().IsValid() || !literal.End().IsValid() {
 		return true
 	}
 	start, end := int(literal.Pos().Offset()), int(literal.End().Offset())
@@ -374,10 +460,7 @@ func unquotedLiteralIsDynamic(literal *syntax.Lit, word *syntax.Word, src string
 		return true
 	}
 	raw := src[start:end]
-	if start == int(word.Pos().Offset()) && len(raw) > 0 && raw[0] == '~' {
-		return true
-	}
-	return hasActiveGlob(raw) || hasActiveBrace(raw)
+	return context == argvExpansion && hasActiveGlob(raw)
 }
 
 func hasActiveGlob(raw string) bool {
@@ -404,27 +487,135 @@ func hasActiveGlob(raw string) bool {
 	return false
 }
 
-func hasActiveBrace(raw string) bool {
-	open := -1
-	separator := false
-	for index := 0; index < len(raw); index++ {
-		if raw[index] == '\\' {
-			index++
+type braceToken struct {
+	value    byte
+	unquoted bool
+}
+
+func wordHasActiveBrace(word *syntax.Word, src string) bool {
+	tokens, ok := braceTokens(word, src)
+	if !ok {
+		return true
+	}
+	open := make([]int, 0, 2)
+	for index, token := range tokens {
+		if !token.unquoted {
 			continue
 		}
-		switch raw[index] {
+		switch token.value {
 		case '{':
-			open, separator = index, false
-		case ',':
-			separator = separator || open >= 0
-		case '.':
-			separator = separator || open >= 0 && index+1 < len(raw) && raw[index+1] == '.'
+			open = append(open, index)
 		case '}':
-			if open >= 0 && separator {
+			if len(open) == 0 {
+				continue
+			}
+			start := open[len(open)-1]
+			open = open[:len(open)-1]
+			if braceBodyIsActive(tokens[start+1 : index]) {
 				return true
 			}
-			open, separator = -1, false
 		}
 	}
 	return false
+}
+
+func braceTokens(word *syntax.Word, src string) ([]braceToken, bool) {
+	tokens := make([]braceToken, 0, len(word.Parts))
+	for _, part := range word.Parts {
+		literal, ok := part.(*syntax.Lit)
+		if !ok || literal == nil {
+			tokens = append(tokens, braceToken{value: 'x'})
+			continue
+		}
+		if !literal.Pos().IsValid() || !literal.End().IsValid() {
+			return nil, false
+		}
+		start, end := int(literal.Pos().Offset()), int(literal.End().Offset())
+		if start < 0 || start > end || end > len(src) {
+			return nil, false
+		}
+		raw := src[start:end]
+		for index := 0; index < len(raw); index++ {
+			if raw[index] == '\\' && index+1 < len(raw) {
+				index++
+				tokens = append(tokens, braceToken{value: raw[index]})
+				continue
+			}
+			tokens = append(tokens, braceToken{value: raw[index], unquoted: true})
+		}
+	}
+	return tokens, true
+}
+
+func braceBodyIsActive(body []braceToken) bool {
+	depth := 0
+	separators := make([]int, 0, 2)
+	for index, token := range body {
+		if !token.unquoted {
+			continue
+		}
+		switch token.value {
+		case '{':
+			depth++
+		case '}':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				return true
+			}
+		case '.':
+			if depth == 0 && index+1 < len(body) && body[index+1].unquoted && body[index+1].value == '.' {
+				separators = append(separators, index)
+			}
+		}
+	}
+	if len(separators) < 1 || len(separators) > 2 {
+		return false
+	}
+	elements := [][]braceToken{body[:separators[0]]}
+	for index, separator := range separators {
+		end := len(body)
+		if index+1 < len(separators) {
+			end = separators[index+1]
+		}
+		elements = append(elements, body[separator+2:end])
+	}
+	firstChar, firstOK := braceSequenceEndpoint(elements[0])
+	secondChar, secondOK := braceSequenceEndpoint(elements[1])
+	if !firstOK || !secondOK || firstChar != secondChar {
+		return false
+	}
+	if len(elements) == 3 {
+		value, ok := unquotedBraceElement(elements[2])
+		if !ok {
+			return false
+		}
+		_, err := strconv.Atoi(value)
+		return err == nil
+	}
+	return true
+}
+
+func braceSequenceEndpoint(raw []braceToken) (isChar bool, ok bool) {
+	value, ok := unquotedBraceElement(raw)
+	if !ok {
+		return false, false
+	}
+	if _, err := strconv.Atoi(value); err == nil {
+		return false, true
+	}
+	return true, len(value) == 1 && isAssignmentNameStart(value[0]) && value[0] != '_'
+}
+
+func unquotedBraceElement(raw []braceToken) (string, bool) {
+	var value strings.Builder
+	for _, token := range raw {
+		if !token.unquoted {
+			return "", false
+		}
+		value.WriteByte(token.value)
+	}
+	return value.String(), true
 }

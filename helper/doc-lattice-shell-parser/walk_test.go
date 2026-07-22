@@ -51,6 +51,19 @@ func TestWalkTraversesCommandSubstInArgv(t *testing.T) {
 	}
 }
 
+func TestWalkTraversesCommandSubstInsideParameterOperand(t *testing.T) {
+	const src = `echo "${x:+$(doc-lattice check)}"`
+	stmts, refusal := parseStatements(src)
+	if refusal != nil {
+		t.Fatalf("parseStatements refusal = %#v, want none", refusal)
+	}
+
+	sites, refusals, _ := walk(stmts, src)
+	if len(refusals) != 0 || len(sites) != 2 {
+		t.Fatalf("walk returned %d sites and refusals %#v, want outer and nested sites only", len(sites), refusals)
+	}
+}
+
 func TestWalkAcceptsParsedEmptyCommandSubstitution(t *testing.T) {
 	const src = `echo "$()"`
 	stmts, refusal := parseStatements(src)
@@ -193,15 +206,25 @@ func TestWalkRefusesAssignmentIndexAndArray(t *testing.T) {
 	}
 }
 
-func TestWalkRefusesWildcardOnlyNodes(t *testing.T) {
-	for _, src := range []string{`((1 + 2))`, `echo "$value"`} {
-		stmts, refusal := parseStatements(src)
+func TestWalkAppliesWildcardOnlyOutsideTraverseContainers(t *testing.T) {
+	tests := []struct {
+		source      string
+		wantRefusal bool
+	}{
+		{source: `((1 + 2))`, wantRefusal: true},
+		{source: `echo "$value"`, wantRefusal: false},
+	}
+	for _, test := range tests {
+		stmts, refusal := parseStatements(test.source)
 		if refusal != nil {
-			t.Fatalf("parseStatements(%q) refusal = %#v, want none", src, refusal)
+			t.Fatalf("parseStatements(%q) refusal = %#v, want none", test.source, refusal)
 		}
-		_, refusals, _ := walk(stmts, src)
-		if len(refusals) == 0 || refusals[0].code != "unsupported-construct" {
-			t.Errorf("walk(%q) refusals = %#v, want unsupported-construct", src, refusals)
+		_, refusals, _ := walk(stmts, test.source)
+		if test.wantRefusal && (len(refusals) == 0 || refusals[0].code != "unsupported-construct") {
+			t.Errorf("walk(%q) refusals = %#v, want unsupported-construct", test.source, refusals)
+		}
+		if !test.wantRefusal && len(refusals) != 0 {
+			t.Errorf("walk(%q) refusals = %#v, want none for an in-container word fact", test.source, refusals)
 		}
 	}
 }
