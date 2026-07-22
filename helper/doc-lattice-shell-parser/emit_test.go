@@ -142,8 +142,8 @@ func TestEmitArgvTildeAfterEqualsIsDynamic(t *testing.T) {
 		t.Fatalf("Certify error = %v", err)
 	}
 	word := findCommandSite(t, response.Results[0], 0).Argv[1]
-	if word.Text != nil || word.Single {
-		t.Fatalf("assignment-shaped argv word = %#v, want unknown text and cardinality", word)
+	if word.Text != nil || !word.Single {
+		t.Fatalf("assignment-shaped argv word = %#v, want unknown text and one field", word)
 	}
 }
 
@@ -168,8 +168,16 @@ func TestEmitArgvTildeContexts(t *testing.T) {
 		text   *string
 		single bool
 	}{
-		{word: `x=~`, text: nil, single: false},
-		{word: `x=a:~user`, text: nil, single: false},
+		{word: `x=~`, text: nil, single: true},
+		{word: `x=a:~user`, text: nil, single: true},
+		{word: `_x2=~`, text: nil, single: true},
+		{word: `name9=~user`, text: nil, single: true},
+		{word: "x=\\\n~", text: nil, single: true},
+		{word: "x\\\n=~", text: nil, single: true},
+		{word: `bad-name=~`, text: stringPointer(`bad-name=~`), single: true},
+		{word: `2x=~`, text: stringPointer(`2x=~`), single: true},
+		{word: `x\=~`, text: stringPointer(`x=~`), single: true},
+		{word: `x"="~`, text: stringPointer(`x=~`), single: true},
 		{word: `x=\~`, text: stringPointer(`x=~`), single: true},
 		{word: `x=a:\~`, text: stringPointer(`x=a:~`), single: true},
 		{word: `x="~"`, text: stringPointer(`x=~`), single: true},
@@ -198,7 +206,7 @@ func TestEmitAssignmentValueExpansionContexts(t *testing.T) {
 	}{
 		{source: `A=*.go`, known: true},
 		{source: `A=\*.go`, known: true},
-		{source: `A={a,b}`, known: false},
+		{source: `A={a,b}`, known: true},
 		{source: `A=~`, known: false},
 		{source: `A=/bin:~user`, known: false},
 		{source: `A=$X`, known: false},
@@ -219,6 +227,22 @@ func TestEmitAssignmentValueExpansionContexts(t *testing.T) {
 	}
 }
 
+func TestEmitAssignmentBraceValueIsExactLiteral(t *testing.T) {
+	const src = `A={a,b}`
+	statements, refusal := parseStatements(src)
+	if refusal != nil {
+		t.Fatalf("parse refusal = %#v", refusal)
+	}
+	sites, refusals, _ := walk(statements, src)
+	if len(refusals) != 0 || len(sites) != 1 || len(sites[0].assignments) != 1 {
+		t.Fatalf("walk = sites %#v, refusals %#v", sites, refusals)
+	}
+	value, known := literalWordInContext(sites[0].assignments[0].Value, src, assignmentExpansion)
+	if !known || value != `{a,b}` {
+		t.Fatalf("assignment value = %q, known=%t; want exact literal {a,b}", value, known)
+	}
+}
+
 func TestEmitUnquotedExpansionFacts(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -229,7 +253,7 @@ func TestEmitUnquotedExpansionFacts(t *testing.T) {
 		{name: "command substitution", word: `$(printf x)`, single: false},
 		{name: "glob", word: `*.go`, single: false},
 		{name: "brace", word: `{a,b}`, single: false},
-		{name: "tilde", word: `~`, single: false},
+		{name: "tilde", word: `~`, single: true},
 		{name: "process substitution", word: `<(printf x)`, single: true},
 	}
 	for _, test := range tests {
@@ -349,6 +373,17 @@ func TestEmitIncompleteBraceSequenceIsLiteral(t *testing.T) {
 	}
 }
 
+func TestEmitOverlappingBraceSeparatorsAreLiteralWithoutPanic(t *testing.T) {
+	response, err := Certify(mustRequest(t, `echo {1...3}`))
+	if err != nil {
+		t.Fatalf("Certify error = %v", err)
+	}
+	word := findCommandSite(t, response.Results[0], 0).Argv[1]
+	if word.Text == nil || *word.Text != "{1...3}" || !word.Single {
+		t.Fatalf("overlapping brace separators = %#v, want known literal {1...3} and single", word)
+	}
+}
+
 func TestEmitBraceExpansionMatrix(t *testing.T) {
 	tests := []struct {
 		word   string
@@ -360,10 +395,17 @@ func TestEmitBraceExpansionMatrix(t *testing.T) {
 		{word: `{a..z}`, text: nil, single: false},
 		{word: `{1..3}`, text: nil, single: false},
 		{word: `{1..3..2}`, text: nil, single: false},
+		{word: "{1..\\\n3}", text: nil, single: false},
 		{word: `{a..}`, text: stringPointer(`{a..}`), single: true},
 		{word: `{..b}`, text: stringPointer(`{..b}`), single: true},
 		{word: `{a..1}`, text: stringPointer(`{a..1}`), single: true},
 		{word: `{1..3..x}`, text: stringPointer(`{1..3..x}`), single: true},
+		{word: `{1...3}`, text: stringPointer(`{1...3}`), single: true},
+		{word: `{1....3}`, text: stringPointer(`{1....3}`), single: true},
+		{word: `{1..3..2..4}`, text: stringPointer(`{1..3..2..4}`), single: true},
+		{word: `{1..3..}`, text: stringPointer(`{1..3..}`), single: true},
+		{word: `x{1...3}y`, text: stringPointer(`x{1...3}y`), single: true},
+		{word: `{1...3}{4..6}`, text: nil, single: false},
 		{word: `{a..\c}`, text: stringPointer(`{a..c}`), single: true},
 		{word: `{a.."c"}`, text: stringPointer(`{a..c}`), single: true},
 		{word: `{a}`, text: stringPointer(`{a}`), single: true},
@@ -379,6 +421,34 @@ func TestEmitBraceExpansionMatrix(t *testing.T) {
 			word := findCommandSite(t, response.Results[0], 0).Argv[1]
 			if word.Single != test.single || (word.Text == nil) != (test.text == nil) || word.Text != nil && *word.Text != *test.text {
 				t.Fatalf("word facts = %#v, want text %v and single=%t", word, test.text, test.single)
+			}
+		})
+	}
+}
+
+func TestEmitBraceAndTildeLookalikeCorpusDoesNotPanic(t *testing.T) {
+	words := []string{
+		`{1...3}`,
+		`x{1....3}y`,
+		`{1..2..3..4}`,
+		`{1..}`,
+		`{..3}`,
+		`{...}`,
+		`{{{1...3}}}`,
+		"{1..\\\n3}",
+		`bad-name=~`,
+		"x=\\\n~",
+		`x\=~`,
+	}
+	for _, raw := range words {
+		t.Run(raw, func(t *testing.T) {
+			response, err := Certify(mustRequest(t, `echo `+raw))
+			if err != nil {
+				t.Fatalf("Certify valid source error = %v", err)
+			}
+			events := response.Results[0].Events
+			if len(events) != 1 || events[0].Kind != "command_site" {
+				t.Fatalf("events = %#v, want one stable command site", events)
 			}
 		})
 	}

@@ -211,7 +211,7 @@ func literalWordInContext(word *syntax.Word, src string, context wordExpansionCo
 	if word == nil {
 		return "", true
 	}
-	if wordHasActiveTilde(word, src, context) || wordHasActiveBrace(word, src) {
+	if wordHasActiveTilde(word, src, context) || context == argvExpansion && wordHasActiveBrace(word, src) {
 		return "", false
 	}
 	var value strings.Builder
@@ -291,7 +291,7 @@ func decodedLiteral(literal *syntax.Lit, src string, doubleQuoted bool) (string,
 }
 
 func wordIsSingle(word *syntax.Word, src string) bool {
-	if word == nil || len(word.Parts) == 0 || wordHasActiveTilde(word, src, argvExpansion) || wordHasActiveBrace(word, src) {
+	if word == nil || len(word.Parts) == 0 || wordHasActiveBrace(word, src) {
 		return false
 	}
 	for _, part := range word.Parts {
@@ -322,10 +322,15 @@ func wordIsSingle(word *syntax.Word, src string) bool {
 func wordHasActiveTilde(word *syntax.Word, src string, context wordExpansionContext) bool {
 	eligible := true
 	assignmentLike := context == assignmentExpansion
+	prefixValid := true
+	var prefix strings.Builder
 	for _, part := range word.Parts {
 		literal, ok := part.(*syntax.Lit)
 		if !ok || literal == nil {
 			eligible = false
+			if !assignmentLike {
+				prefixValid = false
+			}
 			continue
 		}
 		if !literal.Pos().IsValid() || !literal.End().IsValid() {
@@ -338,24 +343,35 @@ func wordHasActiveTilde(word *syntax.Word, src string, context wordExpansionCont
 		raw := src[start:end]
 		for index := 0; index < len(raw); index++ {
 			if raw[index] == '\\' {
-				index++
+				if index+1 < len(raw) && raw[index+1] == '\n' {
+					index++
+					continue
+				}
+				if index+1 < len(raw) {
+					index++
+				}
 				eligible = false
+				if !assignmentLike {
+					prefixValid = false
+				}
 				continue
 			}
 			if raw[index] == '~' && eligible {
 				return true
 			}
-			switch raw[index] {
-			case '=':
-				if context == argvExpansion {
-					assignmentLike = true
-					eligible = true
+			if context == argvExpansion && !assignmentLike {
+				if raw[index] == '=' {
+					assignmentLike = prefixValid && validAssignmentName(prefix.String())
+					eligible = assignmentLike
 				} else {
+					prefix.WriteByte(raw[index])
 					eligible = false
 				}
-			case ':':
+				continue
+			}
+			if raw[index] == ':' {
 				eligible = assignmentLike
-			default:
+			} else {
 				eligible = false
 			}
 		}
@@ -538,6 +554,9 @@ func braceTokens(word *syntax.Word, src string) ([]braceToken, bool) {
 		for index := 0; index < len(raw); index++ {
 			if raw[index] == '\\' && index+1 < len(raw) {
 				index++
+				if raw[index] == '\n' {
+					continue
+				}
 				tokens = append(tokens, braceToken{value: raw[index]})
 				continue
 			}
@@ -573,6 +592,11 @@ func braceBodyIsActive(body []braceToken) bool {
 	}
 	if len(separators) < 1 || len(separators) > 2 {
 		return false
+	}
+	for index, separator := range separators {
+		if separator < 0 || separator+1 >= len(body) || index > 0 && separator < separators[index-1]+2 {
+			return false
+		}
 	}
 	elements := [][]braceToken{body[:separators[0]]}
 	for index, separator := range separators {
