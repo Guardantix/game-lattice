@@ -276,7 +276,7 @@ func TestWalkTraversesCommandSubstitutionInReplacementWord(t *testing.T) {
 	}
 }
 
-func TestWalkRefusesOpaqueExtGlobExecutionAndStopsLaterSites(t *testing.T) {
+func TestWalkRefusesOpaqueExtGlobExecutionLocallyAndKeepsLaterSites(t *testing.T) {
 	tests := []struct {
 		name   string
 		source string
@@ -344,12 +344,16 @@ func TestWalkRefusesOpaqueExtGlobExecutionAndStopsLaterSites(t *testing.T) {
 				t.Fatalf("parse refusal = %#v", parseRefusal)
 			}
 			sites, refusals, _ := walk(stmts, test.source)
-			wantSites := 2
-			if test.refuse {
-				wantSites = 1
+			if len(sites) != 2 || len(refusals) != btoi(test.refuse) {
+				t.Fatalf("walk = %d sites, refusals %#v; want 2 sites and refuse=%t", len(sites), refusals, test.refuse)
 			}
-			if len(sites) != wantSites || len(refusals) != btoi(test.refuse) {
-				t.Fatalf("walk = %d sites, refusals %#v; want %d sites and refuse=%t", len(sites), refusals, wantSites, test.refuse)
+			if test.refuse && (refusals[0].code != "expansion-unsupported" || reasonScopes[refusals[0].code] != "subtree-local") {
+				t.Fatalf("refusals = %#v, want one subtree-local expansion-unsupported", refusals)
+			}
+			for index, site := range sites {
+				if len(site.argv) == 0 || site.argv[0].Lit() != "echo" {
+					t.Fatalf("site %d = %#v, want only outer and later echo sites without nested execution", index, site)
+				}
 			}
 		})
 	}

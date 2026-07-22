@@ -44,29 +44,44 @@ func certifySource(source Source) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	combined := make([]orderedEvent, 0, len(events)+1)
+	combined := make([]orderedEvent, 0, len(events)+len(walkRefusals)+1)
 	for index, event := range events {
 		combined = append(combined, orderedEvent{event: event, originalOrdinal: index})
 	}
-	if len(walkRefusals) > 1 {
-		return Result{}, errInvalidEmission
+	terminalSeen := false
+	for index := range walkRefusals {
+		refusal := &walkRefusals[index]
+		scope := reasonScopes[refusal.code]
+		if terminalSeen || scope != "terminal" && scope != "subtree-local" {
+			return Result{}, errInvalidEmission
+		}
+		if err := validateRawSpan(refusal.startByte, refusal.endByte, len(source.Source)); err != nil {
+			return Result{}, errInvalidEmission
+		}
+		combined = append(combined, orderedEvent{
+			event: Event{
+				Kind:      "refusal",
+				Code:      refusal.code,
+				StartByte: refusal.startByte,
+				EndByte:   refusal.endByte,
+			},
+			originalOrdinal: len(combined),
+		})
+		terminalSeen = scope == "terminal"
 	}
-	var terminal *rawRefusal
-	if len(walkRefusals) == 1 {
-		terminal = &walkRefusals[0]
-	} else {
-		terminal = parseRefusal
-	}
-	if terminal != nil {
-		if err := validateRawSpan(terminal.startByte, terminal.endByte, len(source.Source)); err != nil {
+	if !terminalSeen && parseRefusal != nil {
+		if reasonScopes[parseRefusal.code] != "terminal" {
+			return Result{}, errInvalidEmission
+		}
+		if err := validateRawSpan(parseRefusal.startByte, parseRefusal.endByte, len(source.Source)); err != nil {
 			return Result{}, err
 		}
 		combined = append(combined, orderedEvent{
 			event: Event{
 				Kind:      "refusal",
-				Code:      terminal.code,
-				StartByte: terminal.startByte,
-				EndByte:   terminal.endByte,
+				Code:      parseRefusal.code,
+				StartByte: parseRefusal.startByte,
+				EndByte:   parseRefusal.endByte,
 			},
 			originalOrdinal: len(combined),
 		})
@@ -85,8 +100,20 @@ func certifySource(source Source) (Result, error) {
 	resultEvents := make([]Event, len(combined))
 	for index, event := range combined {
 		resultEvents[index] = event.event
-		if event.event.Kind == "refusal" && index != len(combined)-1 {
+		if event.event.Kind != "refusal" {
+			continue
+		}
+		scope := reasonScopes[event.event.Code]
+		if scope == "terminal" && index != len(combined)-1 {
 			return Result{}, errInvalidEmission
+		}
+		if scope != "subtree-local" {
+			continue
+		}
+		for _, later := range combined[index+1:] {
+			if later.event.Kind == "command_site" && later.event.StartByte < event.event.EndByte {
+				return Result{}, errInvalidEmission
+			}
 		}
 	}
 	return Result{ID: source.ID, Events: resultEvents, WorkUnits: work + 1}, nil

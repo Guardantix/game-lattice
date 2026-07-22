@@ -73,21 +73,21 @@ func (w *walker) dispatch(node syntax.Node, role string, depth int) {
 		w.requestTerminal(node, "unsupported-construct", false)
 		return
 	}
-	disposition, ok := certifiedConstructs[constructKey{node: name, role: role}]
+	rule, ok := certifiedConstructs[constructKey{node: name, role: role}]
 	if !ok {
-		disposition, ok = certifiedConstructs[constructKey{node: name, role: "*"}]
+		rule, ok = certifiedConstructs[constructKey{node: name, role: "*"}]
 	}
 	if !ok {
 		w.requestTerminal(node, "unsupported-construct", false)
 		return
 	}
-	switch disposition {
+	switch rule.disposition {
 	case "traverse":
 		w.traverse(node, role, depth)
 	case "ignore":
 		return
 	case "refuse":
-		w.requestTerminal(node, "unsupported-construct", false)
+		w.requestRefusal(node, rule.code)
 	default:
 		w.requestTerminal(node, "unsupported-construct", false)
 	}
@@ -274,6 +274,10 @@ func (w *walker) walkAssign(assign *syntax.Assign, depth int) {
 }
 
 func (w *walker) walkRedirect(redirect *syntax.Redirect, role string, depth int) {
+	if !supportedRedirectOperator(redirect.Op) {
+		w.requestRefusal(redirect, "redirect-unsupported")
+		return
+	}
 	switch role {
 	case "target-word-expansion":
 		w.consumeWord(redirect.Word, depth+1)
@@ -477,11 +481,51 @@ func (w *walker) requestTerminal(node syntax.Node, code string, pointSpan bool) 
 	} else if code == "work-cap" || w.work+1 > w.workLimit {
 		code = "work-cap"
 	}
+	if reasonScopes[code] != "terminal" {
+		code = "unsupported-construct"
+	}
 	start, end := 0, 0
 	if !pointSpan {
 		start, end = w.nodeSpan(node)
 	}
 	w.appendTerminalRefusal(start, end, code)
+}
+
+func (w *walker) requestRefusal(node syntax.Node, code string) {
+	switch reasonScopes[code] {
+	case "terminal":
+		w.requestTerminal(node, code, false)
+	case "subtree-local":
+		w.requestLocalRefusal(node, code)
+	default:
+		w.requestTerminal(node, "unsupported-construct", false)
+	}
+}
+
+func (w *walker) requestLocalRefusal(node syntax.Node, code string) {
+	if w.stop {
+		return
+	}
+	if reasonScopes[code] != "subtree-local" {
+		w.requestTerminal(node, "unsupported-construct", false)
+		return
+	}
+	if w.events >= w.eventCap {
+		w.requestTerminal(node, "event-cap", false)
+		return
+	}
+	if w.work+1 > w.workLimit {
+		w.requestTerminal(node, "work-cap", false)
+		return
+	}
+	start, end, ok := w.completeNodeSpan(node)
+	if !ok {
+		w.requestTerminal(node, "unsupported-construct", false)
+		return
+	}
+	w.refusals = append(w.refusals, rawRefusal{code: code, startByte: start, endByte: end})
+	w.events++
+	w.work++
 }
 
 func (w *walker) appendTerminalRefusal(start, end int, code string) {
@@ -496,19 +540,28 @@ func (w *walker) appendTerminalRefusal(start, end int, code string) {
 }
 
 func (w *walker) nodeSpan(node syntax.Node) (int, int) {
-	if node == nil || syntaxNodeIsNil(node) {
+	start, end, ok := w.completeNodeSpan(node)
+	if !ok {
 		return 0, 0
+	}
+	return start, end
+}
+
+func (w *walker) completeNodeSpan(node syntax.Node) (int, int, bool) {
+	if node == nil || syntaxNodeIsNil(node) {
+		return 0, 0, false
 	}
 	limit := min(max(w.depthCap+1, 1), visitorDepthCap+1)
 	limit = min(limit, max(w.workLimit-w.work+1, 1))
 	start, startOK := boundedStart(node, limit)
 	end, endOK := boundedEnd(node, limit)
 	if !startOK || !endOK {
-		return 0, 0
+		return 0, 0, false
 	}
-	start = min(max(start, 0), len(w.src))
-	end = min(max(end, start), len(w.src))
-	return start, end
+	if start < 0 || start > end || end > len(w.src) {
+		return 0, 0, false
+	}
+	return start, end, true
 }
 
 type certificationFrame struct {
@@ -1555,6 +1608,17 @@ func redirectRole(redirect *syntax.Redirect) string {
 		return "quoted-heredoc-body"
 	}
 	return "unquoted-heredoc-body"
+}
+
+func supportedRedirectOperator(operator syntax.RedirOperator) bool {
+	switch operator {
+	case syntax.RdrOut, syntax.AppOut, syntax.RdrIn, syntax.RdrInOut,
+		syntax.DplIn, syntax.DplOut, syntax.RdrClob, syntax.Hdoc,
+		syntax.DashHdoc, syntax.WordHdoc, syntax.RdrAll, syntax.AppAll:
+		return true
+	default:
+		return false
+	}
 }
 
 func heredocDelimiterQuoted(word *syntax.Word) bool {

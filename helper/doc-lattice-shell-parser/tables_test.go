@@ -127,6 +127,68 @@ func TestTableGeneratorRejectsDuplicateJSONField(t *testing.T) {
 	}
 }
 
+func TestTableGeneratorEmitsOwnedConstructCodes(t *testing.T) {
+	workspace := newGeneratorWorkspace(t)
+	copyTestFile(t, "gen_tables.go", filepath.Join(workspace.helperDir, "gen_tables.go"))
+	copyTestFile(t, checkpointTablesPath+"certified_constructs.json", filepath.Join(workspace.checkpointDir, "tables", "certified_constructs.json"))
+	copyTestFile(t, checkpointTablesPath+"reason_codes.json", filepath.Join(workspace.checkpointDir, "tables", "reason_codes.json"))
+
+	output, err := runTestGenerator(t, workspace.helperDir, "gen_tables.go")
+	if err != nil {
+		t.Fatalf("generator failed: %v\n%s", err, output)
+	}
+	generated := readTestFile(t, filepath.Join(workspace.helperDir, "tables_gen.go"))
+	for _, want := range [][]byte{
+		[]byte("type constructRule struct"),
+		[]byte(`{node: "ExtGlob", role: "*"}`),
+		[]byte(`{node: "ProcSubst", role: "*"}`),
+		[]byte(`{node: "RedirOperator", role: "*"}`),
+		[]byte(`code: "expansion-unsupported"`),
+		[]byte(`code: "unsupported-construct"`),
+		[]byte(`code: "redirect-unsupported"`),
+	} {
+		if !bytes.Contains(generated, want) {
+			t.Errorf("generated table does not contain %q", want)
+		}
+	}
+}
+
+func TestTableGeneratorRejectsMissingReferencedCode(t *testing.T) {
+	workspace := newGeneratorWorkspace(t)
+	copyTestFile(t, "gen_tables.go", filepath.Join(workspace.helperDir, "gen_tables.go"))
+	copyTestFile(t, checkpointTablesPath+"certified_constructs.json", filepath.Join(workspace.checkpointDir, "tables", "certified_constructs.json"))
+	reasons := readTestFile(t, checkpointTablesPath+"reason_codes.json")
+	reasons = bytes.Replace(reasons, []byte(`"code": "expansion-unsupported"`), []byte(`"code": "missing-expansion-code"`), 1)
+	writeTestFile(t, filepath.Join(workspace.checkpointDir, "tables", "reason_codes.json"), reasons)
+
+	output, err := runTestGenerator(t, workspace.helperDir, "gen_tables.go")
+	if err == nil {
+		t.Fatalf("generator accepted a missing referenced code; output: %s", output)
+	}
+	if !bytes.Contains(output, []byte("expansion-unsupported")) {
+		t.Fatalf("missing-code failure did not name the referenced code: %s", output)
+	}
+}
+
+func TestTableGeneratorRejectsCommandLocalConstructCode(t *testing.T) {
+	workspace := newGeneratorWorkspace(t)
+	copyTestFile(t, "gen_tables.go", filepath.Join(workspace.helperDir, "gen_tables.go"))
+	copyTestFile(t, checkpointTablesPath+"certified_constructs.json", filepath.Join(workspace.checkpointDir, "tables", "certified_constructs.json"))
+	reasons := readTestFile(t, checkpointTablesPath+"reason_codes.json")
+	reasons = bytes.Replace(reasons,
+		[]byte("\"code\": \"expansion-unsupported\",\n      \"scope\": \"subtree-local\""),
+		[]byte("\"code\": \"expansion-unsupported\",\n      \"scope\": \"command-local\""), 1)
+	writeTestFile(t, filepath.Join(workspace.checkpointDir, "tables", "reason_codes.json"), reasons)
+
+	output, err := runTestGenerator(t, workspace.helperDir, "gen_tables.go")
+	if err == nil {
+		t.Fatalf("generator accepted a command-local construct code; output: %s", output)
+	}
+	if !bytes.Contains(output, []byte("command-local")) {
+		t.Fatalf("unowned-code failure did not name its scope: %s", output)
+	}
+}
+
 func TestReasonScopesAreHelperEmittable(t *testing.T) {
 	for code, scope := range reasonScopes {
 		if scope != "terminal" && scope != "subtree-local" && scope != "command-local" {
@@ -157,8 +219,25 @@ func TestCertifiedConstructsMatchCheckpoint(t *testing.T) {
 		}
 		want[key] = row.Disposition
 	}
-	if !reflect.DeepEqual(certifiedConstructs, want) {
-		t.Fatalf("certifiedConstructs does not exactly match %d checkpoint rows", len(checkpoint.Rows))
+	if len(certifiedConstructs) != len(want) {
+		t.Fatalf("certifiedConstructs has %d rows, want %d checkpoint rows", len(certifiedConstructs), len(want))
+	}
+	for key, disposition := range want {
+		rule, ok := certifiedConstructs[key]
+		if !ok || rule.disposition != disposition {
+			t.Errorf("certifiedConstructs[%+v] = %+v, want disposition %q", key, rule, disposition)
+			continue
+		}
+		if disposition != "refuse" {
+			if rule.code != "" {
+				t.Errorf("non-refuse certifiedConstructs[%+v] has code %q", key, rule.code)
+			}
+			continue
+		}
+		scope := reasonScopes[rule.code]
+		if scope != "terminal" && scope != "subtree-local" {
+			t.Errorf("refuse certifiedConstructs[%+v] has code %q with helper-unowned scope %q", key, rule.code, scope)
+		}
 	}
 	if certifiedNodeTypeCount != len(checkpoint.ExportedNodeTypes) {
 		t.Fatalf("certifiedNodeTypeCount = %d, want %d", certifiedNodeTypeCount, len(checkpoint.ExportedNodeTypes))

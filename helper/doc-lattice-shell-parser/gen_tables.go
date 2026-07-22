@@ -36,6 +36,7 @@ type constructRow struct {
 	Role        string `json:"role"`
 	Disposition string `json:"disposition"`
 	Spec        string `json:"spec"`
+	Code        string `json:"-"`
 }
 
 type reasonDocument struct {
@@ -66,6 +67,9 @@ func generateTables() error {
 	if err != nil {
 		return err
 	}
+	if err := assignConstructCodes(constructs.Rows, reasons.Rows); err != nil {
+		return err
+	}
 
 	sort.Slice(constructs.Rows, func(left, right int) bool {
 		if constructs.Rows[left].Node != constructs.Rows[right].Node {
@@ -82,14 +86,15 @@ func generateTables() error {
 	output.WriteString("// Package main contains certifier tables generated from the frozen checkpoint.\n")
 	output.WriteString("package main\n\n")
 	output.WriteString("type constructKey struct {\n\tnode, role string\n}\n\n")
+	output.WriteString("type constructRule struct {\n\tdisposition, code string\n}\n\n")
 	output.WriteString("const (\n")
 	fmt.Fprintf(&output, "\tcertifiedNodeTypeCount int = %d\n", len(constructs.ExportedNodeTypes))
 	fmt.Fprintf(&output, "\ttraversalContainerRuleDoc string = %s\n", strconv.Quote(constructs.TraversalConvention.ContainerRule))
 	fmt.Fprintf(&output, "\twildcardRuleDoc string = %s\n", strconv.Quote(constructs.TraversalConvention.WildcardRule))
 	output.WriteString(")\n\n")
-	output.WriteString("var certifiedConstructs = map[constructKey]string{\n")
+	output.WriteString("var certifiedConstructs = map[constructKey]constructRule{\n")
 	for _, row := range constructs.Rows {
-		fmt.Fprintf(&output, "\t{node: %s, role: %s}: %s,\n", strconv.Quote(row.Node), strconv.Quote(row.Role), strconv.Quote(row.Disposition))
+		fmt.Fprintf(&output, "\t{node: %s, role: %s}: {disposition: %s, code: %s},\n", strconv.Quote(row.Node), strconv.Quote(row.Role), strconv.Quote(row.Disposition), strconv.Quote(row.Code))
 	}
 	output.WriteString("}\n\n")
 	output.WriteString("var reasonScopes = map[string]string{\n")
@@ -106,6 +111,44 @@ func generateTables() error {
 		return fmt.Errorf("write %s: %w", tablesOutputPath, err)
 	}
 	return nil
+}
+
+func assignConstructCodes(constructs []constructRow, reasons []reasonRow) error {
+	scopes := make(map[string]string, len(reasons))
+	for _, reason := range reasons {
+		scopes[reason.Code] = reason.Scope
+	}
+	for index := range constructs {
+		row := &constructs[index]
+		if row.Disposition != "refuse" {
+			row.Code = ""
+			continue
+		}
+		row.Code = constructRefusalCode(row.Node)
+		scope, ok := scopes[row.Code]
+		if !ok {
+			return fmt.Errorf("construct %q/%q references unknown reason code %q", row.Node, row.Role, row.Code)
+		}
+		if scope != "terminal" && scope != "subtree-local" {
+			return fmt.Errorf("construct %q/%q references helper-unowned reason code %q with scope %q", row.Node, row.Role, row.Code, scope)
+		}
+	}
+	return nil
+}
+
+func constructRefusalCode(node string) string {
+	switch node {
+	case "RedirOperator":
+		return "redirect-unsupported"
+	case "ArithmExp", "ArithmExpr", "BinAritOperator", "BinaryArithm", "BraceExp",
+		"DblQuoted", "Expansion", "ExtGlob",
+		"FlagsArithm", "GlobOperator", "ParamExp", "ParenArithm", "ParExpOperator",
+		"ParNamesOperator", "Replace", "Slice", "UnAritOperator", "UnaryArithm",
+		"WordPart":
+		return "expansion-unsupported"
+	default:
+		return "unsupported-construct"
+	}
 }
 
 func readConstructs() (*constructDocument, error) {
