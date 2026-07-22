@@ -878,6 +878,17 @@ func TestValidPinnedArithmeticIndexRejectsMalformedDescendantGraphs(t *testing.T
 				Dollar: syntax.NewPos(5, 1, 6), Short: true,
 			}, lit(18, "z"),
 		}}},
+		{name: "subjectless long parameter", index: &syntax.Word{Parts: []syntax.WordPart{
+			lit(2, "a"), &syntax.ParamExp{
+				Dollar: syntax.NewPos(5, 1, 6), Rbrace: syntax.NewPos(15, 1, 16),
+			}, lit(18, "z"),
+		}}},
+		{name: "short parameter with closing brace", index: &syntax.Word{Parts: []syntax.WordPart{
+			lit(2, "a"), &syntax.ParamExp{
+				Dollar: syntax.NewPos(5, 1, 6), Rbrace: syntax.NewPos(15, 1, 16), Short: true,
+				Param: lit(6, "x"),
+			}, lit(18, "z"),
+		}}},
 		{name: "malformed nested command substitution", index: &syntax.Word{Parts: []syntax.WordPart{
 			lit(2, "a"), &syntax.CmdSubst{
 				Left: syntax.NewPos(5, 1, 6), Right: syntax.NewPos(15, 1, 16), Stmts: []*syntax.Stmt{nil},
@@ -929,6 +940,157 @@ func TestValidPinnedArithmeticIndexRejectsMalformedDescendantGraphs(t *testing.T
 			t.Fatal("over-node arithmetic index unexpectedly validated")
 		}
 	})
+}
+
+func TestValidPinnedArithmeticIndexEnforcesBashDomainAtEveryArithmeticEdge(t *testing.T) {
+	lit := func(start uint, value string) *syntax.Lit {
+		return &syntax.Lit{
+			ValuePos: syntax.NewPos(start, 1, start+1),
+			ValueEnd: syntax.NewPos(start+uint(len(value)), 1, start+uint(len(value))+1),
+			Value:    value,
+		}
+	}
+	word := func(start uint, value string) *syntax.Word {
+		return &syntax.Word{Parts: []syntax.WordPart{lit(start, value)}}
+	}
+	flags := func() *syntax.FlagsArithm {
+		return &syntax.FlagsArithm{Flags: lit(10, "k"), X: word(11, "1")}
+	}
+	wordAround := func(middle syntax.WordPart) *syntax.Word {
+		return &syntax.Word{Parts: []syntax.WordPart{lit(2, "a"), middle, lit(18, "z")}}
+	}
+	parameterWithIndex := func(index syntax.ArithmExpr) *syntax.ParamExp {
+		return &syntax.ParamExp{
+			Dollar: syntax.NewPos(5, 1, 6), Rbrace: syntax.NewPos(16, 1, 17),
+			Param: lit(7, "array"), Index: index,
+		}
+	}
+	invalid := []struct {
+		name  string
+		index syntax.ArithmExpr
+	}{
+		{name: "binary left", index: &syntax.BinaryArithm{
+			OpPos: syntax.NewPos(12, 1, 13), Op: syntax.Add, X: flags(), Y: word(13, "2"),
+		}},
+		{name: "binary right", index: &syntax.BinaryArithm{
+			OpPos: syntax.NewPos(9, 1, 10), Op: syntax.Add, X: word(8, "1"), Y: flags(),
+		}},
+		{name: "parenthesized child", index: &syntax.ParenArithm{
+			Lparen: syntax.NewPos(8, 1, 9), Rparen: syntax.NewPos(14, 1, 15), X: flags(),
+		}},
+		{name: "unary child", index: &syntax.UnaryArithm{
+			OpPos: syntax.NewPos(8, 1, 9), Op: syntax.Minus, X: flags(),
+		}},
+		{name: "arithmetic expansion child", index: wordAround(&syntax.ArithmExp{
+			Left: syntax.NewPos(5, 1, 6), Right: syntax.NewPos(15, 1, 16), X: flags(),
+		})},
+		{name: "parameter index child", index: wordAround(parameterWithIndex(flags()))},
+		{name: "parameter slice child", index: wordAround(&syntax.ParamExp{
+			Dollar: syntax.NewPos(5, 1, 6), Rbrace: syntax.NewPos(16, 1, 17),
+			Param: lit(7, "array"), Slice: &syntax.Slice{Offset: flags()},
+		})},
+	}
+	for _, test := range invalid {
+		t.Run(test.name, func(t *testing.T) {
+			if validPinnedArithmeticIndex(test.index) {
+				t.Fatalf("nested dialect arithmetic at %s unexpectedly validated", test.name)
+			}
+		})
+	}
+
+	deepBash := &syntax.BinaryArithm{
+		OpPos: syntax.NewPos(12, 1, 13), Op: syntax.Add,
+		X: &syntax.ParenArithm{
+			Lparen: syntax.NewPos(8, 1, 9), Rparen: syntax.NewPos(11, 1, 12),
+			X: &syntax.UnaryArithm{OpPos: syntax.NewPos(9, 1, 10), Op: syntax.Minus, X: word(10, "1")},
+		},
+		Y: word(13, "2"),
+	}
+	valid := []struct {
+		name  string
+		index syntax.ArithmExpr
+	}{
+		{name: "deep direct arithmetic", index: deepBash},
+		{name: "arithmetic expansion", index: wordAround(&syntax.ArithmExp{
+			Left: syntax.NewPos(5, 1, 6), Right: syntax.NewPos(15, 1, 16), X: deepBash,
+		})},
+		{name: "parameter index", index: wordAround(parameterWithIndex(deepBash))},
+		{name: "parameter slice", index: wordAround(&syntax.ParamExp{
+			Dollar: syntax.NewPos(5, 1, 6), Rbrace: syntax.NewPos(16, 1, 17),
+			Param: lit(7, "array"), Slice: &syntax.Slice{Offset: deepBash},
+		})},
+	}
+	for _, test := range valid {
+		t.Run(test.name, func(t *testing.T) {
+			if !validPinnedArithmeticIndex(test.index) {
+				t.Fatalf("valid deep Bash arithmetic at %s was rejected", test.name)
+			}
+		})
+	}
+}
+
+func TestStructuralChildIsArithmeticCoversPinnedArithmeticFields(t *testing.T) {
+	lit := func(offset uint, value string) *syntax.Lit {
+		return &syntax.Lit{
+			ValuePos: syntax.NewPos(offset, 1, offset+1),
+			ValueEnd: syntax.NewPos(offset+uint(len(value)), 1, offset+uint(len(value))+1),
+			Value:    value,
+		}
+	}
+	word := func(offset uint, value string) *syntax.Word {
+		return &syntax.Word{Parts: []syntax.WordPart{lit(offset, value)}}
+	}
+	type testCase struct {
+		name   string
+		parent syntax.Node
+		child  syntax.Node
+		want   bool
+	}
+	assignment := &syntax.Assign{Name: lit(0, "a"), Index: word(2, "1"), Value: word(4, "v")}
+	loop := &syntax.CStyleLoop{Init: word(2, "1"), Cond: word(4, "1"), Post: word(6, "1")}
+	parameter := &syntax.ParamExp{
+		Param: lit(2, "a"), Index: word(4, "1"),
+		Slice: &syntax.Slice{Offset: word(6, "1"), Length: word(8, "1")},
+		Exp:   &syntax.Expansion{Word: word(10, "general")},
+	}
+	arithmeticExpansion := &syntax.ArithmExp{X: word(2, "1")}
+	arithmeticCommand := &syntax.ArithmCmd{X: word(2, "1")}
+	binary := &syntax.BinaryArithm{X: word(2, "1"), Y: word(4, "2")}
+	unary := &syntax.UnaryArithm{X: word(2, "1")}
+	paren := &syntax.ParenArithm{X: word(2, "1")}
+	flags := &syntax.FlagsArithm{Flags: lit(2, "k"), X: word(4, "1")}
+	arrayElement := &syntax.ArrayElem{Index: word(2, "1"), Value: word(4, "general")}
+	let := &syntax.LetClause{Exprs: []syntax.ArithmExpr{word(2, "1"), word(4, "2")}}
+	tests := []testCase{
+		{name: "assignment index", parent: assignment, child: assignment.Index, want: true},
+		{name: "assignment value word", parent: assignment, child: assignment.Value},
+		{name: "c-style init", parent: loop, child: loop.Init, want: true},
+		{name: "c-style condition", parent: loop, child: loop.Cond, want: true},
+		{name: "c-style post", parent: loop, child: loop.Post, want: true},
+		{name: "parameter index", parent: parameter, child: parameter.Index, want: true},
+		{name: "parameter slice offset", parent: parameter, child: parameter.Slice.Offset, want: true},
+		{name: "parameter slice length", parent: parameter, child: parameter.Slice.Length, want: true},
+		{name: "parameter expansion word", parent: parameter, child: parameter.Exp.Word},
+		{name: "arithmetic expansion", parent: arithmeticExpansion, child: arithmeticExpansion.X, want: true},
+		{name: "arithmetic command", parent: arithmeticCommand, child: arithmeticCommand.X, want: true},
+		{name: "binary left", parent: binary, child: binary.X, want: true},
+		{name: "binary right", parent: binary, child: binary.Y, want: true},
+		{name: "unary expression", parent: unary, child: unary.X, want: true},
+		{name: "parenthesized expression", parent: paren, child: paren.X, want: true},
+		{name: "flags expression", parent: flags, child: flags.X, want: true},
+		{name: "flags literal", parent: flags, child: flags.Flags},
+		{name: "array element index", parent: arrayElement, child: arrayElement.Index, want: true},
+		{name: "array element value", parent: arrayElement, child: arrayElement.Value},
+		{name: "let first expression", parent: let, child: let.Exprs[0], want: true},
+		{name: "let second expression", parent: let, child: let.Exprs[1], want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := structuralChildIsArithmetic(test.parent, test.child); got != test.want {
+				t.Fatalf("structuralChildIsArithmetic(%T, %T) = %t, want %t", test.parent, test.child, got, test.want)
+			}
+		})
+	}
 }
 
 func TestEmitLengthParameterIndexTraversesNestedExecution(t *testing.T) {

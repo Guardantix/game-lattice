@@ -713,10 +713,11 @@ func validPinnedArithmeticIndex(index syntax.ArithmExpr) (valid bool) {
 type arithmeticIndexValidationFrame struct {
 	node        syntax.Node
 	depth, next int
+	arithmetic  bool
 }
 
 func validArithmeticIndexSubtree(root syntax.Node) bool {
-	stack := []arithmeticIndexValidationFrame{{node: root, depth: 1, next: -1}}
+	stack := []arithmeticIndexValidationFrame{{node: root, depth: 1, next: -1, arithmetic: true}}
 	seen := make(map[syntax.Node]struct{})
 	nodes := make([]syntax.Node, 0, min(visitorNodeCap, 64))
 	for len(stack) > 0 {
@@ -724,6 +725,9 @@ func validArithmeticIndexSubtree(root syntax.Node) bool {
 		if frame.next < 0 {
 			name, known := syntaxNodeName(frame.node)
 			if !known || name == "" || frame.depth > visitorDepthCap || len(nodes) >= visitorNodeCap {
+				return false
+			}
+			if frame.arithmetic && !pinnedBashArithmeticExpression(frame.node) {
 				return false
 			}
 			if _, exists := seen[frame.node]; exists {
@@ -746,6 +750,7 @@ func validArithmeticIndexSubtree(root syntax.Node) bool {
 		}
 		stack = append(stack, arithmeticIndexValidationFrame{
 			node: child, depth: frame.depth + 1, next: -1,
+			arithmetic: structuralChildIsArithmetic(frame.node, child),
 		})
 	}
 	// Structural ownership and depth are known before invoking syntax span methods.
@@ -756,6 +761,49 @@ func validArithmeticIndexSubtree(root syntax.Node) bool {
 		}
 	}
 	return true
+}
+
+func pinnedBashArithmeticExpression(node syntax.Node) bool {
+	switch node.(type) {
+	case *syntax.Word, *syntax.BinaryArithm, *syntax.ParenArithm, *syntax.UnaryArithm:
+		return true
+	default:
+		return false
+	}
+}
+
+func structuralChildIsArithmetic(parent, child syntax.Node) bool {
+	same := func(expression syntax.ArithmExpr) bool {
+		return expression != nil && syntax.Node(expression) == child
+	}
+	switch parent := parent.(type) {
+	case *syntax.Assign:
+		return same(parent.Index)
+	case *syntax.CStyleLoop:
+		return true
+	case *syntax.ParamExp:
+		if same(parent.Index) {
+			return true
+		}
+		return parent.Slice != nil && (same(parent.Slice.Offset) || same(parent.Slice.Length))
+	case *syntax.ArithmExp:
+		return true
+	case *syntax.ArithmCmd:
+		return true
+	case *syntax.BinaryArithm:
+		return true
+	case *syntax.UnaryArithm:
+		return true
+	case *syntax.ParenArithm:
+		return true
+	case *syntax.FlagsArithm:
+		return same(parent.X)
+	case *syntax.ArrayElem:
+		return same(parent.Index)
+	case *syntax.LetClause:
+		return true
+	}
+	return false
 }
 
 func syntaxNodeHasValidSpan(node syntax.Node) (valid bool) {

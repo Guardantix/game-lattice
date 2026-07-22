@@ -790,6 +790,139 @@ func TestWalkZeroValueNodesAreCapSafe(t *testing.T) {
 	}
 }
 
+func TestLocalStructureValidParameterExpansionShapes(t *testing.T) {
+	pos := func(offset uint) syntax.Pos { return syntax.NewPos(offset, 1, offset+1) }
+	lit := func(offset uint, value string) *syntax.Lit {
+		return &syntax.Lit{ValuePos: pos(offset), ValueEnd: pos(offset + uint(len(value))), Value: value}
+	}
+	word := func(offset uint, value string) *syntax.Word {
+		return &syntax.Word{Parts: []syntax.WordPart{lit(offset, value)}}
+	}
+	shortSubject := func() *syntax.ParamExp {
+		return &syntax.ParamExp{Dollar: pos(1), Short: true, Param: lit(2, "x")}
+	}
+	valid := []struct {
+		name      string
+		parameter *syntax.ParamExp
+	}{
+		{name: "short subject", parameter: shortSubject()},
+		{name: "naked indexed short", parameter: &syntax.ParamExp{
+			Short: true, Param: lit(2, "array"), Index: word(8, "1"),
+		}},
+		{name: "long subject", parameter: &syntax.ParamExp{
+			Dollar: pos(1), Rbrace: pos(5), Param: lit(3, "x"),
+		}},
+		{name: "long nested subject", parameter: &syntax.ParamExp{
+			Dollar: pos(1), Rbrace: pos(8), NestedParam: shortSubject(),
+		}},
+		{name: "dialect flags payload", parameter: &syntax.ParamExp{
+			Dollar: pos(1), Rbrace: pos(6), Flags: lit(3, "q"),
+		}},
+		{name: "dialect expansion payload", parameter: &syntax.ParamExp{
+			Dollar: pos(1), Rbrace: pos(8), Exp: &syntax.Expansion{Word: word(4, "value")},
+		}},
+		{name: "dialect modifier payload", parameter: &syntax.ParamExp{
+			Dollar: pos(1), Rbrace: pos(6), Modifiers: []*syntax.Lit{lit(3, "h")},
+		}},
+	}
+	for _, test := range valid {
+		t.Run("valid "+test.name, func(t *testing.T) {
+			if !localStructureValid(test.parameter) {
+				t.Fatalf("valid parameter shape %#v was rejected", test.parameter)
+			}
+		})
+	}
+
+	var typedNilSubject *syntax.ParamExp
+	var typedNilIndex *syntax.Word
+	var typedNilOffset *syntax.Word
+	invalid := []struct {
+		name      string
+		parameter *syntax.ParamExp
+	}{
+		{name: "subjectless long", parameter: &syntax.ParamExp{Dollar: pos(1), Rbrace: pos(5)}},
+		{name: "typed nil nested subject", parameter: &syntax.ParamExp{
+			Dollar: pos(1), Rbrace: pos(5), NestedParam: typedNilSubject,
+		}},
+		{name: "typed nil index payload", parameter: &syntax.ParamExp{
+			Dollar: pos(1), Rbrace: pos(5), Index: typedNilIndex,
+		}},
+		{name: "typed nil slice payload", parameter: &syntax.ParamExp{
+			Dollar: pos(1), Rbrace: pos(5), Slice: &syntax.Slice{Offset: typedNilOffset},
+		}},
+		{name: "typed nil modifier payload", parameter: &syntax.ParamExp{
+			Dollar: pos(1), Rbrace: pos(5), Modifiers: []*syntax.Lit{nil},
+		}},
+		{name: "short missing subject", parameter: &syntax.ParamExp{Dollar: pos(1), Short: true}},
+		{name: "short with closing brace", parameter: &syntax.ParamExp{
+			Dollar: pos(1), Rbrace: pos(5), Short: true, Param: lit(2, "x"),
+		}},
+		{name: "naked short without index", parameter: &syntax.ParamExp{Short: true, Param: lit(2, "x")}},
+		{name: "long missing dollar", parameter: &syntax.ParamExp{Rbrace: pos(5), Param: lit(2, "x")}},
+		{name: "long missing closing brace", parameter: &syntax.ParamExp{Dollar: pos(1), Param: lit(2, "x")}},
+		{name: "both subjects", parameter: &syntax.ParamExp{
+			Dollar: pos(1), Rbrace: pos(8), Param: lit(3, "x"), NestedParam: shortSubject(),
+		}},
+		{name: "subjectless prefix operator", parameter: &syntax.ParamExp{
+			Dollar: pos(1), Rbrace: pos(5), Length: true,
+		}},
+	}
+	for _, test := range invalid {
+		t.Run("invalid "+test.name, func(t *testing.T) {
+			if localStructureValid(test.parameter) {
+				t.Fatalf("malformed parameter shape %#v was accepted", test.parameter)
+			}
+		})
+	}
+}
+
+func TestWalkRejectsMalformedParameterExpansionsBeforeSite(t *testing.T) {
+	pos := func(offset uint) syntax.Pos { return syntax.NewPos(offset, 1, offset+1) }
+	lit := func(offset uint, value string) *syntax.Lit {
+		return &syntax.Lit{ValuePos: pos(offset), ValueEnd: pos(offset + uint(len(value))), Value: value}
+	}
+	word := func(part syntax.WordPart) *syntax.Word { return &syntax.Word{Parts: []syntax.WordPart{part}} }
+	var typedNilSubject *syntax.ParamExp
+	var typedNilIndex *syntax.Word
+	parameters := []struct {
+		name      string
+		parameter *syntax.ParamExp
+	}{
+		{name: "subjectless long", parameter: &syntax.ParamExp{Dollar: pos(5), Rbrace: pos(8)}},
+		{name: "typed nil nested subject", parameter: &syntax.ParamExp{
+			Dollar: pos(5), Rbrace: pos(8), NestedParam: typedNilSubject,
+		}},
+		{name: "typed nil index payload", parameter: &syntax.ParamExp{
+			Dollar: pos(5), Rbrace: pos(8), Index: typedNilIndex,
+		}},
+		{name: "short with closing brace", parameter: &syntax.ParamExp{
+			Dollar: pos(5), Rbrace: pos(8), Short: true, Param: lit(6, "x"),
+		}},
+		{name: "naked short without index", parameter: &syntax.ParamExp{Short: true, Param: lit(6, "x")}},
+		{name: "long missing dollar", parameter: &syntax.ParamExp{Rbrace: pos(8), Param: lit(6, "x")}},
+		{name: "long missing closing brace", parameter: &syntax.ParamExp{Dollar: pos(5), Param: lit(6, "x")}},
+		{name: "both subjects", parameter: &syntax.ParamExp{
+			Dollar: pos(5), Rbrace: pos(12), Param: lit(6, "x"),
+			NestedParam: &syntax.ParamExp{Dollar: pos(8), Short: true, Param: lit(9, "y")},
+		}},
+	}
+	for _, test := range parameters {
+		t.Run(test.name, func(t *testing.T) {
+			call := &syntax.CallExpr{Args: []*syntax.Word{
+				word(lit(0, "echo")), word(test.parameter),
+			}}
+			w := newWalker("echo ${bad}")
+			w.dispatch(call, "argv", 1)
+			if len(w.sites) != 0 {
+				t.Fatalf("sites = %#v, want none before malformed parameter refusal", w.sites)
+			}
+			if len(w.refusals) != 1 || w.refusals[0].code != "unsupported-construct" || !w.stop {
+				t.Fatalf("refusals, stopped = (%#v, %t), want one terminal unsupported-construct", w.refusals, w.stop)
+			}
+		})
+	}
+}
+
 func TestWalkMalformedNodesFailClosedWithoutPanicking(t *testing.T) {
 	dispatch := func(node syntax.Node, role string) func() ([]rawRefusal, bool) {
 		return func() ([]rawRefusal, bool) {

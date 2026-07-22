@@ -638,7 +638,34 @@ func localStructureValid(node syntax.Node) bool {
 	case *syntax.Word:
 		return len(node.Parts) > 0
 	case *syntax.ParamExp:
-		return (node.Dollar.IsValid() || node.Param != nil) && (!node.Short || node.Index != nil || node.Param != nil)
+		paramPresent := present(node.Param)
+		nestedPresent := present(node.NestedParam)
+		indexPresent := present(node.Index)
+		if node.NestedParam != nil && !nestedPresent || node.Index != nil && !indexPresent ||
+			paramPresent && nestedPresent {
+			return false
+		}
+		for _, modifier := range node.Modifiers {
+			if !present(modifier) {
+				return false
+			}
+		}
+		if node.Slice != nil {
+			if node.Slice.Offset != nil && !present(node.Slice.Offset) ||
+				node.Slice.Length != nil && !present(node.Slice.Length) {
+				return false
+			}
+		}
+		if node.Short {
+			return !node.Rbrace.IsValid() && paramPresent && !nestedPresent &&
+				(node.Dollar.IsValid() || indexPresent)
+		}
+		if !node.Dollar.IsValid() || !node.Rbrace.IsValid() {
+			return false
+		}
+		payloadPresent := present(node.Flags) || indexPresent || len(node.Modifiers) > 0 ||
+			node.Slice != nil || node.Repl != nil || node.Names != 0 || node.Exp != nil
+		return paramPresent || nestedPresent || payloadPresent
 	case *syntax.ArithmExp:
 		return present(node.X)
 	case *syntax.ArithmCmd:
