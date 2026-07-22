@@ -283,6 +283,11 @@ func TestWalkRefusesOpaqueExtGlobExecutionAndStopsLaterSites(t *testing.T) {
 		refuse bool
 	}{
 		{name: "command substitution", source: `A=*($(doc-lattice check)|b) echo outer; echo later`, refuse: true},
+		{name: "dynamic then command", source: `A=*($X|$(doc-lattice check)) echo outer; echo later`, refuse: true},
+		{name: "parameter then command", source: `A=*(${X:-$(doc-lattice check)}|b) echo outer; echo later`, refuse: true},
+		{name: "parameter then process", source: `A=*(${X:-<(doc-lattice check)}|b) echo outer; echo later`, refuse: true},
+		{name: "locale then command", source: `A=*($"$(doc-lattice check)"|b) echo outer; echo later`, refuse: true},
+		{name: "arithmetic then command", source: `A=*($[$(doc-lattice check)+1]|b) echo outer; echo later`, refuse: true},
 		{name: "continued command", source: "A=*($\\\n(doc-lattice check)|b) echo outer; echo later", refuse: true},
 		{name: "double continued command", source: "A=*(\"$\\\n(doc-lattice check)\"|b) echo outer; echo later", refuse: true},
 		{name: "backticks", source: "A=*(`doc-lattice check`|b) echo outer; echo later", refuse: true},
@@ -295,6 +300,8 @@ func TestWalkRefusesOpaqueExtGlobExecutionAndStopsLaterSites(t *testing.T) {
 		{name: "ANSI escaped quote command text", source: `A=*($'a\'$(doc-lattice check)'|b) echo outer; echo later`},
 		{name: "ANSI continued command text", source: "A=*($'$\\\n(doc-lattice check)'|b) echo outer; echo later"},
 		{name: "escaped dollar", source: `A=*(\$(doc-lattice check)|b) echo outer; echo later`},
+		{name: "dynamic then escaped command", source: `A=*($X|\$(doc-lattice check)) echo outer; echo later`},
+		{name: "escaped command then dynamic", source: `A=*(\$(doc-lattice check)|$X) echo outer; echo later`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

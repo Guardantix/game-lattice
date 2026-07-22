@@ -272,13 +272,22 @@ func TestEmitAssignmentExtGlobContexts(t *testing.T) {
 		{source: `A=*(a|"b")`, text: `*(a|b)`, known: true},
 		{source: `A=*(a|\|)`, text: `*(a||)`, known: true},
 		{source: `A=*(a|$)`, text: `*(a|$)`, known: true},
+		{source: `A=*(a|"foo$"|b)`, text: `*(a|foo$|b)`, known: true},
+		{source: `A=*(a|"$"|b)`, text: `*(a|$|b)`, known: true},
+		{source: `A=*(a|"$'x'"|b)`, text: `*(a|$'x'|b)`, known: true},
 		{source: `A=*(a|\$X)`, text: `*(a|$X)`, known: true},
 		{source: `A=*($'a\n'|b)`, text: "*(a\n|b)", known: true},
 		{source: `A=*($'a\0b'|c)`, text: `*(a|c)`, known: true},
 		{source: `A=*(pre$'\x2d'post|b)`, text: `*(pre-post|b)`, known: true},
 		{source: `A=*($'a\'$(doc-lattice check)'|b)`, text: `*(a'$(doc-lattice check)|b)`, known: true},
 		{source: `A=*($'a\\b'|c)`, text: `*(a\b|c)`, known: true},
+		{source: "A=*($\\\n'a\\n'|b)", text: "*(a\n|b)", known: true},
+		{source: "A=*($\\\n'a\\0b'|c)", text: `*(a|c)`, known: true},
+		{source: "A=*($\\\n'a\\'b'|c)", text: `*(a'b|c)`, known: true},
 		{source: `A=*($X|b)`, known: false},
+		{source: `A=*(prefix$X|suffix)`, known: false},
+		{source: `A=*(a|"$name"|b)`, known: false},
+		{source: `A=*(a|"${name}"|b)`, known: false},
 		{source: `A=*($"translated"|b)`, known: false},
 		{source: "A=*($\\\n{X}|b)", known: false},
 		{source: "A=*($\\\n\"translated\"|b)", known: false},
@@ -287,7 +296,15 @@ func TestEmitAssignmentExtGlobContexts(t *testing.T) {
 		{source: `A=*(\$[1+2]|b)`, text: `*($[1+2]|b)`, known: true},
 		{source: `A=*($(printf a)|b)`, known: false, refuse: true},
 		{source: `A=*($((1+2))|b)`, known: false, refuse: true},
+		{source: `A=*($X|$(printf a))`, known: false, refuse: true},
+		{source: `A=*(${X:-$(printf a)}|b)`, known: false, refuse: true},
+		{source: `A=*(${X:-<(printf a)}|b)`, known: false, refuse: true},
+		{source: `A=*($"$(printf a)"|b)`, known: false, refuse: true},
+		{source: `A=*($[$(printf 1)+1]|b)`, known: false, refuse: true},
+		{source: `A=*(a|"$(printf a)"|b)`, known: false, refuse: true},
 		{source: `A=*(<(printf a)|b)`, known: false, refuse: true},
+		{source: `A=*($X|\$(printf a))`, known: false},
+		{source: `A=*(\$(literal)|$X)`, known: false},
 		{source: `A=~/*(a|b)`, known: false},
 	}
 	for _, test := range tests {
@@ -323,6 +340,11 @@ func TestLiteralAssignmentExtGlobRejectsMalformedAST(t *testing.T) {
 func TestExtGlobExecutionClassificationNeverClaimsKnown(t *testing.T) {
 	sources := []string{
 		`A=*($(printf a)|b)`,
+		`A=*($X|$(printf a))`,
+		`A=*(${X:-$(printf a)}|b)`,
+		`A=*(${X:-<(printf a)}|b)`,
+		`A=*($"$(printf a)"|b)`,
+		`A=*($[$(printf 1)+1]|b)`,
 		"A=*(`printf a`|b)",
 		`A=*(<(printf a)|b)`,
 		`A=*(>(printf a)|b)`,
@@ -348,8 +370,25 @@ func TestExtGlobExecutionClassificationNeverClaimsKnown(t *testing.T) {
 	}
 }
 
+func TestExtGlobUnknownClassificationNeverLeaksPartialValue(t *testing.T) {
+	const src = `A=*(prefix$X|suffix)`
+	statements, refusal := parseStatements(src)
+	if refusal != nil {
+		t.Fatalf("parse refusal = %#v", refusal)
+	}
+	sites, _, _ := walk(statements, src)
+	extglob, ok := sites[0].assignments[0].Value.Parts[0].(*syntax.ExtGlob)
+	if !ok {
+		t.Fatalf("word part = %T, want ExtGlob", sites[0].assignments[0].Value.Parts[0])
+	}
+	classification := classifyExtGlob(extglob, src)
+	if classification.known || classification.execution || classification.value != "" {
+		t.Fatalf("classification = %#v, want unknown without execution or partial value", classification)
+	}
+}
+
 func TestExtGlobClassifierLookalikeCorpusDoesNotPanic(t *testing.T) {
-	raws := []string{"*(a|\\)", "*(a|'unterminated)", "*(a|\"unterminated)", "*(a|$\\\n)", "*(a|<\\\n()", "*(a|$'x\\'y')"}
+	raws := []string{"*(a|\\)", "*(a|'unterminated)", "*(a|\"unterminated)", "*(a|$\\\n)", "*(a|<\\\n()", "*(a|$'x\\'y')", "*(a|$\\\n')", "*(a|$\\\n'x\\')"}
 	for _, raw := range raws {
 		t.Run(raw, func(t *testing.T) {
 			patternEnd := len(raw) - 1

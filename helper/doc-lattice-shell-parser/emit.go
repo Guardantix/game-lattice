@@ -290,6 +290,7 @@ func classifyExtGlob(extglob *syntax.ExtGlob, src string) extGlobClassification 
 		doubleQuoted
 	)
 	quote := unquoted
+	known := true
 	var value strings.Builder
 	for index := 0; index < len(raw); index++ {
 		char := raw[index]
@@ -314,8 +315,9 @@ func classifyExtGlob(extglob *syntax.ExtGlob, src string) extGlobClassification 
 				if next == '(' {
 					return extGlobClassification{execution: true}
 				}
-				if dollarExpansionByte(next) {
-					return extGlobClassification{}
+				if next != '"' && dollarExpansionByte(next) {
+					known = false
+					continue
 				}
 			}
 			if char == '\\' && index+1 < len(raw) {
@@ -341,20 +343,21 @@ func classifyExtGlob(extglob *syntax.ExtGlob, src string) extGlobClassification 
 		case '`':
 			return extGlobClassification{execution: true}
 		case '$':
-			if index+1 < len(raw) && raw[index+1] == '\'' {
-				decoded, close, ok := decodeANSIQuoted(raw, index+2)
+			next, nextIndex := logicalNext(raw, index+1)
+			if next == '\'' {
+				decoded, close, ok := decodeANSIQuoted(raw, nextIndex+1)
 				if !ok {
 					return extGlobClassification{}
 				}
 				value.WriteString(decoded)
 				index = close
 			} else {
-				next, _ := logicalNext(raw, index+1)
 				if next == '(' {
 					return extGlobClassification{execution: true}
 				}
 				if dollarExpansionByte(next) {
-					return extGlobClassification{}
+					known = false
+					continue
 				}
 				value.WriteByte(char)
 			}
@@ -377,6 +380,9 @@ func classifyExtGlob(extglob *syntax.ExtGlob, src string) extGlobClassification 
 		}
 	}
 	if quote != unquoted {
+		known = false
+	}
+	if !known {
 		return extGlobClassification{}
 	}
 	return extGlobClassification{value: value.String(), known: true}
