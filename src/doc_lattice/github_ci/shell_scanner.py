@@ -1708,7 +1708,10 @@ def _reject_marker_bearing_dispatcher(words: list[_ShellWord]) -> None:
     ``eval``, ``source``/``.``, and ``bash``/``sh``/``dash``/``zsh -c`` run an inline payload the
     bounded scanner deliberately does not parse. When such a command's argv literally names
     doc-lattice the scanner cannot prove the payload never invokes a sensitive command, so it
-    refuses instead of certifying the source clean. The rule fires only on a literal marker; a
+    refuses instead of certifying the source clean. The head is resolved through the same
+    assignment, keyword, wrapper (``command``/``env``/``exec``/``builtin``/``time``), and
+    ``coproc`` grammar as direct payload resolution, so a wrapped dispatcher such as
+    ``command bash -c ...`` cannot slip past the rule. The rule fires only on a literal marker; a
     payload assembled from a variable is the disclosed executable-name limitation, not this one.
 
     Args:
@@ -1717,35 +1720,55 @@ def _reject_marker_bearing_dispatcher(words: list[_ShellWord]) -> None:
     Raises:
         _ShellScanIncomplete: If the command is a marker-bearing recognized dispatcher.
     """
-    head_index = _dispatcher_head_index(words)
-    if head_index is None:
-        return
-    argv = words[head_index + 1 :]
-    if not any(_DISPATCHER_MARKER_RE.search(word.literal) for word in argv):
-        return
-    name = _basename(words[head_index].literal).casefold()
-    if name in _PLAIN_DISPATCHER_HEADS or (
-        name in _SHELL_DISPATCHER_HEADS and _shell_dispatcher_runs_inline_command(argv)
-    ):
-        raise _ShellScanIncomplete("inline dispatcher command cannot be scanned safely")
-
-
-def _dispatcher_head_index(words: list[_ShellWord]) -> int | None:
-    """Return the index of a command's executable word, skipping leading assignment prefixes."""
-    for index, word in enumerate(words):
-        if word.shell_assignment:
+    for head_index in _dispatcher_head_candidates(words):
+        argv = words[head_index + 1 :]
+        if not any(_DISPATCHER_MARKER_RE.search(word.literal) for word in argv):
             continue
-        return index
-    return None
+        name = _basename(words[head_index].literal).casefold()
+        if name in _PLAIN_DISPATCHER_HEADS or (
+            name in _SHELL_DISPATCHER_HEADS and _shell_dispatcher_runs_inline_command(argv)
+        ):
+            raise _ShellScanIncomplete("inline dispatcher command cannot be scanned safely")
+
+
+def _dispatcher_head_candidates(words: list[_ShellWord]) -> list[int]:
+    """Return executable-position candidates resolved through the supported prefix grammar.
+
+    Mirrors ``_doc_lattice_command_index``: skips assignments, command keywords, and the
+    supported shell wrappers via ``_skip_shell_prefixes``, then follows a ``coproc`` keyword to
+    both its unnamed and named command interpretations. A resolved index past the word list means
+    the wrapper consumed the command (for example ``command -v``), leaving no head to check.
+    """
+    resolved = _skip_shell_prefixes(words, 0)
+    index = resolved.index
+    if index is None or index >= len(words):
+        return []
+    word = words[index]
+    if word.dynamic or not word.keyword_eligible or word.literal != "coproc":
+        return [index]
+    starts = [index + 1]
+    if (
+        index + 1 < len(words)
+        and not words[index + 1].dynamic
+        and _is_name(words[index + 1].literal)
+    ):
+        starts.append(index + 2)
+    candidates = []
+    for start in starts:
+        nested = _skip_shell_prefixes(words, start)
+        if nested.index is not None and nested.index < len(words):
+            candidates.append(nested.index)
+    return candidates
 
 
 def _shell_dispatcher_runs_inline_command(argv: list[_ShellWord]) -> bool:
     """Return whether a shell dispatcher argv selects an inline ``-c`` command.
 
-    Returns True when the option grammar contains ``-c`` (standalone or inside a short cluster) or
-    a dynamic selector word leaves the presence of ``-c`` unresolvable, both of which mean the
-    scanner cannot rule out an inline payload. Returns False when the options resolve to an operand
-    or ``--`` terminator, meaning the shell runs an external script file rather than inline source.
+    Returns True when the option grammar contains ``-c`` (standalone, inside a short cluster, or
+    as a ``+c`` cluster, which Bash-family shells also execute as an inline command) or a dynamic
+    selector word leaves the presence of ``-c`` unresolvable, both of which mean the scanner
+    cannot rule out an inline payload. Returns False when the options resolve to an operand or
+    ``--`` terminator, meaning the shell runs an external script file rather than inline source.
     """
     index = 0
     while index < len(argv):
@@ -1755,9 +1778,10 @@ def _shell_dispatcher_runs_inline_command(argv: list[_ShellWord]) -> bool:
         literal = word.literal
         if not _is_shell_option_token(literal):
             return False
-        if literal.startswith("-") and not literal.startswith("--") and "c" in literal[1:]:
-            # A single-dash cluster containing c is the -c inline-command option. Long options
-            # such as --norc or --rcfile also contain the letter but never select -c.
+        if not literal.startswith("--") and "c" in literal[1:]:
+            # A short cluster containing c selects the -c inline-command option; bash, sh, and
+            # dash execute a + cluster such as +c the same way. Long options such as --norc or
+            # --rcfile also contain the letter but never select -c.
             return True
         index += 2 if _shell_option_consumes_value(literal) else 1
     return False

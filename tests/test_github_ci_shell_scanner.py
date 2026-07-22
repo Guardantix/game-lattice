@@ -2275,6 +2275,17 @@ DISPATCHER_FAIL_CLOSED_CASES = [
     ("bash value option before -c", "bash -o pipefail -c 'doc-lattice reconcile'"),
     ("assignment prefix before dispatcher", "FOO=1 bash -c 'doc-lattice reconcile'"),
     ("nested command substitution dispatch", "echo $(bash -c 'doc-lattice reconcile')"),
+    ("command wrapper before dispatcher", "command bash -c 'doc-lattice reconcile'"),
+    ("env wrapper before dispatcher", "env bash -c 'doc-lattice linear'"),
+    ("exec wrapper before dispatcher", "exec bash -c 'doc-lattice reconcile'"),
+    ("time keyword before dispatcher", "time bash -c 'doc-lattice reconcile'"),
+    ("env options and assignment before dispatcher", "env -i PATH=/x bash -c 'doc-lattice lint'"),
+    ("command wrapper before plain eval head", "command eval 'doc-lattice reconcile'"),
+    ("builtin chain before dispatcher", "builtin command bash -c 'doc-lattice reconcile'"),
+    ("coproc before dispatcher", "coproc bash -c 'doc-lattice reconcile'"),
+    ("coproc name before dispatcher", "coproc worker bash -c 'doc-lattice reconcile'"),
+    ("plus cluster inline command", "bash +c 'doc-lattice linear'"),
+    ("plus cluster after value option", "bash +O extglob +c 'doc-lattice reconcile'"),
 ]
 
 
@@ -2301,6 +2312,9 @@ DISPATCHER_CERTIFY_CASES = [
     ("external script file named for doc-lattice", "bash ./doc-lattice-runner.sh"),
     ("non-dispatcher head echoes marker text", "echo doc-lattice reconcile"),
     ("dispatcher head with no argv", "eval"),
+    ("command wrapper external script file", "command bash ./doc-lattice-runner.sh"),
+    ("env wrapper external script file", "env bash ./doc-lattice-runner.sh"),
+    ("command query never executes marker", "command -v doc-lattice"),
 ]
 
 
