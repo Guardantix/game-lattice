@@ -340,8 +340,16 @@ Pre-policy command matrix (frozen in the checkpoint; these checks currently live
 precheck stage ahead of `resolve_command`, keeping `syntax_certifier.py` translation-only):
 
 - assignments with no argv: no command and no refusal;
-- assignments plus argv: `assignment-prefix` refusal at the earliest assignment, while the
-  certified argv is still resolved so a definite finding is retained;
+- assignments plus argv, where every assignment has a statically known name and a fully
+  literal value (the section 3.3 `value-known` fact is true for all of them): the command
+  certifies with its resolved argv and no refusal. The error direction stays fail-closed:
+  a prefix such as `PATH=x` never hides the invocation, it is still reported. (Amended
+  2026-07-21 by owner ratification during the Tier 3B predeclaration adjudication; the
+  original rule refused every assignment prefix, a compatibility contraction inherited
+  from the D3 floor that the parser's assignment facts make unnecessary.)
+- assignments plus argv where any assignment value is dynamic or not statically known:
+  `assignment-prefix` refusal at the earliest such assignment, while the certified argv
+  is still resolved so a definite finding is retained;
 - first argv word with `text=None`: `unstable-first-word`, no string-based head logic;
 - any word with `single=False`: the appropriate expansion or splitting refusal at that
   word;
