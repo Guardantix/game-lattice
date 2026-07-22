@@ -15,17 +15,17 @@ type commandSite struct {
 }
 
 type walker struct {
-	src      string
-	sites    []commandSite
-	refusals []rawRefusal
-	work     int
-	depth    int
-	nodes    int
-	events   int
-	nodeCap  int
-	depthCap int
-	eventCap int
-	stop     bool
+	src       string
+	sites     []commandSite
+	refusals  []rawRefusal
+	work      int
+	depth     int
+	nodes     int
+	events    int
+	workLimit int
+	depthCap  int
+	eventCap  int
+	stop      bool
 }
 
 func walk(stmts []*syntax.Stmt, src string) (sites []commandSite, refusals []rawRefusal, work int) {
@@ -41,10 +41,10 @@ func walk(stmts []*syntax.Stmt, src string) (sites []commandSite, refusals []raw
 
 func newWalker(src string) *walker {
 	return &walker{
-		src:      src,
-		nodeCap:  visitorNodeCap,
-		depthCap: visitorDepthCap,
-		eventCap: eventCap,
+		src:       src,
+		workLimit: visitorNodeCap,
+		depthCap:  visitorDepthCap,
+		eventCap:  eventCap,
 	}
 }
 
@@ -241,7 +241,7 @@ func (w *walker) visit(node syntax.Node, depth int) bool {
 	w.work++
 	w.nodes++
 	w.depth = max(w.depth, depth)
-	if w.nodes > w.nodeCap {
+	if w.work > w.workLimit {
 		w.emitTerminalRefusal(node, "work-cap")
 		return false
 	}
@@ -265,8 +265,7 @@ func (w *walker) emitSite(call *syntax.CallExpr) {
 		argv:        call.Args,
 		assignments: call.Assigns,
 	})
-	w.events++
-	w.work++
+	w.chargeEvent(call)
 }
 
 func (w *walker) emitRefusal(node syntax.Node, code string) {
@@ -279,14 +278,22 @@ func (w *walker) emitRefusal(node syntax.Node, code string) {
 	}
 	start, end := w.nodeSpan(node)
 	w.refusals = append(w.refusals, rawRefusal{code: code, startByte: start, endByte: end})
+	w.chargeEvent(node)
+}
+
+func (w *walker) chargeEvent(node syntax.Node) {
 	w.events++
 	w.work++
+	if w.work > w.workLimit {
+		w.emitTerminalRefusal(node, "work-cap")
+	}
 }
 
 func (w *walker) emitTerminalRefusal(node syntax.Node, code string) {
 	if w.stop {
 		return
 	}
+	// The terminal cap refusal is the final charged event and is not recursively cap-checked.
 	start, end := w.nodeSpan(node)
 	w.refusals = append(w.refusals, rawRefusal{code: code, startByte: start, endByte: end})
 	w.events++
@@ -298,11 +305,8 @@ func (w *walker) emitCheckedTerminalRefusal(node syntax.Node, code string) {
 	if w.stop {
 		return
 	}
-	if w.events >= w.eventCap {
-		w.emitTerminalRefusal(node, "event-cap")
-		return
-	}
-	w.emitTerminalRefusal(node, code)
+	w.emitRefusal(node, code)
+	w.stop = true
 }
 
 func (w *walker) nodeSpan(node syntax.Node) (int, int) {

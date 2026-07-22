@@ -218,7 +218,7 @@ func TestWalkCapsEmitOneTerminalRefusal(t *testing.T) {
 		configure func(*walker)
 		wantCode  string
 	}{
-		{name: "work", configure: func(w *walker) { w.nodeCap = 1 }, wantCode: "work-cap"},
+		{name: "work", configure: func(w *walker) { w.workLimit = 1 }, wantCode: "work-cap"},
 		{name: "depth", configure: func(w *walker) { w.depthCap = 1 }, wantCode: "depth-cap"},
 		{name: "event", configure: func(w *walker) { w.eventCap = 0 }, wantCode: "event-cap"},
 	}
@@ -237,6 +237,31 @@ func TestWalkCapsEmitOneTerminalRefusal(t *testing.T) {
 				t.Fatalf("work = %d, nodes + events = %d", w.work, w.nodes+w.events)
 			}
 		})
+	}
+}
+
+func TestWalkWorkCapIncludesEmittedEvents(t *testing.T) {
+	lit := &syntax.Lit{
+		ValuePos: syntax.NewPos(0, 1, 1),
+		ValueEnd: syntax.NewPos(1, 1, 2),
+		Value:    "x",
+	}
+	call := &syntax.CallExpr{Args: []*syntax.Word{{Parts: []syntax.WordPart{lit}}}}
+	w := newWalker("x")
+	w.workLimit = 1
+	w.dispatch(call, "argv", 1)
+
+	if len(w.sites) != 1 {
+		t.Fatalf("sites = %d, want the crossing command-site event retained", len(w.sites))
+	}
+	if len(w.refusals) != 1 || w.refusals[0].code != "work-cap" {
+		t.Fatalf("refusals = %#v, want one terminal work-cap", w.refusals)
+	}
+	if !w.stop {
+		t.Fatal("work-cap event did not stop traversal")
+	}
+	if w.nodes != 1 || w.events != 2 || w.work != 3 {
+		t.Fatalf("nodes, events, work = (%d, %d, %d), want (1, 2, 3)", w.nodes, w.events, w.work)
 	}
 }
 
