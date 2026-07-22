@@ -43,18 +43,18 @@ func run(in io.Reader, out, errOut io.Writer) int {
 	return 0
 }
 
-// Certify returns the temporary Task 1 response for a validated request.
+// Certify returns syntax facts for a validated request.
 func Certify(request *Request) (*Response, error) {
 	if request == nil {
 		return nil, errors.New("request is nil")
 	}
 	results := make([]Result, len(request.Sources))
 	for index, source := range request.Sources {
-		results[index] = Result{
-			ID:        source.ID,
-			Events:    []Event{},
-			WorkUnits: 1,
+		result, err := certifySource(source)
+		if err != nil {
+			return nil, err
 		}
+		results[index] = result
 	}
 	return &Response{
 		ProtocolVersion: 1,

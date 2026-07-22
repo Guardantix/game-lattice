@@ -261,14 +261,17 @@ func TestDecodeRequestErrorsAreStableAndDoNotLeakInput(t *testing.T) {
 	}
 }
 
-func TestCertifyStubAndEncodeResponseUseSchemaArrays(t *testing.T) {
-	req := &Request{ProtocolVersion: 1, Sources: []Source{{ID: 0, Source: "true"}}}
+func TestCertifyAndEncodeResponseUseSchemaArrays(t *testing.T) {
+	req := &Request{ProtocolVersion: 1, Sources: []Source{{ID: 0, Source: " \t\n"}}}
 	resp, err := Certify(req)
 	if err != nil {
 		t.Fatalf("Certify failed: %v", err)
 	}
-	if resp.ProtocolVersion != 1 || len(resp.Results) != 1 || resp.Results[0].ID != 0 || resp.Results[0].WorkUnits != 1 {
-		t.Fatalf("stub response wrong: %+v", resp)
+	if resp.ProtocolVersion != 1 || len(resp.Results) != 1 || resp.Results[0].ID != 0 || resp.Results[0].WorkUnits <= 0 {
+		t.Fatalf("response wrong: %+v", resp)
+	}
+	if resp.Results[0].Events == nil || len(resp.Results[0].Events) != 0 {
+		t.Fatalf("events = %#v, want a non-nil empty array", resp.Results[0].Events)
 	}
 	payload, err := EncodeResponse(resp)
 	if err != nil {

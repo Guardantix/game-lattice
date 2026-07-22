@@ -495,6 +495,16 @@ func EncodeResponse(response *Response) ([]byte, error) {
 		if normalized.Results[index].Events == nil {
 			normalized.Results[index].Events = []Event{}
 		}
+		for _, event := range normalized.Results[index].Events {
+			if event.Kind != "command_site" {
+				continue
+			}
+			for _, word := range event.Argv {
+				if word.Text != nil && !word.Single {
+					return nil, errors.New("response violates word fact invariant")
+				}
+			}
+		}
 	}
 	return json.Marshal(normalized)
 }
