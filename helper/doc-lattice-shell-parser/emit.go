@@ -324,7 +324,7 @@ func (contexts *extGlobScanContexts) advance(raw string, index, quote int) int {
 				context.depth--
 				return index
 			}
-			next, nextIndex := logicalNext(raw, index+1)
+			next, nextIndex := logicalNextNonArithmeticWhitespace(raw, index+1)
 			if next == ')' {
 				*contexts = (*contexts)[:len(*contexts)-1]
 				return nextIndex
@@ -555,6 +555,22 @@ func logicalNext(raw string, index int) (byte, int) {
 	return 0, index
 }
 
+func logicalNextNonArithmeticWhitespace(raw string, index int) (byte, int) {
+	for index < len(raw) {
+		if raw[index] == '\\' && index+1 < len(raw) && raw[index+1] == '\n' {
+			index += 2
+			continue
+		}
+		switch raw[index] {
+		case ' ', '\t', '\n':
+			index++
+			continue
+		}
+		return raw[index], index
+	}
+	return 0, index
+}
+
 func dollarExpansionByte(next byte) bool {
 	return next == '{' || next == '(' || next == '[' || next == '"' || next == '_' || next >= 'a' && next <= 'z' || next >= 'A' && next <= 'Z' || next >= '0' && next <= '9' || strings.ContainsRune("@*#?-$!", rune(next))
 }
@@ -634,11 +650,24 @@ func wordIsSingle(word *syntax.Word, src string) bool {
 			if part == nil {
 				return false
 			}
+		case *syntax.ParamExp:
+			if !unquotedLengthParameterIsSingle(part) {
+				return false
+			}
 		default:
 			return false
 		}
 	}
 	return true
+}
+
+func unquotedLengthParameterIsSingle(parameter *syntax.ParamExp) bool {
+	return parameter != nil &&
+		parameter.Dollar.IsValid() && parameter.Rbrace.IsValid() && !parameter.Short &&
+		parameter.Flags == nil && parameter.Length && !parameter.Excl && !parameter.Width && !parameter.IsSet &&
+		parameter.Param != nil && syntax.ValidName(parameter.Param.Value) && parameter.NestedParam == nil &&
+		parameter.Index == nil && len(parameter.Modifiers) == 0 && parameter.Slice == nil &&
+		parameter.Repl == nil && parameter.Names == 0 && parameter.Exp == nil
 }
 
 func wordHasActiveTilde(word *syntax.Word, src string, context wordExpansionContext) bool {

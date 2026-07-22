@@ -329,6 +329,16 @@ func TestEmitAssignmentExtGlobContexts(t *testing.T) {
 		{source: `A=*(${arr[$(printf 1)]}|b)`, known: false, refuse: true},
 		{source: `A=*($(( ${X:-<(printf a)} ))|b)`, known: false, refuse: true},
 		{source: `A=*("$((1<(2)))"|<(printf a))`, known: false, refuse: true},
+		{source: `A=*($((1) )|<(printf a))`, known: false, refuse: true},
+		{source: `A=*($((1) )|>(printf a))`, known: false, refuse: true},
+		{source: `A=*($(( (1) ) )|<(printf a))`, known: false, refuse: true},
+		{source: "A=*($((1)\t)|<(printf a))", known: false, refuse: true},
+		{source: "A=*($((1)\n)|>(printf a))", known: false, refuse: true},
+		{source: "A=*($((1) \\\n \t)|<(printf a))", known: false, refuse: true},
+		{source: `A=*($((1<(2)) )|<(printf a))`, known: false, refuse: true},
+		{source: `A=*($((1>(2)) )|>(printf a))`, known: false, refuse: true},
+		{source: `A=*($(( $(printf 1)) )|b)`, known: false, refuse: true},
+		{source: "A=*($(( `printf 1`) )|b)", known: false, refuse: true},
 		{source: `A=*(a|"$(printf a)"|b)`, known: false, refuse: true},
 		{source: `A=*(<(printf a)|b)`, known: false, refuse: true},
 		{source: `A=*($X|\$(printf a))`, known: false},
@@ -379,6 +389,12 @@ func TestExtGlobExecutionClassificationNeverClaimsKnown(t *testing.T) {
 		`A=*(${X:$(printf 1)}|b)`,
 		`A=*(${X:1:$(printf 1)}|b)`,
 		`A=*(${arr[$(printf 1)]}|b)`,
+		`A=*($((1) )|<(printf a))`,
+		`A=*($((1) )|>(printf a))`,
+		`A=*($((1<(2)) )|<(printf a))`,
+		`A=*($((1>(2)) )|>(printf a))`,
+		`A=*($(( $(printf 1)) )|b)`,
+		"A=*($(( `printf 1`) )|b)",
 		"A=*(`printf a`|b)",
 		`A=*(<(printf a)|b)`,
 		`A=*(>(printf a)|b)`,
@@ -422,7 +438,7 @@ func TestExtGlobUnknownClassificationNeverLeaksPartialValue(t *testing.T) {
 }
 
 func TestExtGlobClassifierLookalikeCorpusDoesNotPanic(t *testing.T) {
-	raws := []string{"*(a|\\)", "*(a|'unterminated)", "*(a|\"unterminated)", "*(a|$\\\n)", "*(a|<\\\n()", "*(a|$'x\\'y')", "*(a|$\\\n')", "*(a|$\\\n'x\\')", "*(a|$[1<(2))", "*(a|$((1>[2]))", "*(a|${X:1<(2))"}
+	raws := []string{"*(a|\\)", "*(a|'unterminated)", "*(a|\"unterminated)", "*(a|$\\\n)", "*(a|<\\\n()", "*(a|$'x\\'y')", "*(a|$\\\n')", "*(a|$\\\n'x\\')", "*(a|$[1<(2))", "*(a|$((1>[2]))", "*(a|${X:1<(2))", "*(a|$((1) )|<()", "*(a|$(( (1)\n ) )|>()"}
 	for _, raw := range raws {
 		t.Run(raw, func(t *testing.T) {
 			patternEnd := len(raw) - 1
@@ -460,6 +476,8 @@ func TestEmitUnquotedExpansionFacts(t *testing.T) {
 		single bool
 	}{
 		{name: "parameter", word: `$X`, single: false},
+		{name: "length parameter", word: `${#X}`, single: true},
+		{name: "concatenated length parameter", word: `x${#X}y`, single: true},
 		{name: "command substitution", word: `$(printf x)`, single: false},
 		{name: "glob", word: `*.go`, single: false},
 		{name: "brace", word: `{a,b}`, single: false},
@@ -476,6 +494,85 @@ func TestEmitUnquotedExpansionFacts(t *testing.T) {
 			word := findCommandSite(t, response.Results[0], 0).Argv[1]
 			if word.Text != nil || word.Single != test.single {
 				t.Fatalf("word facts = %#v, want nil text and single=%t", word, test.single)
+			}
+		})
+	}
+}
+
+func TestEmitUnquotedLengthParameterIsOnlyPlainNamedScalar(t *testing.T) {
+	tests := []struct {
+		word   string
+		single bool
+	}{
+		{word: `${#X}`, single: true},
+		{word: `${#_X2}`, single: true},
+		{word: `x${#X}y`, single: true},
+		{word: `"${#X}"`, single: true},
+		{word: `x"${#X}"y`, single: true},
+		{word: `$X`},
+		{word: `${X}`},
+		{word: `${X:-default}`},
+		{word: `${X:+alternate}`},
+		{word: `${X:1:2}`},
+		{word: `${array[@]}`},
+		{word: `${#array[@]}`},
+		{word: `$@`},
+		{word: `${#@}`},
+		{word: `${!X}`},
+	}
+	for _, test := range tests {
+		t.Run(test.word, func(t *testing.T) {
+			response, err := Certify(mustRequest(t, `echo `+test.word))
+			if err != nil {
+				t.Fatalf("Certify error = %v", err)
+			}
+			word := findCommandSite(t, response.Results[0], 0).Argv[1]
+			if word.Text != nil || word.Single != test.single {
+				t.Fatalf("length parameter facts = %#v, want nil text and single=%t", word, test.single)
+			}
+		})
+	}
+}
+
+func TestUnquotedLengthParameterIsSingleRejectsAdjacentASTFlags(t *testing.T) {
+	plain := func() *syntax.ParamExp {
+		return &syntax.ParamExp{
+			Dollar: syntax.NewPos(0, 1, 1),
+			Rbrace: syntax.NewPos(4, 1, 5),
+			Length: true,
+			Param: &syntax.Lit{
+				ValuePos: syntax.NewPos(3, 1, 4),
+				ValueEnd: syntax.NewPos(4, 1, 5),
+				Value:    "X",
+			},
+		}
+	}
+	tests := []struct {
+		name   string
+		mutate func(*syntax.ParamExp)
+		want   bool
+	}{
+		{name: "plain length", mutate: func(*syntax.ParamExp) {}, want: true},
+		{name: "short", mutate: func(parameter *syntax.ParamExp) { parameter.Short = true }},
+		{name: "flags", mutate: func(parameter *syntax.ParamExp) { parameter.Flags = &syntax.Lit{} }},
+		{name: "indirect", mutate: func(parameter *syntax.ParamExp) { parameter.Excl = true }},
+		{name: "width", mutate: func(parameter *syntax.ParamExp) { parameter.Width = true }},
+		{name: "is set", mutate: func(parameter *syntax.ParamExp) { parameter.IsSet = true }},
+		{name: "special name", mutate: func(parameter *syntax.ParamExp) { parameter.Param.Value = "@" }},
+		{name: "nested", mutate: func(parameter *syntax.ParamExp) { parameter.NestedParam = &syntax.ParamExp{} }},
+		{name: "index", mutate: func(parameter *syntax.ParamExp) { parameter.Index = &syntax.Word{} }},
+		{name: "modifier", mutate: func(parameter *syntax.ParamExp) { parameter.Modifiers = []*syntax.Lit{{}} }},
+		{name: "slice", mutate: func(parameter *syntax.ParamExp) { parameter.Slice = &syntax.Slice{} }},
+		{name: "replacement", mutate: func(parameter *syntax.ParamExp) { parameter.Repl = &syntax.Replace{} }},
+		{name: "names", mutate: func(parameter *syntax.ParamExp) { parameter.Names = syntax.NamesPrefix }},
+		{name: "operand", mutate: func(parameter *syntax.ParamExp) { parameter.Exp = &syntax.Expansion{} }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parameter := plain()
+			test.mutate(parameter)
+			if got := unquotedLengthParameterIsSingle(parameter); got != test.want {
+				t.Fatalf("unquotedLengthParameterIsSingle(%#v) = %t, want %t", parameter, got, test.want)
 			}
 		})
 	}
