@@ -338,65 +338,8 @@ func (w *walker) consumeWordPart(part syntax.WordPart, depth int, quoted bool) {
 }
 
 func extGlobHasOpaqueExecution(extglob *syntax.ExtGlob, src string) bool {
-	if extglob == nil {
-		return true
-	}
-	start, end, err := validatedSpan(extglob, len(src))
-	if err != nil {
-		return true
-	}
-	raw := src[start:end]
-	const (
-		unquoted = iota
-		singleQuoted
-		doubleQuoted
-	)
-	quote := unquoted
-	var opener byte
-	for index := 0; index < len(raw); index++ {
-		char := raw[index]
-		if quote == singleQuoted {
-			if char == '\'' {
-				quote = unquoted
-			}
-			continue
-		}
-		if char == '\\' && index+1 < len(raw) {
-			if raw[index+1] == '\n' {
-				index++
-				continue
-			}
-			opener = 0
-			index++
-			continue
-		}
-		if char == '"' {
-			if quote == doubleQuoted {
-				quote = unquoted
-			} else {
-				quote = doubleQuoted
-			}
-			opener = 0
-			continue
-		}
-		if quote == unquoted && char == '\'' {
-			quote = singleQuoted
-			opener = 0
-			continue
-		}
-		if char == '`' || char == '$' && index+1 < len(raw) && raw[index+1] == '(' {
-			return true
-		}
-		if quote == unquoted && char == '(' && opener != 0 {
-			return true
-		}
-		if quote == unquoted && (char == '<' || char == '>') {
-			opener = char
-		} else {
-			opener = 0
-		}
-	}
-	return false
+	classification := classifyExtGlob(extglob, src)
+	return classification.execution || extglob == nil
 }
 
 func (w *walker) consumeNestedExecution(node syntax.Node, depth int, quoted bool) {

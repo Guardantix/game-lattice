@@ -283,6 +283,8 @@ func TestWalkRefusesOpaqueExtGlobExecutionAndStopsLaterSites(t *testing.T) {
 		refuse bool
 	}{
 		{name: "command substitution", source: `A=*($(doc-lattice check)|b) echo outer; echo later`, refuse: true},
+		{name: "continued command", source: "A=*($\\\n(doc-lattice check)|b) echo outer; echo later", refuse: true},
+		{name: "double continued command", source: "A=*(\"$\\\n(doc-lattice check)\"|b) echo outer; echo later", refuse: true},
 		{name: "backticks", source: "A=*(`doc-lattice check`|b) echo outer; echo later", refuse: true},
 		{name: "input process", source: `A=*(<(doc-lattice check)|b) echo outer; echo later`, refuse: true},
 		{name: "output process", source: `A=*(>(doc-lattice check)|b) echo outer; echo later`, refuse: true},
@@ -290,6 +292,8 @@ func TestWalkRefusesOpaqueExtGlobExecutionAndStopsLaterSites(t *testing.T) {
 		{name: "escaped process", source: `A=*(\<(doc-lattice check)|b) echo outer; echo later`},
 		{name: "quoted process", source: `A=*("<(doc-lattice check)"|b) echo outer; echo later`},
 		{name: "single quoted command", source: `A=*('$(doc-lattice check)'|b) echo outer; echo later`},
+		{name: "ANSI escaped quote command text", source: `A=*($'a\'$(doc-lattice check)'|b) echo outer; echo later`},
+		{name: "ANSI continued command text", source: "A=*($'$\\\n(doc-lattice check)'|b) echo outer; echo later"},
 		{name: "escaped dollar", source: `A=*(\$(doc-lattice check)|b) echo outer; echo later`},
 	}
 	for _, test := range tests {

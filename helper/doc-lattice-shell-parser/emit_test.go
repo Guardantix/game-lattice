@@ -276,8 +276,15 @@ func TestEmitAssignmentExtGlobContexts(t *testing.T) {
 		{source: `A=*($'a\n'|b)`, text: "*(a\n|b)", known: true},
 		{source: `A=*($'a\0b'|c)`, text: `*(a|c)`, known: true},
 		{source: `A=*(pre$'\x2d'post|b)`, text: `*(pre-post|b)`, known: true},
+		{source: `A=*($'a\'$(doc-lattice check)'|b)`, text: `*(a'$(doc-lattice check)|b)`, known: true},
+		{source: `A=*($'a\\b'|c)`, text: `*(a\b|c)`, known: true},
 		{source: `A=*($X|b)`, known: false},
 		{source: `A=*($"translated"|b)`, known: false},
+		{source: "A=*($\\\n{X}|b)", known: false},
+		{source: "A=*($\\\n\"translated\"|b)", known: false},
+		{source: `A=*($[1+2]|b)`, known: false},
+		{source: "A=*($\\\n[1+2]|b)", known: false},
+		{source: `A=*(\$[1+2]|b)`, text: `*($[1+2]|b)`, known: true},
 		{source: `A=*($(printf a)|b)`, known: false, refuse: true},
 		{source: `A=*($((1+2))|b)`, known: false, refuse: true},
 		{source: `A=*(<(printf a)|b)`, known: false, refuse: true},
@@ -310,6 +317,55 @@ func TestLiteralAssignmentExtGlobRejectsMalformedAST(t *testing.T) {
 		if value, known := literalAssignmentExtGlob(extglob, "*(x)"); known || value != "" {
 			t.Fatalf("case %d = %q, known=%t; want defensive unknown", index, value, known)
 		}
+	}
+}
+
+func TestExtGlobExecutionClassificationNeverClaimsKnown(t *testing.T) {
+	sources := []string{
+		`A=*($(printf a)|b)`,
+		"A=*(`printf a`|b)",
+		`A=*(<(printf a)|b)`,
+		`A=*(>(printf a)|b)`,
+		"A=*($\\\n(printf a)|b)",
+		"A=*(<\\\n(printf a)|b)",
+	}
+	for _, src := range sources {
+		t.Run(src, func(t *testing.T) {
+			statements, refusal := parseStatements(src)
+			if refusal != nil {
+				t.Fatalf("parse refusal = %#v", refusal)
+			}
+			sites, _, _ := walk(statements, src)
+			extglob, ok := sites[0].assignments[0].Value.Parts[0].(*syntax.ExtGlob)
+			if !ok {
+				t.Fatalf("word part = %T, want ExtGlob", sites[0].assignments[0].Value.Parts[0])
+			}
+			classification := classifyExtGlob(extglob, src)
+			if !classification.execution || classification.known {
+				t.Fatalf("classification = %#v, want execution and never known", classification)
+			}
+		})
+	}
+}
+
+func TestExtGlobClassifierLookalikeCorpusDoesNotPanic(t *testing.T) {
+	raws := []string{"*(a|\\)", "*(a|'unterminated)", "*(a|\"unterminated)", "*(a|$\\\n)", "*(a|<\\\n()", "*(a|$'x\\'y')"}
+	for _, raw := range raws {
+		t.Run(raw, func(t *testing.T) {
+			patternEnd := len(raw) - 1
+			extglob := &syntax.ExtGlob{
+				OpPos: syntax.NewPos(0, 1, 1),
+				Pattern: &syntax.Lit{
+					ValuePos: syntax.NewPos(2, 1, 3),
+					ValueEnd: syntax.NewPos(uint(patternEnd), 1, uint(patternEnd+1)),
+				},
+			}
+			first := classifyExtGlob(extglob, raw)
+			second := classifyExtGlob(extglob, raw)
+			if first != second {
+				t.Fatalf("classification unstable: %#v then %#v", first, second)
+			}
+		})
 	}
 }
 

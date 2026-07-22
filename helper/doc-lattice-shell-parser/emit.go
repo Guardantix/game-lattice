@@ -265,12 +265,23 @@ func literalWordPart(part syntax.WordPart, src string, quoted bool, context word
 }
 
 func literalAssignmentExtGlob(extglob *syntax.ExtGlob, src string) (string, bool) {
+	classification := classifyExtGlob(extglob, src)
+	return classification.value, classification.known
+}
+
+type extGlobClassification struct {
+	value     string
+	known     bool
+	execution bool
+}
+
+func classifyExtGlob(extglob *syntax.ExtGlob, src string) extGlobClassification {
 	if extglob == nil {
-		return "", false
+		return extGlobClassification{}
 	}
 	start, end, err := validatedSpan(extglob, len(src))
 	if err != nil {
-		return "", false
+		return extGlobClassification{}
 	}
 	raw := src[start:end]
 	const (
@@ -295,8 +306,17 @@ func literalAssignmentExtGlob(extglob *syntax.ExtGlob, src string) (string, bool
 				quote = unquoted
 				continue
 			}
-			if char == '`' || char == '$' && dollarStartsExpansion(raw, index) {
-				return "", false
+			if char == '`' {
+				return extGlobClassification{execution: true}
+			}
+			if char == '$' {
+				next, _ := logicalNext(raw, index+1)
+				if next == '(' {
+					return extGlobClassification{execution: true}
+				}
+				if dollarExpansionByte(next) {
+					return extGlobClassification{}
+				}
 			}
 			if char == '\\' && index+1 < len(raw) {
 				next := raw[index+1]
@@ -319,31 +339,37 @@ func literalAssignmentExtGlob(extglob *syntax.ExtGlob, src string) (string, bool
 		case '"':
 			quote = doubleQuoted
 		case '`':
-			return "", false
+			return extGlobClassification{execution: true}
 		case '$':
 			if index+1 < len(raw) && raw[index+1] == '\'' {
 				decoded, close, ok := decodeANSIQuoted(raw, index+2)
 				if !ok {
-					return "", false
+					return extGlobClassification{}
 				}
 				value.WriteString(decoded)
 				index = close
-			} else if dollarStartsExpansion(raw, index) {
-				return "", false
 			} else {
+				next, _ := logicalNext(raw, index+1)
+				if next == '(' {
+					return extGlobClassification{execution: true}
+				}
+				if dollarExpansionByte(next) {
+					return extGlobClassification{}
+				}
 				value.WriteByte(char)
 			}
 		case '\\':
 			if index+1 >= len(raw) {
-				return "", false
+				return extGlobClassification{}
 			}
 			index++
 			if raw[index] != '\n' {
 				value.WriteByte(raw[index])
 			}
 		case '<', '>':
-			if index+1 < len(raw) && raw[index+1] == '(' {
-				return "", false
+			next, _ := logicalNext(raw, index+1)
+			if next == '(' {
+				return extGlobClassification{execution: true}
 			}
 			value.WriteByte(char)
 		default:
@@ -351,17 +377,24 @@ func literalAssignmentExtGlob(extglob *syntax.ExtGlob, src string) (string, bool
 		}
 	}
 	if quote != unquoted {
-		return "", false
+		return extGlobClassification{}
 	}
-	return value.String(), true
+	return extGlobClassification{value: value.String(), known: true}
 }
 
-func dollarStartsExpansion(raw string, index int) bool {
-	if index < 0 || index+1 >= len(raw) || raw[index] != '$' {
-		return false
+func logicalNext(raw string, index int) (byte, int) {
+	for index < len(raw) {
+		if raw[index] == '\\' && index+1 < len(raw) && raw[index+1] == '\n' {
+			index += 2
+			continue
+		}
+		return raw[index], index
 	}
-	next := raw[index+1]
-	return next == '{' || next == '(' || next == '"' || next == '_' || next >= 'a' && next <= 'z' || next >= 'A' && next <= 'Z' || next >= '0' && next <= '9' || strings.ContainsRune("@*#?-$!", rune(next))
+	return 0, index
+}
+
+func dollarExpansionByte(next byte) bool {
+	return next == '{' || next == '(' || next == '[' || next == '"' || next == '_' || next >= 'a' && next <= 'z' || next >= 'A' && next <= 'Z' || next >= '0' && next <= '9' || strings.ContainsRune("@*#?-$!", rune(next))
 }
 
 func decodeANSIQuoted(raw string, start int) (string, int, bool) {
