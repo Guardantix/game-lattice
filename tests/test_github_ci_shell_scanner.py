@@ -2307,6 +2307,22 @@ DISPATCHER_FAIL_CLOSED_CASES = [
     ("uvx requirement launcher before dispatcher", "uvx bash@1.0 -c 'doc-lattice reconcile'"),
     ("uv tool run requirement head", "uv tool run bash@1.0 -c 'doc-lattice reconcile'"),
     ("uvx requirement specifier before dispatcher", "uvx 'bash==1.0' -c 'doc-lattice reconcile'"),
+    (
+        "uvx named direct requirement before dispatcher",
+        "uvx 'bash@file:///tmp/bash-1.0-py3-none-any.whl' -c 'doc-lattice reconcile'",
+    ),
+    (
+        "uv tool run spaced named direct requirement before dispatcher",
+        "uv tool run 'bash @ file:///tmp/bash-1.0-py3-none-any.whl' -c 'doc-lattice reconcile'",
+    ),
+    (
+        "uvx trailing-whitespace requirement before dispatcher",
+        "uvx 'bash ' -c 'doc-lattice reconcile'",
+    ),
+    (
+        "uv tool run surrounding-whitespace requirement before dispatcher",
+        "uv tool run ' bash ' -c 'doc-lattice reconcile'",
+    ),
 ]
 
 
@@ -2346,6 +2362,10 @@ DISPATCHER_CERTIFY_CASES = [
     ("lone dash ends options before operand", "bash - -c 'doc-lattice reconcile'"),
     ("requirement-suffixed plain head is not a dispatcher", "bash@1.0 -c 'doc-lattice reconcile'"),
     ("uvx requirement external script file", "uvx bash@1.0 ./doc-lattice-runner.sh"),
+    (
+        "uvx direct requirement URL filename does not override declared name",
+        "uvx 'not-bash @ file:///tmp/bash-1.0-py3-none-any.whl' -c 'doc-lattice reconcile'",
+    ),
 ]
 
 
