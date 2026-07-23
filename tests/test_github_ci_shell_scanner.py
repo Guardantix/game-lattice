@@ -2289,6 +2289,17 @@ DISPATCHER_FAIL_CLOSED_CASES = [
     ("zsh emulate mode before -c", "zsh --emulate sh -c 'doc-lattice linear'"),
     ("windows shell launcher", "bash.exe -c 'doc-lattice linear'"),
     ("windows shell launcher casefolds", "SH.EXE -c 'doc-lattice reconcile'"),
+    ("uv run launcher before dispatcher", "uv run bash -c 'doc-lattice reconcile'"),
+    ("uvx launcher before dispatcher", "uvx bash -c 'doc-lattice reconcile'"),
+    ("uv tool run launcher before dispatcher", "uv tool run bash -c 'doc-lattice reconcile'"),
+    ("env time chain before dispatcher", "env time bash -c 'doc-lattice reconcile'"),
+    ("builtin eval head", "builtin eval 'doc-lattice reconcile'"),
+    ("builtin source head", "builtin source ./doc-lattice-env.sh"),
+    ("marker-bearing assignment prefix", "CMD='doc-lattice reconcile' sh -c \"$CMD\""),
+    ("env assignment carries marker", "env CMD='doc-lattice reconcile' sh -c \"$CMD\""),
+    ("dynamic short option value smuggles inline", "bash -o $X 'doc-lattice reconcile'"),
+    ("dynamic long option value smuggles inline", "bash --rcfile $X 'doc-lattice reconcile'"),
+    ("quoted unbraced option value smuggles inline", "bash -o \"$X\" 'doc-lattice reconcile'"),
 ]
 
 
@@ -2320,6 +2331,10 @@ DISPATCHER_CERTIFY_CASES = [
     ("command query never executes marker", "command -v doc-lattice"),
     ("emulate mode then external script file", "zsh --emulate sh ./doc-lattice-runner.sh"),
     ("windows launcher external script file", "bash.exe ./doc-lattice-runner.sh"),
+    ("uv run external script file", "uv run bash ./doc-lattice-runner.sh"),
+    ("builtin non-dispatcher target", "builtin echo doc-lattice"),
+    ("braced quoted option value stays resolvable", 'bash -o "${X}" ./doc-lattice-runner.sh'),
+    ("assignment marker without dispatcher head", "CMD='doc-lattice reconcile' echo done"),
 ]
 
 

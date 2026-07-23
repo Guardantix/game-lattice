@@ -1211,8 +1211,9 @@ jobs:
         'eval "doc-lattice $CMD"',
         "sh -lc 'doc-lattice reconcile --all'",
         "source ./scripts/doc-lattice-env.sh",
+        "uv run bash -c 'doc-lattice reconcile'",
     ],
-    ids=["bash-c", "eval", "sh-cluster", "source"],
+    ids=["bash-c", "eval", "sh-cluster", "source", "uv-run-bash-c"],
 )
 def test_global_audit_fails_closed_on_inline_dispatch_run_body(run_body: str):
     # Issue #105: a PR step that runs a marker-bearing doc-lattice command through an inline

@@ -648,9 +648,12 @@ argument. Known eager uv help/version options and effective command help stop wi
 payload and therefore do not produce policy findings. Audit cannot prove that an arbitrary script,
 local action, reusable workflow, or renamed wrapper eventually invokes a sensitive command.
 A recognized inline dispatcher (`eval`, `source`, or `bash`, `sh`, `dash`, or `zsh` in `-c`
-command-string form) whose argument literally names doc-lattice cannot have its payload parsed,
-so it exits 2 rather than being certified clean; a command assembled only from a variable that
-never spells doc-lattice remains an unresolved executable name.
+command-string form) cannot have its payload parsed, so when any word of the same command
+literally names doc-lattice it exits 2 rather than being certified clean, including dispatchers
+reached through the recognized wrapper and launcher grammar such as `uv run bash -c` or
+`builtin eval`. A dispatcher reached only through a variable executable name, an unrecognized
+shell or wrapper, or source fed from standard input by a heredoc, herestring, or pipe remains
+within the disclosed executable-name limitation even when its payload spells doc-lattice.
 Malformed, oversized, or otherwise unreliably inspectable workflows also exit 2 instead of being
 treated as safe.
 Whole-context, wildcard, or computed `secrets` access fails closed unless inspection proves it

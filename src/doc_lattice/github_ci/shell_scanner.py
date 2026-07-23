@@ -269,9 +269,11 @@ _RECONCILE_NON_MUTATING_OPTIONS = frozenset({"--dry-run"})
 
 # Issue #105: inline shell dispatch fail-closed grammar. ``eval``, ``source``/``.``, and the
 # POSIX-ish shells run a payload the bounded scanner never parses, so a marker-bearing dispatch
-# is refused rather than certified clean. The marker matches the doc-lattice distribution spelling
+# is refused rather than certified clean. The marker reuses the doc-lattice distribution separator
 # family (see _is_doc_lattice_uv_tool_payload) so ``doc_lattice`` and ``doc.lattice`` are caught.
-_DISPATCHER_MARKER_RE = re.compile(r"doc[-_.]+lattice", re.IGNORECASE)
+_DISPATCHER_MARKER_RE = re.compile(
+    rf"doc{_PYTHON_DISTRIBUTION_SEPARATOR_RE.pattern}lattice", re.IGNORECASE
+)
 _PLAIN_DISPATCHER_HEADS = frozenset({"eval", "source", "."})
 _SHELL_DISPATCHER_HEADS = frozenset({"bash", "sh", "dash", "zsh"})
 # Long options that consume the following word across the recognized shells: bash --rcfile and
@@ -542,6 +544,9 @@ class _LauncherResolutionState:
 
     budget: _ScanBudget
     cache: dict[tuple[str, int, int], _ResolvedIndex] = field(default_factory=dict)
+    # Every static executable-position candidate payload resolution visited; consumed by the
+    # dispatcher fail-closed rule so it inherits the resolver's grammar rather than mirroring it.
+    executable_positions: list[int] = field(default_factory=list)
 
     def step(self) -> None:
         """Charge speculative launcher work to the shell scanner's declared budget."""
@@ -1632,8 +1637,12 @@ def direct_doc_lattice_invocations(
     """Return conservative direct doc-lattice commands from literal Bash syntax.
 
     The scanner is bounded, recursive, and non-executing. It intentionally does not resolve
-    aliases, functions, variables used as executable names, ``eval``/``source``, ``sh -c`` or
-    ``bash -c``, external wrapper scripts, actions, or reusable workflows.
+    aliases, functions, variables used as executable names, external wrapper scripts, actions, or
+    reusable workflows. It also never parses the payload of an inline dispatcher (``eval``,
+    ``source``/``.``, or ``sh``/``bash``/``dash``/``zsh -c``); when such a dispatcher's simple
+    command literally names doc-lattice the scan fails closed and raises ``ConfigError`` rather
+    than returning an empty complete result, while marker-free dispatch stays unresolved and
+    complete.
 
     Args:
         script: Literal Bash source to scan.
@@ -1659,7 +1668,7 @@ def _invocation_in_simple_command(
     resolution = _LauncherResolutionState(budget)
     executable = _doc_lattice_command_index(words, 0, resolution)
     if executable.index is None:
-        _reject_marker_bearing_dispatcher(words)
+        _reject_marker_bearing_dispatcher(words, resolution)
         return None
     subcommand_resolution = _doc_lattice_subcommand_index(words, executable.index + 1)
     if executable.ambiguous or subcommand_resolution.ambiguous:
@@ -1703,65 +1712,43 @@ def _invocation_in_simple_command(
     return subcommand.literal, disposition is _CommandDisposition.NON_MUTATING
 
 
-def _reject_marker_bearing_dispatcher(words: list[_ShellWord]) -> None:
+def _reject_marker_bearing_dispatcher(
+    words: list[_ShellWord],
+    resolution: _LauncherResolutionState,
+) -> None:
     """Fail closed when a recognized inline dispatcher carries a doc-lattice marker.
 
     ``eval``, ``source``/``.``, and ``bash``/``sh``/``dash``/``zsh -c`` run an inline payload the
-    bounded scanner deliberately does not parse. When such a command's argv literally names
-    doc-lattice the scanner cannot prove the payload never invokes a sensitive command, so it
-    refuses instead of certifying the source clean. The head is resolved through the same
-    assignment, keyword, wrapper (``command``/``env``/``exec``/``builtin``/``time``), and
-    ``coproc`` grammar as direct payload resolution, so a wrapped dispatcher such as
-    ``command bash -c ...`` cannot slip past the rule. The rule fires only on a literal marker; a
-    payload assembled from a variable is the disclosed executable-name limitation, not this one.
+    bounded scanner never parses. When such a dispatcher is reachable and the simple command
+    literally names doc-lattice anywhere in its words (including leading assignment words, which
+    the child shell inherits), the scan refuses instead of certifying the source clean. The heads
+    are the executable-position candidates recorded by payload resolution itself
+    (``resolution.executable_positions``), so the rule inherits the assignment, keyword, wrapper,
+    ``coproc``, builtin-target, and launcher (``env``/``time``/``uv``/``uvx``) grammar instead of
+    mirroring it. Only literal markers fire; a dynamic head or a payload fed from standard input
+    remains the disclosed executable-name limitation.
 
     Args:
         words: The decoded words of one simple command, including any leading assignments.
+        resolution: The launcher resolution state whose ``executable_positions`` record every
+            static executable-position candidate the payload resolver visited.
 
     Raises:
         _ShellScanIncomplete: If the command is a marker-bearing recognized dispatcher.
     """
-    for head_index in _dispatcher_head_candidates(words):
-        argv = words[head_index + 1 :]
-        if not any(_DISPATCHER_MARKER_RE.search(word.literal) for word in argv):
-            continue
-        # Windows runners launch the same shells as bash.exe/sh.exe; the scanner already accepts
-        # doc-lattice.exe as the doc-lattice executable, so dispatcher heads strip the suffix too.
+    for head_index in resolution.executable_positions:
+        # Windows runners launch the same shells as bash.exe/sh.exe; the scanner already
+        # accepts doc-lattice.exe as the doc-lattice executable, so dispatcher heads strip
+        # the suffix too.
         name = _basename(words[head_index].literal).casefold().removesuffix(".exe")
-        if name in _PLAIN_DISPATCHER_HEADS or (
-            name in _SHELL_DISPATCHER_HEADS and _shell_dispatcher_runs_inline_command(argv)
-        ):
+        if name in _PLAIN_DISPATCHER_HEADS:
+            inline = True
+        elif name in _SHELL_DISPATCHER_HEADS:
+            inline = _shell_dispatcher_runs_inline_command(words[head_index + 1 :])
+        else:
+            continue
+        if inline and any(_DISPATCHER_MARKER_RE.search(word.literal) for word in words):
             raise _ShellScanIncomplete("inline dispatcher command cannot be scanned safely")
-
-
-def _dispatcher_head_candidates(words: list[_ShellWord]) -> list[int]:
-    """Return executable-position candidates resolved through the supported prefix grammar.
-
-    Mirrors ``_doc_lattice_command_index``: skips assignments, command keywords, and the
-    supported shell wrappers via ``_skip_shell_prefixes``, then follows a ``coproc`` keyword to
-    both its unnamed and named command interpretations. A resolved index past the word list means
-    the wrapper consumed the command (for example ``command -v``), leaving no head to check.
-    """
-    resolved = _skip_shell_prefixes(words, 0)
-    index = resolved.index
-    if index is None or index >= len(words):
-        return []
-    word = words[index]
-    if word.dynamic or not word.keyword_eligible or word.literal != "coproc":
-        return [index]
-    starts = [index + 1]
-    if (
-        index + 1 < len(words)
-        and not words[index + 1].dynamic
-        and _is_name(words[index + 1].literal)
-    ):
-        starts.append(index + 2)
-    candidates = []
-    for start in starts:
-        nested = _skip_shell_prefixes(words, start)
-        if nested.index is not None and nested.index < len(words):
-            candidates.append(nested.index)
-    return candidates
 
 
 def _shell_dispatcher_runs_inline_command(argv: list[_ShellWord]) -> bool:
@@ -1770,8 +1757,10 @@ def _shell_dispatcher_runs_inline_command(argv: list[_ShellWord]) -> bool:
     Returns True when the option grammar contains ``-c`` (standalone, inside a short cluster, or
     as a ``+c`` cluster, which Bash-family shells also execute as an inline command) or a dynamic
     selector word leaves the presence of ``-c`` unresolvable, both of which mean the scanner
-    cannot rule out an inline payload. Returns False when the options resolve to an operand or
-    ``--`` terminator, meaning the shell runs an external script file rather than inline source.
+    cannot rule out an inline payload. A value-consuming option whose value can add or remove argv
+    fields (for example ``-o $X``) is equally unresolvable, because the expansion can smuggle a
+    later ``-c`` past this walk. Returns False when the options resolve to an operand or ``--``
+    terminator, meaning the shell runs an external script file rather than inline source.
     """
     index = 0
     while index < len(argv):
@@ -1786,7 +1775,15 @@ def _shell_dispatcher_runs_inline_command(argv: list[_ShellWord]) -> bool:
             # dash execute a + cluster such as +c the same way. Long options such as --norc or
             # --rcfile also contain the letter but never select -c.
             return True
-        index += 2 if _shell_option_consumes_value(literal) else 1
+        if _shell_option_consumes_value(literal):
+            if index + 1 < len(argv) and _word_may_change_option_value_shape(argv[index + 1]):
+                # An unquoted dynamic value such as ``-o $X`` can expand into extra words
+                # (``-o errexit -c``), smuggling -c past this walk, so its presence leaves
+                # the grammar unresolvable.
+                return True
+            index += 2
+        else:
+            index += 1
     return False
 
 
@@ -1934,7 +1931,12 @@ def _has_active_argv_expansion(syntax: str) -> bool:
     return False
 
 
-def _skip_shell_prefixes(words: list[_ShellWord], start: int) -> _ResolvedIndex:
+def _skip_shell_prefixes(
+    words: list[_ShellWord],
+    start: int,
+    *,
+    executable_positions: list[int] | None = None,
+) -> _ResolvedIndex:
     """Skip literal shell prefixes and preserve dynamic command-position ambiguity."""
     index = start
     ambiguous = False
@@ -1971,7 +1973,9 @@ def _skip_shell_prefixes(words: list[_ShellWord], start: int) -> _ResolvedIndex:
             return _ResolvedIndex(_skip_env_prefix(words, index + 1), ambiguous)
         if word.literal in {"builtin", "command", "exec"}:
             wrapper_literal = word.literal
-            wrapper = _skip_shell_builtin_wrapper(words, index)
+            wrapper = _skip_shell_builtin_wrapper(
+                words, index, executable_positions=executable_positions
+            )
             if wrapper.index is None:
                 return _ResolvedIndex(None, ambiguous or wrapper.ambiguous)
             index = wrapper.index
@@ -1991,17 +1995,27 @@ def _skip_shell_prefixes(words: list[_ShellWord], start: int) -> _ResolvedIndex:
     return _ResolvedIndex(index, ambiguous)
 
 
-def _skip_shell_builtin_wrapper(words: list[_ShellWord], index: int) -> _ResolvedIndex:
+def _skip_shell_builtin_wrapper(
+    words: list[_ShellWord],
+    index: int,
+    *,
+    executable_positions: list[int] | None = None,
+) -> _ResolvedIndex:
     """Resolve one supported Bash wrapper beginning at ``index``."""
     literal = words[index].literal
     if literal == "builtin":
-        return _skip_builtin_wrapper(words, index + 1)
+        return _skip_builtin_wrapper(words, index + 1, executable_positions=executable_positions)
     if literal == "command":
         return _skip_command_builtin(words, index + 1)
     return _skip_exec_wrapper(words, index + 1)
 
 
-def _skip_builtin_wrapper(words: list[_ShellWord], start: int) -> _ResolvedIndex:
+def _skip_builtin_wrapper(
+    words: list[_ShellWord],
+    start: int,
+    *,
+    executable_positions: list[int] | None = None,
+) -> _ResolvedIndex:
     """Expose a supported literal Bash builtin target or one ambiguous successor."""
     index = start
     if index < len(words) and not words[index].dynamic and words[index].literal == "--":
@@ -2012,6 +2026,11 @@ def _skip_builtin_wrapper(words: list[_ShellWord], start: int) -> _ResolvedIndex
     if _command_boundary_word_may_disappear(target) or target.dynamic:
         return _ResolvedIndex(index + 1, ambiguous=True)
     if target.literal not in {"builtin", "command", "exec"}:
+        # ``builtin eval``/``builtin source`` execute a dispatcher builtin the doc-lattice
+        # resolver correctly refuses to resolve, so record the target position so it still
+        # reaches the dispatcher fail-closed check rather than vanishing here.
+        if executable_positions is not None:
+            executable_positions.append(index)
         return _ResolvedIndex(None)
     return _ResolvedIndex(index)
 
@@ -2209,7 +2228,9 @@ def _doc_lattice_command_index(
     resolution: _LauncherResolutionState,
 ) -> _ResolvedIndex:
     """Resolve one direct command, including an optional named Bash coprocess."""
-    command = _skip_shell_prefixes(words, start)
+    command = _skip_shell_prefixes(
+        words, start, executable_positions=resolution.executable_positions
+    )
     if command.index is None:
         return command
     command_index = command.index
@@ -2260,7 +2281,9 @@ def _doc_lattice_command_after_prefixes(
     resolution: _LauncherResolutionState,
 ) -> _ResolvedIndex:
     """Reuse normal prefix, wrapper, and payload resolution from one command start."""
-    executable = _skip_shell_prefixes(words, start)
+    executable = _skip_shell_prefixes(
+        words, start, executable_positions=resolution.executable_positions
+    )
     if executable.index is None:
         return executable
     payload = _doc_lattice_payload_index(words, executable.index, resolution)
@@ -2288,6 +2311,7 @@ def _doc_lattice_payload_index(
     if _is_doc_lattice_executable(executable_word):
         return _ResolvedIndex(executable_index)
     if not executable_word.dynamic:
+        resolution.executable_positions.append(executable_index)
         executable = _basename(executable_word.literal)
         if executable in {"env", "time"}:
             return _nested_launcher_payload_index(
@@ -2621,6 +2645,7 @@ def _nested_launcher_payload_index(
     _reject_unsafe_executable_word(payload)
     if payload.dynamic:
         return _ResolvedIndex(None, payload_resolution.ambiguous)
+    resolution.executable_positions.append(payload_index)
     basename = _basename(payload.literal)
     is_doc_lattice = (
         _is_doc_lattice_uv_tool_payload(payload.literal)
