@@ -651,9 +651,11 @@ A recognized inline dispatcher (`eval`, `source`, or `bash`, `sh`, `dash`, or `z
 command-string form) cannot have its payload parsed, so when any word of the same command
 literally names doc-lattice it exits 2 rather than being certified clean, including dispatchers
 reached through the recognized wrapper and launcher grammar such as `uv run bash -c` or
-`builtin eval`. A dispatcher reached only through a variable executable name, an unrecognized
-shell or wrapper, or source fed from standard input by a heredoc, herestring, or pipe remains
-within the disclosed executable-name limitation even when its payload spells doc-lattice.
+`builtin eval`. A dispatcher whose payload is assembled rather than written literally as an
+argument word stays within the disclosed executable-name limitation even when the assembled text
+spells doc-lattice. That covers a variable executable name, an unrecognized shell or wrapper, a
+command, process, or arithmetic substitution that builds the payload, and source fed from standard
+input by a heredoc, herestring, or pipe.
 Malformed, oversized, or otherwise unreliably inspectable workflows also exit 2 instead of being
 treated as safe.
 Whole-context, wildcard, or computed `secrets` access fails closed unless inspection proves it
