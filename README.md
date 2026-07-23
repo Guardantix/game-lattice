@@ -653,9 +653,14 @@ literally names doc-lattice it exits 2 rather than being certified clean. That i
 dispatchers reached through the recognized wrapper and launcher grammar such as `uv run bash -c`
 or `builtin eval`, and a shell head appearing in the arguments of an unrecognized program that may
 re-dispatch its argv, as in `nohup bash -c 'doc-lattice ...'` or `xargs bash -c '... doc-lattice
-...'`. A dispatcher whose payload is assembled rather than written literally as an argument word
-stays within the disclosed executable-name limitation even when the assembled text spells
-doc-lattice. That covers a variable executable name, a command, process, or arithmetic
+...'`. A uv tool requirement given as a local wheel path resolves by its filename's distribution
+name, which uv verifies against the wheel metadata, so `uvx ./bash-1.0.0-py3-none-any.whl -c ...`
+refuses exactly like `uvx bash -c ...`; a path or URL requirement whose executable cannot be
+derived statically (a source archive, a directory, or a Git or direct URL) also exits 2 whenever
+the same command literally names doc-lattice, because the tool it installs may itself be a shell
+or doc-lattice. A dispatcher whose payload is assembled rather than written literally as an
+argument word stays within the disclosed executable-name limitation even when the assembled text
+spells doc-lattice. That covers a variable executable name, a command, process, or arithmetic
 substitution that builds the payload, and source fed from standard input by a heredoc,
 herestring, or pipe. Provably non-executing shell invocations stay certified: a pure noexec
 prefix (`bash -n -c ...`, `-nc`, or `-o noexec` with nothing else before `-c`) and the bash

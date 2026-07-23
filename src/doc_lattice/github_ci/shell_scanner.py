@@ -34,6 +34,22 @@ _SHELL_ASSIGNMENT_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _PYTHON_DISTRIBUTION_NAME_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
 _PYTHON_DISTRIBUTION_SEPARATOR_RE = re.compile(r"[-_.]+")
 _UV_REQUIREMENT_SUFFIX_STARTS = frozenset("([<>=!~@;")
+# Source-archive extensions uv accepts for a path requirement; a wheel (``.whl``) is handled
+# separately because its filename carries the authoritative distribution name.
+_UV_SOURCE_ARCHIVE_SUFFIXES: tuple[str, ...] = (
+    ".zip",
+    ".tar.gz",
+    ".tgz",
+    ".tar.bz2",
+    ".tbz",
+    ".tar.xz",
+    ".txz",
+    ".tar.zst",
+    ".tzst",
+    ".tar",
+)
+# PEP 427 forbids ``-`` inside the wheel name segment; ASCII only, matching the marker decision.
+_WHEEL_DISTRIBUTION_NAME_RE = re.compile(r"[A-Za-z0-9._]+", re.ASCII)
 _ENV_SPLIT_STRING_LONG_OPTION = "--split-string"
 _ENV_LONG_OPTION_KINDS = {
     "--argv0": "required",
@@ -1773,7 +1789,10 @@ def _reject_marker_bearing_dispatcher(
       ``coproc``, builtin-target, and launcher (``env``/``time``/``uv``/``uvx``) grammar instead
       of mirroring it. A uv positional tool requirement head is compared after stripping the
       requirement suffix, mirroring the console-script name uv resolves (so ``uvx bash@1.0 -c
-      ...`` refuses like ``uvx bash -c ...``). Plain heads match only the exact command words
+      ...`` refuses like ``uvx bash -c ...``). A uv wheel-path requirement resolves by its
+      filename's distribution segment (uv enforces filename/metadata name agreement); other path
+      or URL requirements are statically underivable and refuse whenever marker-bearing. Plain
+      heads match only the exact command words
       ``eval``/``source``/``.``: shells run those builtins for no other spelling, so a
       slash-qualified ``./eval`` is a path execution of an external file (the disclosed wrapper
       limitation) and ``EVAL`` or ``eval.exe`` PATH-search external names the builtins never
@@ -1825,7 +1844,9 @@ def _reachable_dispatcher_heads(
 
     Combines the resolver-recorded executable candidates with a shell-head sweep of the opaque
     tail past the earliest unrecognized executable. Uses only uncharged frozenset membership
-    tests so it can gate the charged marker pass.
+    tests so it can gate the charged marker pass. A uv wheel-path requirement resolves by its
+    filename's distribution segment, but a source archive, directory, or URL requirement is a
+    statically underivable head that fails closed like a plain dispatcher when marker-bearing.
     """
     plain_dispatch = False
     walk_starts: list[int] = []
@@ -1844,6 +1865,13 @@ def _reachable_dispatcher_heads(
             if candidate.uv_requirement
             else head_word.literal
         )
+        if head is None:
+            # A uv path requirement whose executable is statically underivable (source archive,
+            # directory, or URL). uv genuinely runs the tool and its identity is unknowable (it may
+            # itself be doc-lattice or a shell), so provenance gating cannot apply; a marker
+            # anywhere in the command must fail closed exactly like a plain dispatcher.
+            plain_dispatch = True
+            continue
         if head in _PLAIN_DISPATCHER_HEADS:
             # Shells run the plain dispatcher builtins only for the exact command words
             # eval/source/.; a slash-qualified word such as ./eval is a path execution of an
@@ -2501,7 +2529,21 @@ def _doc_lattice_command_index(
         return command
     command_index = command.index
     if (
+        command.external_lookup
+        and not command.ambiguous
+        and command_index < len(words)
+        and not words[command_index].dynamic
+        and words[command_index].literal == "coproc"
+    ):
+        # A PATH-execve prefix (exec, env prefix, external time) executes the word ``coproc``
+        # itself; coproc is a shell keyword with no external binary, so the execve fails with
+        # exit 127 before any later word runs. Exact literal only, no keyword-eligibility
+        # requirement: quoting cannot change an execve argument, and ``./coproc`` names a real
+        # file that may re-dispatch, mirroring the exact-literal plain-head posture.
+        return _ResolvedIndex(None)
+    if (
         command_index < len(words)
+        and not command.external_lookup
         and not words[command_index].dynamic
         and words[command_index].keyword_eligible
         and words[command_index].literal == "coproc"
@@ -2560,8 +2602,10 @@ def _doc_lattice_command_after_prefixes(
     """Reuse normal prefix, wrapper, and payload resolution from one command start.
 
     ``external_lookup`` carries provenance from the enclosing command so a coprocess body behind
-    a PATH-execve prefix keeps it; ``exec coproc eval ...`` execves ``coproc``, which is a shell
-    keyword with no external binary, so the dispatcher is never reached.
+    a PATH-execve prefix keeps it. In the unambiguous case ``exec coproc eval ...`` is certified by
+    the early return in ``_doc_lattice_command_index``, which execves ``coproc`` (a shell keyword
+    with no external binary) so the dispatcher is never reached; the parameter still carries
+    provenance for the ambiguous fall-through and for resolving a coprocess body.
     """
     executable = _skip_shell_prefixes(
         words,
@@ -2952,7 +2996,7 @@ def _nested_launcher_payload_index(
     is_doc_lattice = (
         _is_doc_lattice_uv_tool_payload(payload.literal)
         if strip_version
-        else _is_doc_lattice_executable_basename(basename)
+        else _is_doc_lattice_executable_basename(raw_basename)
     )
     if is_doc_lattice:
         return _ResolvedIndex(payload_index, payload_resolution.ambiguous)
@@ -3452,17 +3496,72 @@ def _uv_requirement_distribution_name(value: str) -> str | None:
     return None
 
 
-def _uv_requirement_executable_name(value: str) -> str:
-    """Return the console-script name uv derives from a positional tool requirement.
+def _uv_requirement_is_path(value: str) -> bool:
+    """Return whether a uv positional requirement is a filesystem path rather than a bare name.
+
+    uv treats ``.``/``..``, any token containing a path separator, and any token whose casefolded
+    name ends in a wheel or source-archive suffix as a local path requirement.
+    """
+    if value in (".", ".."):
+        return True
+    if "/" in value or "\\" in value:
+        return True
+    folded = value.casefold()
+    return folded.endswith(".whl") or folded.endswith(_UV_SOURCE_ARCHIVE_SUFFIXES)
+
+
+def _wheel_distribution_name(value: str) -> str | None:
+    """Return the distribution name a wheel filename declares, or None if it does not parse.
+
+    uv rejects a wheel whose filename-derived name disagrees with the packaged metadata name, so
+    the wheel filename's distribution segment is the authoritative console-script identity. The
+    filename must follow PEP 427 (``name-version[-build]-python-abi-platform``); the name segment
+    is ASCII ``[A-Za-z0-9._]+`` because PEP 427 escaping forbids ``-`` inside it.
+    """
+    basename = _basename(value.replace("\\", "/"))
+    if not basename.casefold().endswith(".whl"):
+        return None
+    stem = basename[:-4]
+    segments = stem.split("-")
+    if len(segments) not in (5, 6):
+        return None
+    name = segments[0]
+    if not name or _WHEEL_DISTRIBUTION_NAME_RE.fullmatch(name) is None:
+        return None
+    return name
+
+
+def _uv_requirement_executable_name(value: str) -> str | None:
+    """Return the console-script name uv derives from a positional tool requirement, or None.
 
     ``uvx bash@1.0`` and the ``uv tool run`` long form strip the requirement suffix and run
     the console script named ``bash``, so dispatcher-head matching compares the stripped name
-    rather than the raw requirement token.
+    rather than the raw requirement token. A wheel path resolves by its filename's distribution
+    segment, because uv enforces filename/metadata name agreement for wheels. None means a path
+    requirement whose executable cannot be derived statically (a source archive, a directory, or a
+    URL), which callers must treat as fail-closed when marker-bearing.
     """
     value = value.strip()
     distribution_name = _uv_requirement_distribution_name(value)
-    if distribution_name is not None:
+    # A declared name in a direct reference (``bash@...``, ``not-bash @ file://...``) leaves a
+    # requirement suffix, so the grammar match is a proper prefix; that declared name wins. A bare
+    # wheel or archive filename is itself a valid PEP 503 name the grammar consumes whole, but uv
+    # treats it as a path, so it is routed to the path branch below rather than resolved by name.
+    if distribution_name is not None and not (
+        distribution_name == value and _uv_requirement_is_path(value)
+    ):
         return distribution_name
+    if _uv_requirement_is_path(value):
+        wheel_name = _wheel_distribution_name(value)
+        if wheel_name is not None:
+            return wheel_name
+        fallback = _uv_requirement_basename_fallback(value)
+        return fallback if _is_doc_lattice_executable_basename(fallback) else None
+    return _uv_requirement_basename_fallback(value)
+
+
+def _uv_requirement_basename_fallback(value: str) -> str:
+    """Return the basename with a trailing requirement suffix stripped (non-grammar fallback)."""
     name = _basename(value)
     stop = next(
         (position for position, char in enumerate(name) if char in _UV_REQUIREMENT_SUFFIX_STARTS),
@@ -3472,12 +3571,22 @@ def _uv_requirement_executable_name(value: str) -> str:
 
 
 def _is_doc_lattice_uv_tool_payload(value: str) -> bool:
-    """Return whether a uv tool payload names the doc-lattice executable or distribution."""
+    """Return whether a uv tool payload names the doc-lattice executable or distribution.
+
+    A wheel path is matched by its filename's distribution segment: uv verifies the wheel metadata
+    name against the filename, so ``uvx ./dist/doc_lattice-2.0.0-py3-none-any.whl`` is the
+    project's own console script and its mutating invocation is not silently certified.
+    """
     value = value.lstrip()
     executable_name = _basename(value).split("@", 1)[0]
     if _is_doc_lattice_executable_basename(executable_name):
         return True
     distribution_name = _uv_requirement_distribution_name(value)
+    # A bare wheel filename is itself a valid PEP 503 name the grammar consumes whole, but uv
+    # treats it as a path, so it resolves by its filename's distribution segment exactly like the
+    # slash-qualified form.
+    if _uv_requirement_is_path(value) and distribution_name in (None, value):
+        distribution_name = _wheel_distribution_name(value)
     if distribution_name is None:
         return False
     normalized_name = _PYTHON_DISTRIBUTION_SEPARATOR_RE.sub("-", distribution_name).casefold()

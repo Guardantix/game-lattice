@@ -18,6 +18,9 @@ from doc_lattice.github_ci.shell_scanner import (
     _ShellScanIncomplete,
     _ShellScanner,
     _ShellWord,
+    _uv_requirement_executable_name,
+    _uv_requirement_is_path,
+    _wheel_distribution_name,
     direct_doc_lattice_invocations,
     scan_doc_lattice_invocations,
 )
@@ -553,6 +556,8 @@ def test_direct_doc_lattice_invocations_fails_closed_on_dynamic_relative_executa
         ("uv run uvx doc-lattice linear", LINEAR),
         ("uvx uv@0.8.0 run doc-lattice linear", LINEAR),
         ("uv tool run uvx@0.8.0 doc-lattice reconcile --all", RECONCILE),
+        ("uvx ./dist/doc_lattice-2.0.0-py3-none-any.whl reconcile", RECONCILE),
+        ("uvx doc_lattice-2.0.0-py3-none-any.whl reconcile", RECONCILE),
         ("/usr/bin/time doc-lattice linear", LINEAR),
         ("env /usr/bin/time -p doc-lattice linear", LINEAR),
         ("env time -- doc-lattice linear", LINEAR),
@@ -567,6 +572,70 @@ def test_direct_doc_lattice_invocations_handles_root_options_and_compound_gramma
     expected,
 ):
     assert direct_doc_lattice_invocations(script) == expected
+
+
+def test_direct_doc_lattice_invocations_certifies_exec_coproc_word():
+    # A PATH-execve prefix runs the shell keyword ``coproc`` itself, which has no external binary,
+    # so the execve fails (exit 127) and no later word runs: no invocation, scan completes.
+    script = "exec coproc doc-lattice reconcile"
+    result = scan_doc_lattice_invocations(script)
+    assert result.invocations == NONE
+    assert result.incomplete_reason is None
+    assert direct_doc_lattice_invocations(script) == NONE
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("bash-1.0.0-py3-none-any.whl", "bash"),
+        ("bash-1.0.0-py2.py3-none-any.whl", "bash"),
+        ("./dist/doc_lattice-2.0.0-py3-none-any.whl", "doc_lattice"),
+        ("bash-1.0.0-1-py3-none-any.whl", "bash"),
+        (".\\dist\\bash-1.0.0-py3-none-any.whl", "bash"),
+        ("bash-1.0.0-py3-none-any.WHL", "bash"),
+        ("bash-1.0.0-py3-none.whl", None),
+        ("bash-1.0.0-1-extra-py3-none-any.whl", None),
+        ("café-1.0.0-py3-none-any.whl", None),
+        ("-1.0.0-py3-none-any.whl", None),
+        ("bash-1.0.0.tar.gz", None),
+        ("bash", None),
+    ],
+)
+def test_wheel_distribution_name_parses_pep427_filenames(value, expected):
+    assert _wheel_distribution_name(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (".", True),
+        ("..", True),
+        ("./tools/shellkit", True),
+        (".\\dist\\bash", True),
+        ("bash-1.0.0-py3-none-any.whl", True),
+        ("bash-1.0.0.tar.gz", True),
+        ("bash-1.0.0.ZIP", True),
+        ("bash", False),
+        ("bash@1.0", False),
+    ],
+)
+def test_uv_requirement_is_path_recognizes_paths_and_archives(value, expected):
+    assert _uv_requirement_is_path(value) is expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("bash@1.0", "bash"),
+        ("./bash-1.0.0-py3-none-any.whl", "bash"),
+        ("./doc-lattice", "doc-lattice"),
+        ("./bash-1.0.0.tar.gz", None),
+        ("./tools/shellkit", None),
+        (".", None),
+    ],
+)
+def test_uv_requirement_executable_name_resolves_paths_and_names(value, expected):
+    assert _uv_requirement_executable_name(value) == expected
 
 
 @pytest.mark.parametrize(
@@ -2479,6 +2548,38 @@ DISPATCHER_FAIL_CLOSED_CASES = [
     ("exec set option after inline selection", "zsh -n -c -o exec 'doc-lattice reconcile'"),
     ("impure option after inline selection", "bash -nc -x 'doc-lattice reconcile'"),
     ("dynamic option value after inline selection", "bash -n -c -o $X 'doc-lattice reconcile'"),
+    (
+        "local wheel shell requirement",
+        "uvx ./bash-1.0.0-py3-none-any.whl -c 'doc-lattice reconcile'",
+    ),
+    (
+        "bare wheel filename shell requirement",
+        "uvx bash-1.0.0-py2.py3-none-any.whl -c 'doc-lattice reconcile'",
+    ),
+    (
+        "uv tool run local wheel shell requirement",
+        "uv tool run ./bash-1.0.0-py3-none-any.whl -c 'doc-lattice lint'",
+    ),
+    (
+        "wheel build-tag shell requirement",
+        "uvx ./bash-1.0.0-1-py3-none-any.whl -c 'doc-lattice reconcile'",
+    ),
+    ("sdist requirement with marker payload", "uvx ./bash-1.0.0.tar.gz -c 'doc-lattice reconcile'"),
+    (
+        "directory requirement with marker payload",
+        "uvx ./tools/shellkit -c 'doc-lattice reconcile'",
+    ),
+    ("dot directory requirement with marker payload", "uvx . -c 'doc-lattice reconcile'"),
+    (
+        "marker-bearing sdist doc-lattice requirement",
+        "uvx ./dist/doc_lattice-2.0.0.tar.gz reconcile",
+    ),
+    (
+        "local uv wheel nested launcher",
+        "uvx ./uv-0.8.0-py3-none-any.whl run bash -c 'doc-lattice reconcile'",
+    ),
+    ("path-qualified coproc after exec", "exec ./coproc bash -c 'doc-lattice reconcile'"),
+    ("ambiguous word before external coproc", "exec $MAYBE coproc bash -c 'doc-lattice reconcile'"),
 ]
 
 
@@ -2563,6 +2664,22 @@ DISPATCHER_CERTIFY_CASES = [
     # ``exec`` execve fails (exit 127) and the plain dispatcher behind them never runs.
     ("exec wrapper before builtin dispatcher target", "exec builtin eval 'doc-lattice reconcile'"),
     ("exec wrapper before coprocess dispatcher", "exec coproc eval 'doc-lattice reconcile'"),
+    # A PATH-execve prefix runs the word ``coproc`` itself, which is a shell keyword with no
+    # external binary, so the execve fails (exit 127) before any later word runs.
+    ("exec wrapper before coproc word", "exec coproc bash -c 'doc-lattice reconcile'"),
+    ("env wrapper before coproc word", "env coproc bash -c 'doc-lattice reconcile'"),
+    ("quoted coproc word after exec", "exec 'coproc' bash -c 'doc-lattice reconcile'"),
+    # A wheel-path requirement resolves by its filename's distribution segment; a derived name that
+    # is neither a shell nor doc-lattice runs the rule past without refusing.
+    (
+        "local wheel non-shell requirement",
+        "uvx ./innocent-1.0.0-py3-none-any.whl -c 'doc-lattice reconcile'",
+    ),
+    (
+        "wheel requirement before external script operand",
+        "uvx ./bash-1.0.0-py3-none-any.whl ./doc-lattice-runner.sh",
+    ),
+    ("directory requirement without marker", "uvx ./tools/shellkit -c 'echo hello'"),
 ]
 
 
