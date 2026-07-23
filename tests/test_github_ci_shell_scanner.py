@@ -2047,6 +2047,18 @@ def test_marker_bearing_external_shell_candidates_consume_shared_budget():
     assert resolution.budget.remaining_steps == 0
 
 
+def test_duplicate_dispatcher_candidates_classify_argv_once():
+    words = [_ShellWord("bash"), _ShellWord("doc-lattice-runner.sh")]
+    resolution = _LauncherResolutionState(
+        _ScanBudget(15),
+        executable_positions=[_ExecutableCandidate(0) for _ in range(6)],
+    )
+
+    _reject_marker_bearing_dispatcher(words, resolution)
+
+    assert resolution.budget.remaining_steps == 6
+
+
 def test_direct_doc_lattice_invocations_prefixes_context_on_incomplete_scan():
     script = 'echo "' + ("$(" * 65) + "doc-lattice linear" + (")" * 65) + '"'
 
@@ -2340,6 +2352,10 @@ DISPATCHER_FAIL_CLOSED_CASES = [
     ("lone plus before -c", "bash + -c 'doc-lattice reconcile'"),
     ("sh lone plus before cluster", "sh + -lc 'doc-lattice reconcile'"),
     ("uvx requirement launcher before dispatcher", "uvx bash@1.0 -c 'doc-lattice reconcile'"),
+    (
+        "dynamic uv provenance-distinct requirement head",
+        "uv $X bash@1.0 -c 'doc-lattice reconcile'",
+    ),
     ("uv tool run requirement head", "uv tool run bash@1.0 -c 'doc-lattice reconcile'"),
     ("uvx requirement specifier before dispatcher", "uvx 'bash==1.0' -c 'doc-lattice reconcile'"),
     (

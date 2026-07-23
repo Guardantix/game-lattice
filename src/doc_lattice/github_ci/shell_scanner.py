@@ -1761,8 +1761,12 @@ def _reject_marker_bearing_dispatcher(
     if not marker_bearing:
         return
 
+    classified_candidates: set[_ExecutableCandidate] = set()
     for candidate in resolution.executable_positions:
         resolution.step()
+        if candidate in classified_candidates:
+            continue
+        classified_candidates.add(candidate)
         head_word = words[candidate.index]
         head = (
             _uv_requirement_executable_name(head_word.literal)
