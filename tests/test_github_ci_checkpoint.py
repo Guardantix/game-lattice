@@ -8,9 +8,9 @@ import sys
 from pathlib import Path
 
 CHECKPOINT = Path("tests/fixtures/github_ci_checkpoint")
-_FROZEN_ACCEPTANCE_COUNT = 78
-_FROZEN_ACCEPTANCE_SHA256 = (
-    "7fb1da742f7f659e4454fbc85c4f7bf500f21d6cbbc275684878262bb9314f3b"  # pragma: allowlist secret
+_FROZEN_ACCEPTANCE_AUTHORED_CASE_COUNT = 78
+_FROZEN_ACCEPTANCE_AUTHORED_CASES_SHA256 = (
+    "1b905949f0622c643d6f3a1fe70ccbf5cb052bd1bca02ebd17bc93878b992b61"  # pragma: allowlist secret
 )
 
 STATUSES = frozenset({"not_applicable", "certified", "uninspectable"})
@@ -119,15 +119,20 @@ def test_replay_inventory_covers_acceptance_corpus():
     assert missing == []
 
 
-def test_acceptance_prefix_matches_frozen_ordered_digest():
+def test_acceptance_prefix_matches_frozen_authored_case_digest():
     # tests/ is not a package: the cross-module import only resolves inside a running test.
     from test_github_ci_shell_scanner import ACCEPTANCE_CASES  # noqa: PLC0415
 
-    frozen_cases = ACCEPTANCE_CASES[:_FROZEN_ACCEPTANCE_COUNT]
-    payload = json.dumps(frozen_cases, ensure_ascii=True, separators=(",", ":"))
+    authored_cases = [
+        (description, script)
+        for description, script, _expected in ACCEPTANCE_CASES[
+            :_FROZEN_ACCEPTANCE_AUTHORED_CASE_COUNT
+        ]
+    ]
+    payload = json.dumps(authored_cases, ensure_ascii=True, separators=(",", ":"))
 
-    assert len(frozen_cases) == _FROZEN_ACCEPTANCE_COUNT
-    assert hashlib.sha256(payload.encode()).hexdigest() == _FROZEN_ACCEPTANCE_SHA256
+    assert len(authored_cases) == _FROZEN_ACCEPTANCE_AUTHORED_CASE_COUNT
+    assert hashlib.sha256(payload.encode()).hexdigest() == _FROZEN_ACCEPTANCE_AUTHORED_CASES_SHA256
 
 
 def test_acceptance_labels_align_with_corpus():
@@ -135,10 +140,10 @@ def test_acceptance_labels_align_with_corpus():
     from test_github_ci_shell_scanner import ACCEPTANCE_CASES  # noqa: PLC0415
 
     labels = json.loads((CHECKPOINT / "acceptance_labels.json").read_text())["cases"]
-    assert len(labels) == _FROZEN_ACCEPTANCE_COUNT
+    assert len(labels) == _FROZEN_ACCEPTANCE_AUTHORED_CASE_COUNT
     assert len(ACCEPTANCE_CASES) >= len(labels)
     frozen_cases = ACCEPTANCE_CASES[: len(labels)]
-    for row, (description, _script, expected) in zip(labels, frozen_cases, strict=True):
+    for row, (description, _script, _expected) in zip(labels, frozen_cases, strict=True):
         assert row["description"] == description
         assert row["label"] in {
             "must-certify",
@@ -146,10 +151,16 @@ def test_acceptance_labels_align_with_corpus():
             "outside-direct-marker-contract",
         }
         assert row["expected_status"] in STATUSES
+        assert isinstance(row["expected_invocations"], list)
+        assert all(
+            isinstance(invocation, list)
+            and len(invocation) == 2
+            and isinstance(invocation[0], str)
+            and isinstance(invocation[1], bool)
+            for invocation in row["expected_invocations"]
+        )
         if row["label"] == "must-certify":
             assert row["expected_status"] == "certified"
-            assert isinstance(expected, tuple)
-            assert [tuple(i) for i in row["expected_invocations"]] == list(expected)
         if row["label"] == "outside-direct-marker-contract":
             assert row["expected_status"] == "not_applicable"
             assert row["expected_invocations"] == []

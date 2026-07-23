@@ -11,13 +11,10 @@ from doc_lattice.github_ci.shell_scanner import (
     _DOC_LATTICE_ROOT_OPTIONS,
     _RECONCILE_FLAGS,
     _RECONCILE_OPTIONS_WITH_ARGUMENTS,
-    _ExecutableCandidate,
-    _LauncherResolutionState,
-    _reject_marker_bearing_dispatcher,
+    _CommandScanState,
     _ScanBudget,
     _ShellScanIncomplete,
     _ShellScanner,
-    _ShellWord,
     _uv_requirement_executable_name,
     _uv_requirement_is_path,
     _wheel_distribution_name,
@@ -32,6 +29,16 @@ RECONCILE_DRY = (("reconcile", True),)
 CHECK = (("check", False),)
 LINEAR_LINT = (("linear", False), ("lint", False))
 INCOMPLETE = object()
+
+
+def assert_marker_refusal(script: str) -> None:
+    result = scan_doc_lattice_invocations(script)
+
+    assert result.invocations == NONE
+    assert result.incomplete_reason is not None
+    with pytest.raises(ConfigError, match=r"shell scan incomplete"):
+        direct_doc_lattice_invocations(script)
+
 
 ACCEPTANCE_CASES = [
     # Literal executable identity and control syntax.
@@ -80,17 +87,17 @@ ACCEPTANCE_CASES = [
     (
         "escaped substitution literal",
         r'echo "\$(doc-lattice linear)"',
-        NONE,
+        INCOMPLETE,
     ),
     (
         "single-quoted substitution literal",
         "echo '$(doc-lattice linear)'",
-        NONE,
+        INCOMPLETE,
     ),
     (
         "inner single-quoted substitution literal",
         """echo "$(printf '%s' '$(doc-lattice linear)')\"""",
-        NONE,
+        INCOMPLETE,
     ),
     (
         "comment then active command",
@@ -157,7 +164,7 @@ ACCEPTANCE_CASES = [
     (
         "single-quoted parameter expansion literal",
         "echo '${x:-$(doc-lattice linear)}'",
-        NONE,
+        INCOMPLETE,
     ),
     (
         "parameter text resembling heredoc",
@@ -351,7 +358,7 @@ ACCEPTANCE_CASES = [
     (
         "process substitution literal argument",
         "cat <(printf '%s' 'doc-lattice linear') >/dev/null",
-        NONE,
+        INCOMPLETE,
     ),
     # Redirection placement and dry-run accounting.
     (
@@ -398,12 +405,12 @@ ACCEPTANCE_CASES = [
     (
         "multiline double-quoted literal",
         'printf "%s" "doc-lattice linear\nuv run doc-lattice reconcile"',
-        NONE,
+        INCOMPLETE,
     ),
     (
         "multiline single-quoted literal",
         "printf '%s' 'doc-lattice linear\nuv run doc-lattice reconcile'",
-        NONE,
+        INCOMPLETE,
     ),
     (
         "complete command before malformed substitution",
@@ -437,7 +444,7 @@ ACCEPTANCE_CASES = [
         'OPT=--directory; uv tool "$OPT" /tmp run doc-lattice linear',
         INCOMPLETE,
     ),
-    ("bare uv tool install remains non-candidate", "uv tool install doc-lattice", NONE),
+    ("bare uv tool install remains non-candidate", "uv tool install doc-lattice", INCOMPLETE),
     (
         "uvx no-sync is intentional exit 2",
         "uvx --no-sync doc-lattice linear",
@@ -484,8 +491,8 @@ def test_direct_doc_lattice_acceptance_corpus(_description, script, expected):
             "uv run doc-lattice reconcile --all --dry-run",
             (("reconcile", True),),
         ),
-        ("echo 'doc-lattice linear'", ()),
-        ('printf "%s\\n" "doc-lattice reconcile --all"', ()),
+        ("echo 'doc-lattice linear'", INCOMPLETE),
+        ('printf "%s\\n" "doc-lattice reconcile --all"', INCOMPLETE),
         (
             "set +e\ndoc-lattice check\nrc_check=$?\ndoc-lattice lint\nrc_lint=$?\n",
             (("check", False), ("lint", False)),
@@ -494,6 +501,9 @@ def test_direct_doc_lattice_acceptance_corpus(_description, script, expected):
     ],
 )
 def test_direct_doc_lattice_invocations_handles_documented_forms(script, expected):
+    if expected is INCOMPLETE:
+        assert_marker_refusal(script)
+        return
     assert direct_doc_lattice_invocations(script) == expected
 
 
@@ -574,14 +584,8 @@ def test_direct_doc_lattice_invocations_handles_root_options_and_compound_gramma
     assert direct_doc_lattice_invocations(script) == expected
 
 
-def test_direct_doc_lattice_invocations_certifies_exec_coproc_word():
-    # A PATH-execve prefix runs the shell keyword ``coproc`` itself, which has no external binary,
-    # so the execve fails (exit 127) and no later word runs: no invocation, scan completes.
-    script = "exec coproc doc-lattice reconcile"
-    result = scan_doc_lattice_invocations(script)
-    assert result.invocations == NONE
-    assert result.incomplete_reason is None
-    assert direct_doc_lattice_invocations(script) == NONE
+def test_direct_doc_lattice_invocations_fails_closed_on_exec_coproc_marker():
+    assert_marker_refusal("exec coproc doc-lattice reconcile")
 
 
 @pytest.mark.parametrize(
@@ -696,11 +700,14 @@ def test_direct_doc_lattice_invocations_does_not_continue_after_escaped_backslas
     ("script", "expected"),
     [
         ("echo foo\r#notcomment; doc-lattice linear", LINEAR),
-        ("echo\r doc-lattice linear", NONE),
+        ("echo\r doc-lattice linear", INCOMPLETE),
     ],
     ids=["hash-remains-word-text", "carriage-return-remains-command-text"],
 )
 def test_direct_doc_lattice_invocations_preserves_lone_carriage_returns(script, expected):
+    if expected is INCOMPLETE:
+        assert_marker_refusal(script)
+        return
     assert direct_doc_lattice_invocations(script) == expected
 
 
@@ -738,11 +745,15 @@ def test_direct_doc_lattice_invocations_detects_long_assignment_prefix_run():
         "args=(doc-lattice linear)",
         "declare -a args=(doc-lattice reconcile --all)",
         "args=([1+(2)]=doc-lattice linear)",
+        "args=(doc-lattice linear)\ndoc-lattice check",
     ],
-    ids=["indexed", "declare-indexed", "arithmetic-subscript"],
+    ids=["indexed", "declare-indexed", "arithmetic-subscript", "before-real-invocation"],
 )
-def test_direct_doc_lattice_invocations_treats_array_literals_as_data(script):
-    assert direct_doc_lattice_invocations(script) == NONE
+def test_direct_doc_lattice_invocations_fails_closed_on_marker_bearing_array_literals(script):
+    # An array literal such as ``cmds=(doc-lattice reconcile)`` feeds a later dynamic execution
+    # (``"${cmds[@]}"``) the scanner cannot follow, so its retained marker fails closed exactly
+    # like the scalar ``X=doc-lattice`` assignment.
+    assert_marker_refusal(script)
 
 
 @pytest.mark.parametrize(
@@ -750,9 +761,9 @@ def test_direct_doc_lattice_invocations_treats_array_literals_as_data(script):
     [
         ("args=($(doc-lattice linear))", LINEAR),
         ("args=(<(doc-lattice reconcile --all))", RECONCILE),
-        ("args=(doc-lattice linear)\ndoc-lattice check", CHECK),
+        ("files=(a.md b.md)\ndoc-lattice check", CHECK),
     ],
-    ids=["command-substitution", "process-substitution", "following-command"],
+    ids=["command-substitution", "process-substitution", "marker-free-then-command"],
 )
 def test_direct_doc_lattice_invocations_scans_executable_array_contexts(script, expected):
     assert direct_doc_lattice_invocations(script) == expected
@@ -771,22 +782,20 @@ def test_direct_doc_lattice_invocations_scans_executable_array_contexts(script, 
         "FLAGS++=x doc-lattice linear",
     ],
 )
-def test_direct_doc_lattice_invocations_ignores_indirect_or_similarly_named_commands(script):
-    assert direct_doc_lattice_invocations(script) == ()
+def test_direct_doc_lattice_invocations_fails_closed_on_unresolved_marker_commands(script):
+    assert_marker_refusal(script)
 
 
 @pytest.mark.parametrize(
     "script",
-    [
-        "{doc-lattice linear",
-        "doc-lattice --version linear",
-        "doc-lattice --no-color --version linear",
-    ],
+    ["doc-lattice --version linear", "doc-lattice --no-color --version linear"],
 )
-def test_direct_doc_lattice_invocations_does_not_widen_dynamic_or_nonexecuting_forms(
-    script,
-):
-    assert direct_doc_lattice_invocations(script) == ()
+def test_direct_doc_lattice_invocations_keeps_resolved_nonexecuting_forms(script):
+    assert direct_doc_lattice_invocations(script) == NONE
+
+
+def test_direct_doc_lattice_invocations_fails_closed_on_unresolved_braced_marker_head():
+    assert_marker_refusal("{doc-lattice linear")
 
 
 @pytest.mark.parametrize(
@@ -1107,8 +1116,8 @@ def test_direct_doc_lattice_invocations_fails_closed_on_dynamic_builtin_target()
         "builtin env doc-lattice linear",
     ],
 )
-def test_direct_doc_lattice_invocations_ignores_unsupported_builtin_targets(script):
-    assert direct_doc_lattice_invocations(script) == NONE
+def test_direct_doc_lattice_invocations_fails_closed_on_unsupported_builtin_marker(script):
+    assert_marker_refusal(script)
 
 
 @pytest.mark.parametrize(
@@ -1334,8 +1343,8 @@ def test_direct_doc_lattice_fails_closed_on_quoted_zero_field_boundary_before_pa
         "static-literal-with-nameref",
     ],
 )
-def test_direct_doc_lattice_does_not_treat_quoted_single_field_expansion_as_erasable(script):
-    assert direct_doc_lattice_invocations(script) == NONE
+def test_direct_doc_lattice_fails_closed_on_quoted_dynamic_head_with_marker(script):
+    assert_marker_refusal(script)
 
 
 @pytest.mark.parametrize(
@@ -1516,8 +1525,10 @@ def test_direct_doc_lattice_invocations_skips_dynamic_shell_assignment_before_co
     ],
     ids=["quoted-name-fragment", "unquoted-name-fragment"],
 )
-def test_direct_doc_lattice_invocations_does_not_treat_dynamic_assignment_name_as_prefix(script):
-    assert direct_doc_lattice_invocations(script) == NONE
+def test_direct_doc_lattice_invocations_fails_closed_on_dynamic_assignment_name_before_marker(
+    script,
+):
+    assert_marker_refusal(script)
 
 
 def test_direct_doc_lattice_invocations_keeps_dynamic_argument_after_static_command():
@@ -1732,8 +1743,8 @@ def test_direct_doc_lattice_invocations_consumes_env_assignments_after_option_te
     assert direct_doc_lattice_invocations(script) == expected
 
 
-def test_direct_doc_lattice_invocations_honors_env_option_terminator():
-    assert direct_doc_lattice_invocations("env -- -S doc-lattice linear") == NONE
+def test_direct_doc_lattice_invocations_fails_closed_on_env_terminator_before_marker():
+    assert_marker_refusal("env -- -S doc-lattice linear")
 
 
 @pytest.mark.parametrize(
@@ -1763,8 +1774,8 @@ def test_direct_doc_lattice_invocations_honors_env_option_terminator():
         "uv tool run -h doc-lattice linear",
     ],
 )
-def test_direct_doc_lattice_invocations_ignores_nonexecuting_command_forms(script):
-    assert direct_doc_lattice_invocations(script) == ()
+def test_direct_doc_lattice_invocations_fails_closed_on_nonexecuting_marker_forms(script):
+    assert_marker_refusal(script)
 
 
 @pytest.mark.parametrize(
@@ -1826,11 +1837,23 @@ def test_uv_tool_option_before_run_selector_fails_closed(option):
         direct_doc_lattice_invocations(script)
 
 
-@pytest.mark.parametrize("subcommand", ["install doc-lattice", "list"])
-def test_uv_tool_bare_non_run_subcommand_stays_not_candidate(subcommand):
+@pytest.mark.parametrize(
+    ("subcommand", "expected_complete"),
+    [("install doc-lattice", False), ("list", True)],
+    ids=["marker-bearing-install", "marker-free-list"],
+)
+def test_uv_tool_bare_non_run_subcommand_applies_marker_fallback(
+    subcommand,
+    expected_complete,
+):
     script = f"uv tool {subcommand}"
+    if not expected_complete:
+        assert_marker_refusal(script)
+        return
 
-    assert scan_doc_lattice_invocations(script).incomplete_reason is None
+    result = scan_doc_lattice_invocations(script)
+    assert result.incomplete_reason is None
+    assert result.invocations == NONE
     assert direct_doc_lattice_invocations(script) == NONE
 
 
@@ -1890,7 +1913,7 @@ def test_uv_run_no_sync_still_resolves():
         ("uv tool --frobnicate run doc-lattice linear", NONE, False),
         ("uv tool -q install doc-lattice", NONE, False),
         # Bare uv tool selectors that are not run: no invocation, resolved cleanly.
-        ("uv tool install doc-lattice", NONE, True),
+        ("uv tool install doc-lattice", NONE, False),
         ("uv tool list", NONE, True),
         # Package-form launchers refuse --no-sync (PR #103): fail closed, no invocation.
         ("uvx --no-sync doc-lattice linear", NONE, False),
@@ -1973,10 +1996,13 @@ def test_direct_doc_lattice_invocations_recognizes_clustered_uv_launcher_flags(l
     assert direct_doc_lattice_invocations(f"{launcher} -qv doc-lattice linear") == LINEAR
 
 
+def test_direct_doc_lattice_invocations_keeps_marker_free_uv_non_launcher_form():
+    assert direct_doc_lattice_invocations("uv sync") == NONE
+
+
 @pytest.mark.parametrize(
     "script",
     [
-        "uv sync",
         "uv pip install doc-lattice",
         "uvx other-doc-lattice==2.0.0 linear",
         "uvx doc-lattice-tools>=2.0.0 linear",
@@ -1984,8 +2010,10 @@ def test_direct_doc_lattice_invocations_recognizes_clustered_uv_launcher_flags(l
         "uv run command doc-lattice linear",
     ],
 )
-def test_direct_doc_lattice_invocations_ignores_uv_non_launcher_forms(script):
-    assert direct_doc_lattice_invocations(script) == ()
+def test_direct_doc_lattice_invocations_fails_closed_on_marker_bearing_uv_non_launcher_forms(
+    script,
+):
+    assert_marker_refusal(script)
 
 
 @pytest.mark.parametrize(
@@ -2087,86 +2115,49 @@ def test_nested_dynamic_uv_resolution_charges_shared_scan_budget():
         scanner.scan()
 
 
-def test_marker_free_dispatcher_candidates_consume_one_marker_pass_budget():
-    words = [word for _ in range(6) for word in (_ShellWord("bash"), _ShellWord("-c"))]
-    resolution = _LauncherResolutionState(
-        _ScanBudget(len(words)),
-        executable_positions=[_ExecutableCandidate(index) for index in range(0, len(words), 2)],
-    )
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ('doc-"lattice"', True),
+        ("DOC_LATTICE", True),
+        ("doc...lattice", True),
+        ("doc-lattıce", False),  # noqa: RUF001 -- intentional dotless-i regression case
+    ],
+    ids=["composed-fragments", "ascii-casefold", "repeated-separators", "dotless-i"],
+)
+def test_shell_word_marker_fact_matches_composed_ascii_regex(source, expected):
+    scanner = _ShellScanner(source, classify_commands=False)
 
-    _reject_marker_bearing_dispatcher(words, resolution)
+    word, end = scanner._parse_word(0, len(source), 0)
 
-    assert resolution.budget.remaining_steps == 0
-
-
-def test_marker_bearing_external_shell_candidates_consume_shared_budget():
-    # One marker-pass step per word until the marker (6) plus one walk step per inspected
-    # dispatcher argv word (--norc, -o, its value, then the operand: 4). Head detection itself
-    # is uncharged frozenset gating.
-    words = [
-        _ShellWord("echo"),
-        _ShellWord("bash"),
-        _ShellWord("--norc"),
-        _ShellWord("-o"),
-        _ShellWord("pipefail"),
-        _ShellWord("doc-lattice-runner.sh"),
-    ]
-    resolution = _LauncherResolutionState(
-        _ScanBudget(10),
-        executable_positions=[_ExecutableCandidate(0), _ExecutableCandidate(1)],
-    )
-
-    _reject_marker_bearing_dispatcher(words, resolution)
-
-    assert resolution.budget.remaining_steps == 0
+    assert end == len(source)
+    assert word.has_doc_lattice_marker is expected
 
 
-def test_duplicate_dispatcher_candidates_classify_argv_once():
-    # Six duplicate candidates still produce one walk: 2 marker-pass steps + 1 walk step.
-    words = [_ShellWord("bash"), _ShellWord("doc-lattice-runner.sh")]
-    resolution = _LauncherResolutionState(
-        _ScanBudget(15),
-        executable_positions=[_ExecutableCandidate(0) for _ in range(6)],
-    )
+def test_command_marker_fact_aggregates_and_resets():
+    source = "doc-lattice"
+    scanner = _ShellScanner(source, classify_commands=False)
+    state = _CommandScanState(words=[], heredocs=[], cases=[])
+    word, end = scanner._parse_word(0, len(source), 0)
 
-    _reject_marker_bearing_dispatcher(words, resolution)
+    scanner._record_word(state, word)
 
-    assert resolution.budget.remaining_steps == 12
-
-
-def test_repeated_opaque_tail_heads_classify_each_argv_once():
-    # Repeated shell heads in an opaque tail dedup by start index, so each distinct argv is
-    # walked once. Dedup uses a set, keeping the sweep linear in the number of tail words.
-    words = [
-        _ShellWord("nohup"),
-        *[_ShellWord("bash") for _ in range(5)],
-        _ShellWord("doc-lattice"),
-    ]
-    resolution = _LauncherResolutionState(
-        _ScanBudget(30),
-        executable_positions=[_ExecutableCandidate(0)],
-        opaque_tail_start=1,
-    )
-
-    _reject_marker_bearing_dispatcher(words, resolution)
-
-    # 7 marker-pass steps, then one walk per distinct start; each of the five heads is followed
-    # by an operand rather than an inline option, so no walk refuses.
-    assert resolution.budget.remaining_steps == 30 - 7 - 5
+    assert end == len(source)
+    assert state.command_has_marker is True
+    state.reset_command()
+    assert state.words == []
+    assert state.command_has_marker is False
 
 
-def test_dispatcher_free_command_skips_marker_pass_budget():
-    # The cheap head gate runs before the charged marker regex pass, so an ordinary
-    # marker-bearing command with no dispatcher-shaped word consumes no budget at all.
-    words = [_ShellWord("grep"), _ShellWord("-q"), _ShellWord("doc-lattice"), _ShellWord("log")]
-    resolution = _LauncherResolutionState(
-        _ScanBudget(5),
-        executable_positions=[_ExecutableCandidate(0)],
-    )
+@pytest.mark.parametrize("suffix", ["", "doc-lattice"], ids=["marker-free", "marker-bearing"])
+def test_long_finalized_word_marker_scan_does_not_charge_step_budget(suffix):
+    source = "'" + ("x" * 100_000) + suffix + "'"
+    budget = _ScanBudget(3)
+    scanner = _ShellScanner(source, budget=budget, classify_commands=False)
 
-    _reject_marker_bearing_dispatcher(words, resolution)
+    scanner.scan()
 
-    assert resolution.budget.remaining_steps == 5
+    assert budget.remaining_steps == 1
 
 
 def test_direct_doc_lattice_invocations_prefixes_context_on_incomplete_scan():
@@ -2299,8 +2290,8 @@ def test_direct_doc_lattice_invocations_detects_legacy_substitution_in_double_qu
         r"echo \`doc-lattice linear\`",
     ],
 )
-def test_direct_doc_lattice_invocations_ignores_literal_backticks(script):
-    assert direct_doc_lattice_invocations(script) == ()
+def test_direct_doc_lattice_invocations_fails_closed_on_literal_backtick_marker(script):
+    assert_marker_refusal(script)
 
 
 def test_direct_doc_lattice_invocations_keeps_command_after_comment_line():
@@ -2326,10 +2317,10 @@ doc-lattice linear
     assert direct_doc_lattice_invocations(script) == (("linear", False),)
 
 
-def test_direct_doc_lattice_invocations_ignores_literal_backticks_in_substitution():
+def test_direct_doc_lattice_invocations_fails_closed_on_literal_backtick_marker_in_substitution():
     script = '''echo "$(printf '%s' '`doc-lattice linear`')"'''
 
-    assert direct_doc_lattice_invocations(script) == ()
+    assert_marker_refusal(script)
 
 
 def test_direct_doc_lattice_invocations_detects_active_backticks_in_substitution():
@@ -2366,10 +2357,10 @@ def test_direct_doc_lattice_invocations_keeps_hash_inside_shell_word():
     assert direct_doc_lattice_invocations(script) == (("reconcile", False),)
 
 
-def test_direct_doc_lattice_invocations_tracks_parameter_expansion_in_substitution():
+def test_direct_doc_lattice_invocations_fails_closed_on_literal_marker_after_parameter_expansion():
     script = '''echo "$(printf %s ${x:-)}; printf '%s' '`doc-lattice linear`')"'''
 
-    assert direct_doc_lattice_invocations(script) == ()
+    assert_marker_refusal(script)
 
 
 def test_direct_doc_lattice_invocations_scans_process_substitution_in_parameter_word():
@@ -2415,10 +2406,68 @@ def test_direct_doc_lattice_invocations_fails_closed_at_recursion_limit():
         direct_doc_lattice_invocations(script)
 
 
-# Issue #105: inline shell dispatch of a marker-bearing doc-lattice command must fail closed
-# instead of being certified clean. These cases mirror the frozen ``dispatcher`` corpus family
-# from the successor evaluation, which is the ratified oracle for the expected outcomes.
-DISPATCHER_FAIL_CLOSED_CASES = [
+@pytest.mark.parametrize(
+    "script",
+    [
+        "echo doc-lattice reconcile",
+        "find . -name 'doc-lattice*'",
+        "command -v doc-lattice",
+    ],
+    ids=["unknown-head", "find-operand", "command-query"],
+)
+def test_marker_bearing_non_invocation_fails_closed(script):
+    assert_marker_refusal(script)
+
+
+def test_function_shadow_form_fails_closed():
+    script = """\
+echo() { eval "$CMD"; }
+CMD='doc-lattice reconcile' echo done
+"""
+
+    assert_marker_refusal(script)
+
+
+@pytest.mark.parametrize(
+    "script",
+    ['echo doc-"lattice"', "echo DOC_LATTICE", "echo doc...lattice"],
+    ids=["composed-fragments", "ascii-casefold", "repeated-separators"],
+)
+def test_composed_ascii_marker_under_unknown_head_fails_closed(script):
+    assert_marker_refusal(script)
+
+
+def test_non_ascii_near_marker_under_unknown_head_stays_certified():
+    assert direct_doc_lattice_invocations("echo doc-latt\u0131ce") == NONE
+
+
+def test_marker_bearing_non_invocation_reason_names_certification_failure():
+    result = scan_doc_lattice_invocations("echo doc-lattice reconcile")
+
+    assert (
+        result.incomplete_reason
+        == "marker-bearing command is not a certified doc-lattice invocation"
+    )
+
+
+def test_command_marker_state_resets_between_simple_commands():
+    result = scan_doc_lattice_invocations("doc-lattice --help; echo ok")
+
+    assert result.invocations == NONE
+    assert result.incomplete_reason is None
+
+
+def test_redirection_target_marker_is_out_of_scope():
+    result = scan_doc_lattice_invocations("bash -c 'echo hi' > doc-lattice.log")
+
+    assert result.invocations == NONE
+    assert result.incomplete_reason is None
+
+
+# A retained doc-lattice marker under any command the resolver does not classify as doc-lattice
+# fails closed. The original issue #105 dispatcher rows remain here as empirical regression
+# knowledge, but dispatcher reachability is no longer the certification boundary.
+MARKER_REFUSE_CASES = [
     ("bash -c marker payload", "bash -c 'doc-lattice reconcile'"),
     ("eval marker payload", 'eval "doc-lattice $X"'),
     ("sh short-option cluster", "sh -lc 'doc-lattice reconcile'"),
@@ -2580,34 +2629,8 @@ DISPATCHER_FAIL_CLOSED_CASES = [
     ),
     ("path-qualified coproc after exec", "exec ./coproc bash -c 'doc-lattice reconcile'"),
     ("ambiguous word before external coproc", "exec $MAYBE coproc bash -c 'doc-lattice reconcile'"),
-]
-
-
-@pytest.mark.parametrize(
-    ("_description", "script"),
-    DISPATCHER_FAIL_CLOSED_CASES,
-    ids=[case[0] for case in DISPATCHER_FAIL_CLOSED_CASES],
-)
-def test_marker_bearing_inline_dispatch_fails_closed(_description, script):
-    result = scan_doc_lattice_invocations(script)
-    assert result.invocations == NONE
-    assert result.incomplete_reason is not None
-    with pytest.raises(ConfigError, match=r"shell scan incomplete.*dispatcher"):
-        direct_doc_lattice_invocations(script)
-
-
-# The dispatcher rule fires only when a command word literally names doc-lattice AND a reachable
-# dispatcher head is present. These sources carry no marker in the dispatcher argv, run an
-# external script file, or place the marker where no shell head can dispatch it (including a
-# versioned env/time uv requirement, whose PyPI console script never resolves its arguments), so
-# they retain their certified-clean outcome.
-DISPATCHER_CERTIFY_CASES = [
-    ("marker only in trailing comment", "bash -c 'echo hello'  # doc-lattice check runs here"),
-    ("marker-free inline command", "bash -c 'echo hello world'"),
-    ("Unicode dotless i is not an ASCII marker", "bash -c 'doc-latt\u0131ce reconcile'"),
     ("external script file named for doc-lattice", "bash ./doc-lattice-runner.sh"),
     ("non-dispatcher head echoes marker text", "echo doc-lattice reconcile"),
-    ("dispatcher head with no argv", "eval"),
     ("command wrapper external script file", "command bash ./doc-lattice-runner.sh"),
     ("env wrapper external script file", "env bash ./doc-lattice-runner.sh"),
     ("command query never executes marker", "command -v doc-lattice"),
@@ -2660,17 +2683,11 @@ DISPATCHER_CERTIFY_CASES = [
     ("dump po strings mode before inline command", "bash --dump-po-strings -c 'doc-lattice lint'"),
     ("noexec setter after inline selection", "bash -n -c -n 'doc-lattice reconcile'"),
     ("set option noexec after inline selection", "bash -n -c -o noexec 'doc-lattice lint'"),
-    # ``builtin`` and ``coproc`` are shell grammar with no external binary, so an enclosing
-    # ``exec`` execve fails (exit 127) and the plain dispatcher behind them never runs.
     ("exec wrapper before builtin dispatcher target", "exec builtin eval 'doc-lattice reconcile'"),
     ("exec wrapper before coprocess dispatcher", "exec coproc eval 'doc-lattice reconcile'"),
-    # A PATH-execve prefix runs the word ``coproc`` itself, which is a shell keyword with no
-    # external binary, so the execve fails (exit 127) before any later word runs.
     ("exec wrapper before coproc word", "exec coproc bash -c 'doc-lattice reconcile'"),
     ("env wrapper before coproc word", "env coproc bash -c 'doc-lattice reconcile'"),
     ("quoted coproc word after exec", "exec 'coproc' bash -c 'doc-lattice reconcile'"),
-    # A wheel-path requirement resolves by its filename's distribution segment; a derived name that
-    # is neither a shell nor doc-lattice runs the rule past without refusing.
     (
         "local wheel non-shell requirement",
         "uvx ./innocent-1.0.0-py3-none-any.whl -c 'doc-lattice reconcile'",
@@ -2679,22 +2696,50 @@ DISPATCHER_CERTIFY_CASES = [
         "wheel requirement before external script operand",
         "uvx ./bash-1.0.0-py3-none-any.whl ./doc-lattice-runner.sh",
     ),
-    ("directory requirement without marker", "uvx ./tools/shellkit -c 'echo hello'"),
 ]
 
 
 @pytest.mark.parametrize(
     ("_description", "script"),
-    DISPATCHER_CERTIFY_CASES,
-    ids=[case[0] for case in DISPATCHER_CERTIFY_CASES],
+    MARKER_REFUSE_CASES,
+    ids=[case[0] for case in MARKER_REFUSE_CASES],
 )
-def test_marker_free_or_file_dispatch_stays_certified(_description, script):
+def test_marker_bearing_non_invocation_case_fails_closed(_description, script):
+    assert_marker_refusal(script)
+
+
+MARKER_CERTIFY_CASES = [
+    (
+        "marker only in trailing comment",
+        "bash -c 'echo hello'  # doc-lattice check runs here",
+        NONE,
+    ),
+    ("marker-free inline command", "bash -c 'echo hello world'", NONE),
+    ("Unicode dotless i is not an ASCII marker", "bash -c 'doc-latt\u0131ce reconcile'", NONE),
+    ("dispatcher head with no argv", "eval", NONE),
+    ("directory requirement without marker", "uvx ./tools/shellkit -c 'echo hello'", NONE),
+    ("resolved direct invocation", "doc-lattice linear", LINEAR),
+    (
+        "resolved wheel requirement invocation",
+        "uvx ./dist/doc_lattice-2.0.0-py3-none-any.whl reconcile",
+        RECONCILE,
+    ),
+    (
+        "resolved nested wheel launcher invocation",
+        "uvx ./uv-0.8.0-py3-none-any.whl run doc-lattice linear",
+        LINEAR,
+    ),
+    ("resolved root help", "doc-lattice --help", NONE),
+]
+
+
+@pytest.mark.parametrize(
+    ("_description", "script", "expected"),
+    MARKER_CERTIFY_CASES,
+    ids=[case[0] for case in MARKER_CERTIFY_CASES],
+)
+def test_resolved_or_marker_free_command_stays_certified(_description, script, expected):
     result = scan_doc_lattice_invocations(script)
+
     assert result.incomplete_reason is None
-    assert result.invocations == NONE
-
-
-def test_inline_dispatch_reason_names_the_dispatcher():
-    result = scan_doc_lattice_invocations("bash -c 'doc-lattice reconcile'")
-
-    assert result.incomplete_reason == "inline dispatcher command cannot be scanned safely"
+    assert result.invocations == expected
