@@ -272,7 +272,7 @@ _RECONCILE_NON_MUTATING_OPTIONS = frozenset({"--dry-run"})
 # is refused rather than certified clean. The marker reuses the doc-lattice distribution separator
 # family (see _is_doc_lattice_uv_tool_payload) so ``doc_lattice`` and ``doc.lattice`` are caught.
 _DISPATCHER_MARKER_RE = re.compile(
-    rf"doc{_PYTHON_DISTRIBUTION_SEPARATOR_RE.pattern}lattice", re.IGNORECASE
+    rf"doc{_PYTHON_DISTRIBUTION_SEPARATOR_RE.pattern}lattice", re.ASCII | re.IGNORECASE
 )
 _PLAIN_DISPATCHER_HEADS = frozenset({"eval", "source", "."})
 # bash and zsh enter restricted mode when argv[0] starts with r (rbash/rzsh) and still parse the

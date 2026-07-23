@@ -2503,6 +2503,7 @@ def test_marker_bearing_inline_dispatch_fails_closed(_description, script):
 DISPATCHER_CERTIFY_CASES = [
     ("marker only in trailing comment", "bash -c 'echo hello'  # doc-lattice check runs here"),
     ("marker-free inline command", "bash -c 'echo hello world'"),
+    ("Unicode dotless i is not an ASCII marker", "bash -c 'doc-latt\u0131ce reconcile'"),
     ("external script file named for doc-lattice", "bash ./doc-lattice-runner.sh"),
     ("non-dispatcher head echoes marker text", "echo doc-lattice reconcile"),
     ("dispatcher head with no argv", "eval"),
