@@ -275,7 +275,9 @@ _DISPATCHER_MARKER_RE = re.compile(
     rf"doc{_PYTHON_DISTRIBUTION_SEPARATOR_RE.pattern}lattice", re.IGNORECASE
 )
 _PLAIN_DISPATCHER_HEADS = frozenset({"eval", "source", "."})
-_SHELL_DISPATCHER_HEADS = frozenset({"bash", "sh", "dash", "zsh"})
+# bash and zsh enter restricted mode when argv[0] starts with r (rbash/rzsh) and still parse the
+# same -c invocation grammar; rsh stays out because it names the remote shell, not a restricted sh.
+_SHELL_DISPATCHER_HEADS = frozenset({"bash", "sh", "dash", "zsh", "rbash", "rzsh"})
 # Long options that consume the following word across the recognized shells: bash --rcfile and
 # --init-file, zsh --emulate (which takes a mode word and still honors a following -c). Every
 # other long option is value-less and precedes -c without ending option parsing.
