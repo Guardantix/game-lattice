@@ -1050,7 +1050,11 @@ class _ShellScanner:
         if not state.words:
             return
         if self.classify_commands:
-            invocation = _invocation_in_simple_command(state.words, self.budget)
+            invocation = _invocation_in_simple_command(
+                state.words,
+                self.budget,
+                command_has_marker=state.command_has_marker,
+            )
             if invocation is not None:
                 if len(self.invocations) >= _MAX_SHELL_INVOCATIONS:
                     raise _ShellScanIncomplete("invocation limit exceeded")
@@ -1701,14 +1705,15 @@ def direct_doc_lattice_invocations(
 ) -> tuple[_Invocation, ...]:
     """Return conservative direct doc-lattice commands from literal Bash syntax.
 
-    The scanner is bounded, recursive, and non-executing. It intentionally does not resolve
-    aliases, functions, variables used as executable names, external wrapper scripts, actions, or
-    reusable workflows. It also never parses the payload of an inline dispatcher (``eval``,
-    ``source``/``.``, or ``sh``/``bash``/``dash``/``zsh -c``, including a shell head sitting in
-    the argv of an unrecognized wrapper program such as ``nohup`` or ``xargs``); when such a
-    dispatcher's simple command literally names doc-lattice the scan fails closed and raises
-    ``ConfigError`` rather than returning an empty complete result, while marker-free dispatch
-    stays unresolved and complete.
+    The scanner is bounded, recursive, and non-executing. Existing resolver grammar classifies
+    literal doc-lattice executable positions and preserves its invocation and post-resolution
+    fail-closed behavior. If that resolver does not classify the executable, any retained
+    assignment-prefix or argv word matching the ASCII doc-lattice marker fails closed rather than
+    being certified as a non-invocation.
+
+    The scanner intentionally does not resolve aliases, functions, PATH shadowing, variables used
+    as executable names, external wrapper scripts, actions, reusable workflows, or cross-command
+    data flow. Comments and discarded redirection operands are not retained command words.
 
     Args:
         script: Literal Bash source to scan.
@@ -1717,7 +1722,7 @@ def direct_doc_lattice_invocations(
             fail-closed error so the operator can locate the offending script.
 
     Raises:
-        ConfigError: If a scanner resource bound prevents a complete result.
+        ConfigError: If the bounded scanner cannot certify the source.
     """
     result = scan_doc_lattice_invocations(script)
     if result.incomplete_reason is not None:
@@ -1730,11 +1735,13 @@ def direct_doc_lattice_invocations(
 def _invocation_in_simple_command(
     words: list[_ShellWord],
     budget: _ScanBudget,
+    *,
+    command_has_marker: bool,
 ) -> _Invocation | None:
     resolution = _LauncherResolutionState(budget)
     executable = _doc_lattice_command_index(words, 0, resolution)
     if executable.index is None:
-        _reject_marker_bearing_dispatcher(words, resolution)
+        _reject_marker_bearing_non_invocation(command_has_marker)
         return None
     subcommand_resolution = _doc_lattice_subcommand_index(words, executable.index + 1)
     if executable.ambiguous or subcommand_resolution.ambiguous:
@@ -1776,6 +1783,14 @@ def _invocation_in_simple_command(
     if disposition is _CommandDisposition.NON_EXECUTING:
         return None
     return subcommand.literal, disposition is _CommandDisposition.NON_MUTATING
+
+
+def _reject_marker_bearing_non_invocation(command_has_marker: bool) -> None:
+    """Fail closed when an unresolved command contains a retained doc-lattice marker."""
+    if command_has_marker:
+        raise _ShellScanIncomplete(
+            "marker-bearing command is not a certified doc-lattice invocation"
+        )
 
 
 def _reject_marker_bearing_dispatcher(

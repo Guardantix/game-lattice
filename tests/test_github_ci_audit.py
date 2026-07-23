@@ -755,7 +755,7 @@ jobs:
         "static-literal-with-nameref",
     ],
 )
-def test_global_audit_does_not_treat_quoted_single_field_expansion_as_erasable(script):
+def test_global_audit_fails_closed_on_quoted_dynamic_head_with_marker(script):
     document = _workflow(
         f"""\
 on: pull_request
@@ -768,7 +768,14 @@ jobs:
 """
     )
 
-    assert _finding_codes(audit_global_workflows((document,))) == set()
+    with pytest.raises(
+        ConfigError,
+        match=(
+            r"shell scan incomplete.*marker-bearing command is not a certified "
+            r"doc-lattice invocation"
+        ),
+    ):
+        audit_global_workflows((document,))
 
 
 @pytest.mark.parametrize(
@@ -986,7 +993,7 @@ jobs:
         )
 
 
-def test_global_audit_ignores_env_payload_after_option_terminator():
+def test_global_audit_fails_closed_on_env_terminator_before_marker():
     document = _workflow(
         """\
 on: pull_request
@@ -999,7 +1006,14 @@ jobs:
 """
     )
 
-    assert audit_global_workflows((document,)) == ()
+    with pytest.raises(
+        ConfigError,
+        match=(
+            r"shell scan incomplete.*marker-bearing command is not a certified "
+            r"doc-lattice invocation"
+        ),
+    ):
+        audit_global_workflows((document,))
 
 
 def test_global_audit_reports_target_secret_linear_and_mutating_reconcile():
@@ -1212,13 +1226,22 @@ jobs:
         "sh -lc 'doc-lattice reconcile --all'",
         "source ./scripts/doc-lattice-env.sh",
         "uv run bash -c 'doc-lattice reconcile'",
+        "echo doc-lattice reconcile",
+        "find . -name 'doc-lattice*'",
+        "command -v doc-lattice",
     ],
-    ids=["bash-c", "eval", "sh-cluster", "source", "uv-run-bash-c"],
+    ids=[
+        "bash-c",
+        "eval",
+        "sh-cluster",
+        "source",
+        "uv-run-bash-c",
+        "unknown-head",
+        "find-operand",
+        "command-query",
+    ],
 )
-def test_global_audit_fails_closed_on_inline_dispatch_run_body(run_body: str):
-    # Issue #105: a PR step that runs a marker-bearing doc-lattice command through an inline
-    # dispatcher must exit 2 rather than being certified clean, because the bounded scanner
-    # cannot see the payload the dispatcher executes.
+def test_global_audit_fails_closed_on_marker_bearing_non_invocation(run_body: str):
     document = _workflow(
         f"""\
 on: pull_request
@@ -1231,7 +1254,13 @@ jobs:
 """
     )
 
-    with pytest.raises(ConfigError, match=r"shell scan incomplete.*inline dispatcher"):
+    with pytest.raises(
+        ConfigError,
+        match=(
+            r"shell scan incomplete.*marker-bearing command is not a certified "
+            r"doc-lattice invocation"
+        ),
+    ):
         audit_global_workflows((document,))
 
 

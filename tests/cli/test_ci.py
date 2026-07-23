@@ -615,18 +615,6 @@ def test_init_github_then_ci_audit_round_trips_without_loading_lattice(
         ),
         pytest.param(
             "linear",
-            "  workflow_dispatch:",
-            "  workflow_dispatch:\n  pull_request:",
-            frozenset(
-                {
-                    (_LINEAR_WORKFLOW, "MANAGED_TRIGGERS"),
-                    (_LINEAR_WORKFLOW, "PR_LINEAR_INVOCATION"),
-                }
-            ),
-            id="linear-pr-trigger",
-        ),
-        pytest.param(
-            "linear",
             "      github.repository == 'Guardantix/doc-lattice' &&\n",
             "",
             frozenset({(_LINEAR_WORKFLOW, "MANAGED_COMMAND")}),
@@ -835,6 +823,31 @@ def test_ci_audit_reports_each_load_bearing_security_control_mutation(  # noqa: 
 
     assert result.exit_code == 1
     assert _audit_finding_keys(result.stdout) == expected_findings
+
+
+def test_ci_audit_fails_closed_on_managed_marker_install_after_linear_pr_trigger(
+    tmp_path: Path,
+    monkeypatch,
+):
+    _install(tmp_path)
+    linear = tmp_path / _LINEAR_WORKFLOW
+    _replace_once(
+        linear,
+        "  workflow_dispatch:",
+        "  workflow_dispatch:\n  pull_request:",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        app,
+        ["ci", "audit", "--repository", "Guardantix/doc-lattice"],
+    )
+
+    assert result.exit_code == 2
+    assert "CONFIG_ERROR" in result.stderr
+    assert (
+        "shell scan incomplete: marker-bearing command is not a certified doc-lattice invocation"
+    ) in result.stderr
 
 
 def test_ci_audit_allows_unrelated_release_workflow_controls(tmp_path: Path, monkeypatch):
