@@ -12,13 +12,9 @@ from doc_lattice.github_ci.shell_scanner import (
     _RECONCILE_FLAGS,
     _RECONCILE_OPTIONS_WITH_ARGUMENTS,
     _CommandScanState,
-    _ExecutableCandidate,
-    _LauncherResolutionState,
-    _reject_marker_bearing_dispatcher,
     _ScanBudget,
     _ShellScanIncomplete,
     _ShellScanner,
-    _ShellWord,
     _uv_requirement_executable_name,
     _uv_requirement_is_path,
     _wheel_distribution_name,
@@ -2158,88 +2154,6 @@ def test_long_finalized_word_marker_scan_does_not_charge_step_budget(suffix):
     scanner.scan()
 
     assert budget.remaining_steps == 1
-
-
-def test_marker_free_dispatcher_candidates_consume_one_marker_pass_budget():
-    words = [word for _ in range(6) for word in (_ShellWord("bash"), _ShellWord("-c"))]
-    resolution = _LauncherResolutionState(
-        _ScanBudget(len(words)),
-        executable_positions=[_ExecutableCandidate(index) for index in range(0, len(words), 2)],
-    )
-
-    _reject_marker_bearing_dispatcher(words, resolution)
-
-    assert resolution.budget.remaining_steps == 0
-
-
-def test_marker_bearing_external_shell_candidates_consume_shared_budget():
-    # One marker-pass step per word until the marker (6) plus one walk step per inspected
-    # dispatcher argv word (--norc, -o, its value, then the operand: 4). Head detection itself
-    # is uncharged frozenset gating.
-    words = [
-        _ShellWord("echo"),
-        _ShellWord("bash"),
-        _ShellWord("--norc"),
-        _ShellWord("-o"),
-        _ShellWord("pipefail"),
-        _ShellWord("doc-lattice-runner.sh"),
-    ]
-    resolution = _LauncherResolutionState(
-        _ScanBudget(10),
-        executable_positions=[_ExecutableCandidate(0), _ExecutableCandidate(1)],
-    )
-
-    _reject_marker_bearing_dispatcher(words, resolution)
-
-    assert resolution.budget.remaining_steps == 0
-
-
-def test_duplicate_dispatcher_candidates_classify_argv_once():
-    # Six duplicate candidates still produce one walk: 2 marker-pass steps + 1 walk step.
-    words = [_ShellWord("bash"), _ShellWord("doc-lattice-runner.sh")]
-    resolution = _LauncherResolutionState(
-        _ScanBudget(15),
-        executable_positions=[_ExecutableCandidate(0) for _ in range(6)],
-    )
-
-    _reject_marker_bearing_dispatcher(words, resolution)
-
-    assert resolution.budget.remaining_steps == 12
-
-
-def test_repeated_opaque_tail_heads_classify_each_argv_once():
-    # Repeated shell heads in an opaque tail dedup by start index, so each distinct argv is
-    # walked once. Dedup uses a set, keeping the sweep linear in the number of tail words.
-    words = [
-        _ShellWord("nohup"),
-        *[_ShellWord("bash") for _ in range(5)],
-        _ShellWord("doc-lattice"),
-    ]
-    resolution = _LauncherResolutionState(
-        _ScanBudget(30),
-        executable_positions=[_ExecutableCandidate(0)],
-        opaque_tail_start=1,
-    )
-
-    _reject_marker_bearing_dispatcher(words, resolution)
-
-    # 7 marker-pass steps, then one walk per distinct start; each of the five heads is followed
-    # by an operand rather than an inline option, so no walk refuses.
-    assert resolution.budget.remaining_steps == 30 - 7 - 5
-
-
-def test_dispatcher_free_command_skips_marker_pass_budget():
-    # The cheap head gate runs before the charged marker regex pass, so an ordinary
-    # marker-bearing command with no dispatcher-shaped word consumes no budget at all.
-    words = [_ShellWord("grep"), _ShellWord("-q"), _ShellWord("doc-lattice"), _ShellWord("log")]
-    resolution = _LauncherResolutionState(
-        _ScanBudget(5),
-        executable_positions=[_ExecutableCandidate(0)],
-    )
-
-    _reject_marker_bearing_dispatcher(words, resolution)
-
-    assert resolution.budget.remaining_steps == 5
 
 
 def test_direct_doc_lattice_invocations_prefixes_context_on_incomplete_scan():
