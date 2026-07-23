@@ -1894,6 +1894,15 @@ def _shell_dispatcher_runs_inline_command(
     no_exec`` (case and underscores ignored, ``no`` prefixes invert), so only the exact-spelling,
     setter-only prefix is provably inert across the head set.
 
+    zsh's ``-b``/``+b`` invocation flag diverges like the lone ``+`` recorded on
+    ``_is_shell_option_token``: it ends option processing for the following words, so
+    ``zsh -b -c 'cmd'`` reads ``-c`` as a script operand and never dispatches (verified on zsh
+    5.9, including under an ``sh`` argv[0]). This walk deliberately does not stop there: bash,
+    dash, and sh all execute the ``-b -c`` payload (verified), ``zsh -bc`` executes because the
+    terminator only affects later words, and head-scoping the stop would buy a certified-clean
+    path for a construct no workflow writes. The divergence only ever makes this walk
+    over-refuse, never miss a dispatch.
+
     Args:
         words: The decoded words of the whole simple command.
         start: The index of the first word following the shell dispatcher head.
