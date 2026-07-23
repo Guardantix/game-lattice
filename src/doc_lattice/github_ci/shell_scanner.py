@@ -2080,10 +2080,12 @@ def _skip_builtin_wrapper(
     if _command_boundary_word_may_disappear(target) or target.dynamic:
         return _ResolvedIndex(index + 1, ambiguous=True)
     if target.literal not in {"builtin", "command", "exec"}:
-        # ``builtin eval``/``builtin source`` execute a dispatcher builtin the doc-lattice
-        # resolver correctly refuses to resolve, so record the target position so it still
-        # reaches the dispatcher fail-closed check rather than vanishing here.
-        if executable_positions is not None:
+        # ``builtin eval``/``builtin source``/``builtin .`` execute a dispatcher builtin the
+        # doc-lattice resolver cannot parse, so record those targets for the dispatcher
+        # fail-closed check. Builtin lookup is by exact name and never resolves shell
+        # executables, so ``builtin bash`` fails without executing its argv and any other
+        # target resolves to no reachable dispatcher.
+        if executable_positions is not None and target.literal in _PLAIN_DISPATCHER_HEADS:
             executable_positions.append(_ExecutableCandidate(index))
         return _ResolvedIndex(None)
     return _ResolvedIndex(index)
@@ -2690,6 +2692,8 @@ def _nested_launcher_payload_index(
     ``uv`` executes an argv payload directly, so Bash-only words such as ``command`` and
     ``exec`` are not wrappers here. ``env`` is an executable prefix, however, and nested
     ``uv``/``uvx`` launchers are also executable commands; those are resolved recursively.
+    A uv positional tool requirement resolves by the console-script name uv derives from it,
+    so ``uvx uv@0.8.0 run ...`` recurses like ``uvx uv run ...``.
     """
     resolution.step()
     payload_index = payload_resolution.index
@@ -2702,7 +2706,11 @@ def _nested_launcher_payload_index(
     resolution.executable_positions.append(
         _ExecutableCandidate(payload_index, uv_requirement=strip_version)
     )
-    basename = _basename(payload.literal)
+    basename = (
+        _uv_requirement_executable_name(payload.literal)
+        if strip_version
+        else _basename(payload.literal)
+    )
     is_doc_lattice = (
         _is_doc_lattice_uv_tool_payload(payload.literal)
         if strip_version

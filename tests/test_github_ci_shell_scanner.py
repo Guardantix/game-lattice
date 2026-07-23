@@ -551,6 +551,8 @@ def test_direct_doc_lattice_invocations_fails_closed_on_dynamic_relative_executa
         ("uvx /usr/bin/time -p doc-lattice linear", LINEAR),
         ("uv run env X=1 time doc-lattice linear", LINEAR),
         ("uv run uvx doc-lattice linear", LINEAR),
+        ("uvx uv@0.8.0 run doc-lattice linear", LINEAR),
+        ("uv tool run uvx@0.8.0 doc-lattice reconcile --all", RECONCILE),
         ("/usr/bin/time doc-lattice linear", LINEAR),
         ("env /usr/bin/time -p doc-lattice linear", LINEAR),
         ("env time -- doc-lattice linear", LINEAR),
@@ -2386,6 +2388,23 @@ DISPATCHER_FAIL_CLOSED_CASES = [
         "uvx file URL requirement with at-sign parent before dispatcher",
         "uvx 'file:///tmp/@scope/bash' -c 'doc-lattice reconcile'",
     ),
+    (
+        "versioned nested uv requirement before dispatcher",
+        "uvx uv@0.8.0 run bash -c 'doc-lattice reconcile'",
+    ),
+    (
+        "uv tool run versioned nested uv requirement before dispatcher",
+        "uv tool run uv@0.8.0 run bash -c 'doc-lattice reconcile'",
+    ),
+    (
+        "versioned nested uvx requirement before dispatcher",
+        "uvx uvx@0.8.0 bash -c 'doc-lattice reconcile'",
+    ),
+    (
+        "versioned env requirement before dispatcher",
+        "uvx env@1.0 bash -c 'doc-lattice reconcile'",
+    ),
+    ("builtin dot head", "builtin . ./doc-lattice-env.sh"),
 ]
 
 
@@ -2419,6 +2438,7 @@ DISPATCHER_CERTIFY_CASES = [
     ("windows launcher external script file", "bash.exe ./doc-lattice-runner.sh"),
     ("uv run external script file", "uv run bash ./doc-lattice-runner.sh"),
     ("builtin non-dispatcher target", "builtin echo doc-lattice"),
+    ("builtin shell target is not a builtin", "builtin bash -c 'doc-lattice reconcile'"),
     ("braced quoted option value stays resolvable", 'bash -o "${X}" ./doc-lattice-runner.sh'),
     ("rbash external script file", "rbash ./doc-lattice-runner.sh"),
     ("assignment marker without dispatcher head", "CMD='doc-lattice reconcile' echo done"),
