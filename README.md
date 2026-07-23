@@ -655,9 +655,10 @@ effective executable as doc-lattice, its launcher, subcommand, and fail-closed c
 unchanged. Otherwise any retained marker exits 2, regardless of the apparent command head or
 whether that concrete spelling would execute on one host. Consequently forms such as
 `echo doc-lattice reconcile`, `command -v doc-lattice`,
-`bash --help -c 'doc-lattice reconcile'`, and `nohup bash ./doc-lattice-runner.sh` are not
-certified as non-invocations. Comments and discarded redirection targets are not retained command
-words.
+`bash --help -c 'doc-lattice reconcile'`, `nohup bash ./doc-lattice-runner.sh`, and
+`cmds=(doc-lattice reconcile)` are not certified as non-invocations; array assignment element
+words are marker-checked like scalar assignment values. Comments and discarded redirection
+targets are not retained command words.
 
 Executable classification is syntactic basename resolution, not proof of runtime identity. Audit
 does not model function, alias, or `PATH` shadowing; variables used as executable names; arbitrary

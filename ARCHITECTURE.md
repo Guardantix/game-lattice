@@ -364,8 +364,9 @@ an open enumeration recognized a reachable inline dispatcher. Unrecognized wrapp
 forms, query commands, and ordinary-looking heads could therefore carry a doc-lattice marker while
 being certified by omission. A trusted inert-head list would have the same flaw because shell
 functions, aliases, and `PATH` can shadow bare names.
-**Decision:** Each finalized decoded assignment-prefix or argv word records whether it matches the
-ASCII, case-insensitive `doc[-_.]+lattice` marker, and simple-command state aggregates that fact.
+**Decision:** Each finalized decoded assignment-prefix, argv, or array-assignment element word
+records whether it matches the ASCII, case-insensitive `doc[-_.]+lattice` marker, and
+simple-command state aggregates that fact.
 When the existing resolver does not classify the effective executable as doc-lattice, any retained
 marker fails closed. Resolved doc-lattice commands keep the existing launcher, option,
 subcommand, and post-resolution behavior, including certified-empty root help/version forms. The

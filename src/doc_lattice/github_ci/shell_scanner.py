@@ -680,9 +680,16 @@ class _ShellScanner:
         self,
         index: int,
         limit: int,
+        state: _CommandScanState,
         depth: int,
     ) -> int:
-        """Consume compound assignment data while retaining executable expansions."""
+        """Consume compound assignment data while retaining executable expansions.
+
+        Element words never join the command's argv, but their decoded marker facts still
+        aggregate into ``state.command_has_marker``: an array literal such as
+        ``cmds=(doc-lattice reconcile)`` feeds a later dynamic execution the scanner cannot
+        follow, so it must fail closed exactly like the scalar ``X=doc-lattice`` assignment.
+        """
         if depth > _MAX_SHELL_RECURSION_DEPTH:
             raise _ShellScanIncomplete("recursion limit exceeded")
         parentheses = 1
@@ -714,13 +721,14 @@ class _ShellScanner:
                     return index
                 at_word_start = False
                 continue
-            _word, next_index = self._parse_word(
+            word, next_index = self._parse_word(
                 index,
                 limit,
                 depth,
                 reject_extglob=False,
             )
             if next_index != index:
+                state.command_has_marker = state.command_has_marker or word.has_doc_lattice_marker
                 index = next_index
                 at_word_start = False
                 continue
@@ -747,7 +755,7 @@ class _ShellScanner:
             and state.words[-1].shell_assignment
             and state.words[-1].literal.endswith("=")
         ):
-            return self._consume_array_assignment(index, limit, depth + 1)
+            return self._consume_array_assignment(index, limit, state, depth + 1)
         self._flush_command(state)
         self._advance_case_body(state, operator)
         if operator == "(":

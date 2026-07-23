@@ -192,7 +192,9 @@ jobs:
         audit_global_workflows((document,))
 
 
-def test_global_audit_allows_literal_doc_lattice_array_data_on_pr():
+def test_global_audit_fails_closed_on_literal_doc_lattice_array_data_on_pr():
+    # Marker-bearing array literals feed later dynamic executions the scanner cannot follow,
+    # so they refuse like scalar marker assignments instead of being certified as data.
     document = _workflow(
         """\
 on: pull_request
@@ -206,7 +208,14 @@ jobs:
 """
     )
 
-    assert _finding_codes(audit_global_workflows((document,))) == set()
+    with pytest.raises(
+        ConfigError,
+        match=(
+            r"shell scan incomplete.*marker-bearing command is not a certified "
+            r"doc-lattice invocation"
+        ),
+    ):
+        audit_global_workflows((document,))
 
 
 def test_global_audit_rejects_linear_after_quoted_heredoc_continuation():

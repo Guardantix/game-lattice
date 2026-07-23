@@ -745,11 +745,15 @@ def test_direct_doc_lattice_invocations_detects_long_assignment_prefix_run():
         "args=(doc-lattice linear)",
         "declare -a args=(doc-lattice reconcile --all)",
         "args=([1+(2)]=doc-lattice linear)",
+        "args=(doc-lattice linear)\ndoc-lattice check",
     ],
-    ids=["indexed", "declare-indexed", "arithmetic-subscript"],
+    ids=["indexed", "declare-indexed", "arithmetic-subscript", "before-real-invocation"],
 )
-def test_direct_doc_lattice_invocations_treats_array_literals_as_data(script):
-    assert direct_doc_lattice_invocations(script) == NONE
+def test_direct_doc_lattice_invocations_fails_closed_on_marker_bearing_array_literals(script):
+    # An array literal such as ``cmds=(doc-lattice reconcile)`` feeds a later dynamic execution
+    # (``"${cmds[@]}"``) the scanner cannot follow, so its retained marker fails closed exactly
+    # like the scalar ``X=doc-lattice`` assignment.
+    assert_marker_refusal(script)
 
 
 @pytest.mark.parametrize(
@@ -757,9 +761,9 @@ def test_direct_doc_lattice_invocations_treats_array_literals_as_data(script):
     [
         ("args=($(doc-lattice linear))", LINEAR),
         ("args=(<(doc-lattice reconcile --all))", RECONCILE),
-        ("args=(doc-lattice linear)\ndoc-lattice check", CHECK),
+        ("files=(a.md b.md)\ndoc-lattice check", CHECK),
     ],
-    ids=["command-substitution", "process-substitution", "following-command"],
+    ids=["command-substitution", "process-substitution", "marker-free-then-command"],
 )
 def test_direct_doc_lattice_invocations_scans_executable_array_contexts(script, expected):
     assert direct_doc_lattice_invocations(script) == expected
