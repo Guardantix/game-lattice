@@ -1767,7 +1767,12 @@ def _reject_marker_bearing_dispatcher(
       ``coproc``, builtin-target, and launcher (``env``/``time``/``uv``/``uvx``) grammar instead
       of mirroring it. A uv positional tool requirement head is compared after stripping the
       requirement suffix, mirroring the console-script name uv resolves (so ``uvx bash@1.0 -c
-      ...`` refuses like ``uvx bash -c ...``).
+      ...`` refuses like ``uvx bash -c ...``). Plain heads match only the exact command words
+      ``eval``/``source``/``.``: shells run those builtins for no other spelling, so a
+      slash-qualified ``./eval`` is a path execution of an external file (the disclosed wrapper
+      limitation) and ``EVAL`` or ``eval.exe`` PATH-search external names the builtins never
+      own. Shell heads keep basename matching because ``/bin/bash -c`` dispatches exactly like
+      ``bash -c``.
     - The opaque tail past the earliest unrecognized static executable
       (``resolution.opaque_tail_start``). An unrecognized program such as ``nohup``, ``xargs``,
       ``sudo``, or an unknown uv tool may re-dispatch its argv, so any shell head found there is
@@ -1827,15 +1832,16 @@ def _reachable_dispatcher_heads(
         head = (
             _uv_requirement_executable_name(head_word.literal)
             if candidate.uv_requirement
-            else _basename(head_word.literal)
+            else head_word.literal
         )
-        name = _normalize_dispatcher_head(head)
-        if name in _PLAIN_DISPATCHER_HEADS:
-            # eval/source/. are shell builtins with no external binaries, so a candidate
+        if head in _PLAIN_DISPATCHER_HEADS:
+            # Shells run the plain dispatcher builtins only for the exact command words
+            # eval/source/.; a slash-qualified word such as ./eval is a path execution of an
+            # external file, and eval/source/. have no external binaries, so a candidate
             # resolved by a PATH execve (exec eval, env source, uv run eval) fails at runtime
             # without executing its argv and stays certified.
             plain_dispatch = plain_dispatch or not candidate.external_lookup
-        elif name in _SHELL_DISPATCHER_HEADS:
+        elif _normalize_dispatcher_head(_basename(head)) in _SHELL_DISPATCHER_HEADS:
             walk_starts.append(candidate.index + 1)
     if resolution.opaque_tail_start is not None:
         for index in range(resolution.opaque_tail_start, len(words)):

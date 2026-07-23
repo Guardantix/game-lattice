@@ -2439,6 +2439,7 @@ DISPATCHER_FAIL_CLOSED_CASES = [
     ),
     ("time keyword before plain eval head", "time eval 'doc-lattice reconcile'"),
     ("inline selection before eager stop option", "bash -c 'doc-lattice reconcile' --help"),
+    ("path-qualified shell head inline command", "/bin/bash -c 'doc-lattice reconcile'"),
 ]
 
 
@@ -2502,6 +2503,12 @@ DISPATCHER_CERTIFY_CASES = [
     ("uv run before plain eval head", "uv run eval 'doc-lattice reconcile'"),
     ("eager help stop before inline command", "bash --help -c 'doc-lattice reconcile'"),
     ("eager version stop before inline command", "zsh --version -c 'doc-lattice reconcile'"),
+    ("path-qualified eval is a path execution", "./eval 'doc-lattice reconcile'"),
+    ("path-qualified source is a path execution", "./source ./doc-lattice-env.sh"),
+    ("path-qualified dot is a path execution", "./. ./doc-lattice-env.sh"),
+    ("command wrapper before path-qualified eval", "command ./eval 'doc-lattice reconcile'"),
+    ("uppercase plain head is not the builtin", "EVAL 'doc-lattice reconcile'"),
+    ("suffixed plain head is not the builtin", "eval.exe 'doc-lattice reconcile'"),
 ]
 
 
