@@ -3192,13 +3192,18 @@ def _uv_requirement_executable_name(value: str) -> str:
     the console script named ``bash``, so dispatcher-head matching compares the stripped name
     rather than the raw requirement token.
     """
-    value = value.lstrip()
+    value = value.strip()
+    match = _PYTHON_DISTRIBUTION_NAME_RE.match(value)
+    if match is not None:
+        suffix = value[match.end() :].lstrip()
+        if not suffix or suffix[0] in _UV_REQUIREMENT_SUFFIX_STARTS:
+            return match.group()
+    name = _basename(value)
     stop = next(
-        (position for position, char in enumerate(value) if char in _UV_REQUIREMENT_SUFFIX_STARTS),
+        (position for position, char in enumerate(name) if char in _UV_REQUIREMENT_SUFFIX_STARTS),
         None,
     )
-    name = (value if stop is None else value[:stop]).rstrip()
-    return _basename(name)
+    return name if stop is None else name[:stop].rstrip()
 
 
 def _is_doc_lattice_uv_tool_payload(value: str) -> bool:

@@ -2358,6 +2358,18 @@ DISPATCHER_FAIL_CLOSED_CASES = [
         "uv tool run surrounding-whitespace requirement before dispatcher",
         "uv tool run ' bash ' -c 'doc-lattice reconcile'",
     ),
+    (
+        "uvx path-only requirement with at-sign parent before dispatcher",
+        "uvx '/tmp/@scope/bash' -c 'doc-lattice reconcile'",
+    ),
+    (
+        "uv tool run path-only requirement with bracketed parent before dispatcher",
+        "uv tool run '/tmp/[cache]/bash' -c 'doc-lattice reconcile'",
+    ),
+    (
+        "uvx file URL requirement with at-sign parent before dispatcher",
+        "uvx 'file:///tmp/@scope/bash' -c 'doc-lattice reconcile'",
+    ),
 ]
 
 
