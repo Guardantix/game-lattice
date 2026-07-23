@@ -284,8 +284,14 @@ _SHELL_DISPATCHER_HEADS = frozenset({"bash", "sh", "dash", "zsh", "rbash", "rzsh
 _SHELL_LONG_OPTIONS_WITH_ARGUMENTS = frozenset({"--rcfile", "--init-file", "--emulate"})
 # bash and zsh handle these eagerly at startup, printing and exiting before any -c payload
 # runs; dash exits on the unrecognized long option (verified empirically for bash and dash).
-# Either way a payload behind an eager stop option never executes.
-_SHELL_EAGER_STOP_OPTIONS = frozenset({"--help", "--version"})
+# Either way a payload behind an eager stop option never executes. The bash dump modes
+# (--dump-strings/--dump-po-strings) belong here too: bash prints translatable strings and
+# forces a sticky noexec that a later +n cannot undo, bash rejects them after any short option,
+# and dash and zsh reject the unknown long option, so no matched shell ever runs the payload.
+# The short -D form is deliberately absent: zsh reads -D as PUSHD_TO_HOME and executes normally.
+_SHELL_EAGER_STOP_OPTIONS = frozenset(
+    {"--help", "--version", "--dump-strings", "--dump-po-strings"}
+)
 
 
 class _CommandDisposition(Enum):
@@ -1875,8 +1881,18 @@ def _shell_dispatcher_runs_inline_command(
     fields (for example ``-o $X``) is equally unresolvable, because the expansion can smuggle a
     later ``-c`` past this walk. Returns False when the options resolve to an operand or ``--``
     terminator, meaning the shell runs an external script file rather than inline source, and
-    when an eager ``--help``/``--version`` stop precedes ``-c``, meaning the shell prints and
-    exits (or rejects the option) before any payload runs.
+    when an eager stop (``--help``/``--version``/the bash dump modes) precedes ``-c``, meaning
+    the shell prints and exits (or rejects the option) before any payload runs.
+
+    A pure noexec prefix is the one non-executing ``-c`` form this walk certifies: every option
+    word before a ``-``-signed ``c`` trigger is exactly ``-n`` or ``-o`` with the static value
+    ``noexec``, and the trigger cluster contains only the letters c and n. All matched shells
+    read but never execute the payload for that shape (verified for bash, dash, and rbash;
+    documented NO_EXEC for zsh). Anything beyond it stays refused, because execution can be
+    re-enabled downstream in shell-specific ways this walk does not model: ``+n`` and ``+o
+    noexec`` verifiably re-enable, and zsh aliases the option as ``-o exec``/``--exec``/``-o
+    no_exec`` (case and underscores ignored, ``no`` prefixes invert), so only the exact-spelling,
+    setter-only prefix is provably inert across the head set.
 
     Args:
         words: The decoded words of the whole simple command.
@@ -1884,6 +1900,8 @@ def _shell_dispatcher_runs_inline_command(
         budget: The shared scan budget to charge for each inspected argv word.
     """
     index = start
+    noexec = False
+    pure_noexec_prefix = True
     while index < len(words):
         budget.step()
         word = words[index]
@@ -1898,20 +1916,50 @@ def _shell_dispatcher_runs_inline_command(
             # A short cluster containing c selects the -c inline-command option; bash, sh, and
             # dash execute a + cluster such as +c the same way. Long options such as --norc or
             # --rcfile also contain the letter but never select -c.
-            return True
-        if _shell_option_consumes_value(literal):
-            value_index = index + 1
-            if value_index < len(words):
-                budget.step()
-                if _word_may_change_option_value_shape(words[value_index]):
-                    # An unquoted dynamic value such as ``-o $X`` can expand into extra words
-                    # (``-o errexit -c``), smuggling -c past this walk, so its presence leaves
-                    # the grammar unresolvable.
-                    return True
-            index += 2
+            return not _is_pure_noexec_trigger(literal, pure_noexec_prefix, noexec)
+        consumes_value = _shell_option_consumes_value(literal)
+        value = words[index + 1] if consumes_value and index + 1 < len(words) else None
+        if value is not None:
+            budget.step()
+            if _word_may_change_option_value_shape(value):
+                # An unquoted dynamic value such as ``-o $X`` can expand into extra words
+                # (``-o errexit -c``), smuggling -c past this walk, so its presence leaves
+                # the grammar unresolvable.
+                return True
+        if _is_noexec_setter(literal, value):
+            noexec = True
         else:
-            index += 1
+            pure_noexec_prefix = False
+        index += 2 if consumes_value else 1
     return False
+
+
+def _is_noexec_setter(literal: str, value: _ShellWord | None) -> bool:
+    """Return whether an option word verbatim enables noexec in every recognized shell.
+
+    Only the exact spellings ``-n`` and ``-o`` with the static value ``noexec`` qualify; looser
+    spellings that some shells alias (case, underscores, ``no`` prefixes) are not treated as
+    setters because certification requires uniform behavior across the whole head set.
+    """
+    if literal == "-n":
+        return True
+    return literal == "-o" and value is not None and not value.dynamic and value.literal == "noexec"
+
+
+def _is_pure_noexec_trigger(literal: str, pure_noexec_prefix: bool, noexec: bool) -> bool:
+    """Return whether a c-selecting cluster completes a provably non-executing invocation.
+
+    The trigger must be ``-``-signed (bash runs ``+nc`` despite the noexec letter because ``+``
+    unsets n), contain only the letters c and n, and follow a prefix made purely of noexec
+    setters, with noexec enabled by the prefix or by the trigger's own n.
+    """
+    cluster = set(literal[1:])
+    return (
+        literal.startswith("-")
+        and pure_noexec_prefix
+        and cluster <= {"c", "n"}
+        and (noexec or "n" in cluster)
+    )
 
 
 def _is_shell_option_token(literal: str) -> bool:

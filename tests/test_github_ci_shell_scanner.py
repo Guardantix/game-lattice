@@ -2440,6 +2440,14 @@ DISPATCHER_FAIL_CLOSED_CASES = [
     ("time keyword before plain eval head", "time eval 'doc-lattice reconcile'"),
     ("inline selection before eager stop option", "bash -c 'doc-lattice reconcile' --help"),
     ("path-qualified shell head inline command", "/bin/bash -c 'doc-lattice reconcile'"),
+    ("noexec toggled back off before inline command", "bash -n +n -c 'doc-lattice reconcile'"),
+    ("set option clears noexec before inline command", "bash -n +o noexec -c 'doc-lattice lint'"),
+    ("plus cluster unsets noexec letter", "bash +nc 'doc-lattice reconcile'"),
+    ("interactive flag beside noexec", "bash -i -n -c 'doc-lattice reconcile'"),
+    ("impure cluster beside noexec", "bash -n -lc 'doc-lattice reconcile'"),
+    ("exec set option can re-enable execution", "zsh -n -o exec -c 'doc-lattice reconcile'"),
+    ("short dump mode is pushd-to-home in zsh", "bash -D -c 'doc-lattice reconcile'"),
+    ("dynamic set option value beside noexec", "bash -n -o $X -c 'doc-lattice reconcile'"),
 ]
 
 
@@ -2509,6 +2517,14 @@ DISPATCHER_CERTIFY_CASES = [
     ("command wrapper before path-qualified eval", "command ./eval 'doc-lattice reconcile'"),
     ("uppercase plain head is not the builtin", "EVAL 'doc-lattice reconcile'"),
     ("suffixed plain head is not the builtin", "eval.exe 'doc-lattice reconcile'"),
+    ("syntax check noexec before inline command", "bash -n -c 'doc-lattice reconcile'"),
+    ("dash noexec before inline command", "dash -n -c 'doc-lattice reconcile'"),
+    ("noexec cluster inline command", "sh -nc 'doc-lattice reconcile'"),
+    ("reversed noexec cluster inline command", "bash -cn 'doc-lattice reconcile'"),
+    ("set option noexec before inline command", "bash -o noexec -c 'doc-lattice reconcile'"),
+    ("stacked noexec setters before inline command", "bash -o noexec -n -c 'doc-lattice lint'"),
+    ("dump strings mode before inline command", "bash --dump-strings -c 'doc-lattice reconcile'"),
+    ("dump po strings mode before inline command", "bash --dump-po-strings -c 'doc-lattice lint'"),
 ]
 
 

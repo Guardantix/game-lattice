@@ -657,7 +657,13 @@ re-dispatch its argv, as in `nohup bash -c 'doc-lattice ...'` or `xargs bash -c 
 stays within the disclosed executable-name limitation even when the assembled text spells
 doc-lattice. That covers a variable executable name, a command, process, or arithmetic
 substitution that builds the payload, and source fed from standard input by a heredoc,
-herestring, or pipe. An unrecognized wrapper likewise remains a disclosed limitation for the
+herestring, or pipe. Provably non-executing shell invocations stay certified: a pure noexec
+prefix (`bash -n -c ...`, `-nc`, or `-o noexec` with nothing else before `-c`) and the bash
+string-dump modes (`--dump-strings`, `--dump-po-strings`) never run the payload in any
+recognized shell. Any mixed form still exits 2, because execution can be re-enabled in
+shell-specific ways (`+n`, `+o noexec`, zsh `-o exec` and its spelling aliases), and the short
+`-D` dump option stays refused because zsh reads it as `PUSHD_TO_HOME` and executes normally.
+An unrecognized wrapper likewise remains a disclosed limitation for the
 non-dispatch forms: one that runs a script file (`nohup bash ./task.sh`) or passes doc-lattice
 words to a program the scanner does not model (`xargs doc-lattice ...`) is not certified against.
 Malformed, oversized, or otherwise unreliably inspectable workflows also exit 2 instead of being
