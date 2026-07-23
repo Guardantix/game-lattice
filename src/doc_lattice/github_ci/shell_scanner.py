@@ -538,6 +538,18 @@ class _ScanBudget:
         self.remaining_steps -= 1
 
 
+@dataclass(frozen=True, slots=True)
+class _ExecutableCandidate:
+    """One static executable-position candidate recorded during payload resolution.
+
+    ``uv_requirement`` marks a uv positional tool requirement, whose console-script name uv
+    derives by stripping the requirement suffix (as in ``uvx bash@1.0``).
+    """
+
+    index: int
+    uv_requirement: bool = False
+
+
 @dataclass(slots=True)
 class _LauncherResolutionState:
     """Shared budget and memoized states for one simple command's launcher grammar."""
@@ -546,7 +558,7 @@ class _LauncherResolutionState:
     cache: dict[tuple[str, int, int], _ResolvedIndex] = field(default_factory=dict)
     # Every static executable-position candidate payload resolution visited; consumed by the
     # dispatcher fail-closed rule so it inherits the resolver's grammar rather than mirroring it.
-    executable_positions: list[int] = field(default_factory=list)
+    executable_positions: list[_ExecutableCandidate] = field(default_factory=list)
 
     def step(self) -> None:
         """Charge speculative launcher work to the shell scanner's declared budget."""
@@ -1725,8 +1737,10 @@ def _reject_marker_bearing_dispatcher(
     are the executable-position candidates recorded by payload resolution itself
     (``resolution.executable_positions``), so the rule inherits the assignment, keyword, wrapper,
     ``coproc``, builtin-target, and launcher (``env``/``time``/``uv``/``uvx``) grammar instead of
-    mirroring it. Only literal markers fire; a dynamic head or a payload fed from standard input
-    remains the disclosed executable-name limitation.
+    mirroring it. A uv positional tool requirement head is compared after stripping the requirement
+    suffix, mirroring the console-script name uv resolves (so ``uvx bash@1.0 -c ...`` refuses like
+    ``uvx bash -c ...``). Only literal markers fire; a dynamic head or a payload fed from standard
+    input remains the disclosed executable-name limitation.
 
     Args:
         words: The decoded words of one simple command, including any leading assignments.
@@ -1736,15 +1750,21 @@ def _reject_marker_bearing_dispatcher(
     Raises:
         _ShellScanIncomplete: If the command is a marker-bearing recognized dispatcher.
     """
-    for head_index in resolution.executable_positions:
+    for candidate in resolution.executable_positions:
+        head_word = words[candidate.index]
+        head = (
+            _uv_requirement_executable_name(head_word.literal)
+            if candidate.uv_requirement
+            else _basename(head_word.literal)
+        )
         # Windows runners launch the same shells as bash.exe/sh.exe; the scanner already
         # accepts doc-lattice.exe as the doc-lattice executable, so dispatcher heads strip
         # the suffix too.
-        name = _basename(words[head_index].literal).casefold().removesuffix(".exe")
+        name = head.casefold().removesuffix(".exe")
         if name in _PLAIN_DISPATCHER_HEADS:
             inline = True
         elif name in _SHELL_DISPATCHER_HEADS:
-            inline = _shell_dispatcher_runs_inline_command(words[head_index + 1 :])
+            inline = _shell_dispatcher_runs_inline_command(words[candidate.index + 1 :])
         else:
             continue
         if inline and any(_DISPATCHER_MARKER_RE.search(word.literal) for word in words):
@@ -1788,8 +1808,13 @@ def _shell_dispatcher_runs_inline_command(argv: list[_ShellWord]) -> bool:
 
 
 def _is_shell_option_token(literal: str) -> bool:
-    """Return whether a word is a shell option cluster rather than an operand or terminator."""
-    return literal not in ("", "-", "--", "+") and literal[0] in "-+"
+    """Return whether a word is a shell option cluster rather than an operand or terminator.
+
+    Bash-family shells consume a lone ``+`` as a no-op options word and keep parsing options, so
+    it is an (empty) option cluster here. A lone ``-`` or ``--`` instead ends option parsing, so
+    the next word is an operand rather than a later ``-c``.
+    """
+    return literal not in ("", "-", "--") and literal[0] in "-+"
 
 
 def _shell_option_consumes_value(literal: str) -> bool:
@@ -1935,7 +1960,7 @@ def _skip_shell_prefixes(
     words: list[_ShellWord],
     start: int,
     *,
-    executable_positions: list[int] | None = None,
+    executable_positions: list[_ExecutableCandidate] | None = None,
 ) -> _ResolvedIndex:
     """Skip literal shell prefixes and preserve dynamic command-position ambiguity."""
     index = start
@@ -1999,7 +2024,7 @@ def _skip_shell_builtin_wrapper(
     words: list[_ShellWord],
     index: int,
     *,
-    executable_positions: list[int] | None = None,
+    executable_positions: list[_ExecutableCandidate] | None = None,
 ) -> _ResolvedIndex:
     """Resolve one supported Bash wrapper beginning at ``index``."""
     literal = words[index].literal
@@ -2014,7 +2039,7 @@ def _skip_builtin_wrapper(
     words: list[_ShellWord],
     start: int,
     *,
-    executable_positions: list[int] | None = None,
+    executable_positions: list[_ExecutableCandidate] | None = None,
 ) -> _ResolvedIndex:
     """Expose a supported literal Bash builtin target or one ambiguous successor."""
     index = start
@@ -2030,7 +2055,7 @@ def _skip_builtin_wrapper(
         # resolver correctly refuses to resolve, so record the target position so it still
         # reaches the dispatcher fail-closed check rather than vanishing here.
         if executable_positions is not None:
-            executable_positions.append(index)
+            executable_positions.append(_ExecutableCandidate(index))
         return _ResolvedIndex(None)
     return _ResolvedIndex(index)
 
@@ -2311,7 +2336,7 @@ def _doc_lattice_payload_index(
     if _is_doc_lattice_executable(executable_word):
         return _ResolvedIndex(executable_index)
     if not executable_word.dynamic:
-        resolution.executable_positions.append(executable_index)
+        resolution.executable_positions.append(_ExecutableCandidate(executable_index))
         executable = _basename(executable_word.literal)
         if executable in {"env", "time"}:
             return _nested_launcher_payload_index(
@@ -2645,7 +2670,9 @@ def _nested_launcher_payload_index(
     _reject_unsafe_executable_word(payload)
     if payload.dynamic:
         return _ResolvedIndex(None, payload_resolution.ambiguous)
-    resolution.executable_positions.append(payload_index)
+    resolution.executable_positions.append(
+        _ExecutableCandidate(payload_index, uv_requirement=strip_version)
+    )
     basename = _basename(payload.literal)
     is_doc_lattice = (
         _is_doc_lattice_uv_tool_payload(payload.literal)
@@ -3131,6 +3158,21 @@ def _basename(token: str) -> str:
 
 def _is_doc_lattice_executable_basename(value: str) -> bool:
     return value.casefold() in ("doc-lattice", "doc-lattice.exe")
+
+
+def _uv_requirement_executable_name(value: str) -> str:
+    """Return the console-script name uv derives from a positional tool requirement.
+
+    ``uvx bash@1.0`` and the ``uv tool run`` long form strip the requirement suffix and run
+    the console script named ``bash``, so dispatcher-head matching compares the stripped name
+    rather than the raw requirement token.
+    """
+    name = _basename(value.lstrip())
+    stop = next(
+        (position for position, char in enumerate(name) if char in _UV_REQUIREMENT_SUFFIX_STARTS),
+        None,
+    )
+    return name if stop is None else name[:stop]
 
 
 def _is_doc_lattice_uv_tool_payload(value: str) -> bool:

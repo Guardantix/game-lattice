@@ -2300,6 +2300,11 @@ DISPATCHER_FAIL_CLOSED_CASES = [
     ("dynamic short option value smuggles inline", "bash -o $X 'doc-lattice reconcile'"),
     ("dynamic long option value smuggles inline", "bash --rcfile $X 'doc-lattice reconcile'"),
     ("quoted unbraced option value smuggles inline", "bash -o \"$X\" 'doc-lattice reconcile'"),
+    ("lone plus before -c", "bash + -c 'doc-lattice reconcile'"),
+    ("sh lone plus before cluster", "sh + -lc 'doc-lattice reconcile'"),
+    ("uvx requirement launcher before dispatcher", "uvx bash@1.0 -c 'doc-lattice reconcile'"),
+    ("uv tool run requirement head", "uv tool run bash@1.0 -c 'doc-lattice reconcile'"),
+    ("uvx requirement specifier before dispatcher", "uvx 'bash==1.0' -c 'doc-lattice reconcile'"),
 ]
 
 
@@ -2335,6 +2340,9 @@ DISPATCHER_CERTIFY_CASES = [
     ("builtin non-dispatcher target", "builtin echo doc-lattice"),
     ("braced quoted option value stays resolvable", 'bash -o "${X}" ./doc-lattice-runner.sh'),
     ("assignment marker without dispatcher head", "CMD='doc-lattice reconcile' echo done"),
+    ("lone dash ends options before operand", "bash - -c 'doc-lattice reconcile'"),
+    ("requirement-suffixed plain head is not a dispatcher", "bash@1.0 -c 'doc-lattice reconcile'"),
+    ("uvx requirement external script file", "uvx bash@1.0 ./doc-lattice-runner.sh"),
 ]
 
 
