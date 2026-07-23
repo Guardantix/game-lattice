@@ -1752,7 +1752,17 @@ def _reject_marker_bearing_dispatcher(
     Raises:
         _ShellScanIncomplete: If the command is a marker-bearing recognized dispatcher.
     """
+    marker_bearing = False
+    for word in words:
+        resolution.step()
+        if _DISPATCHER_MARKER_RE.search(word.literal):
+            marker_bearing = True
+            break
+    if not marker_bearing:
+        return
+
     for candidate in resolution.executable_positions:
+        resolution.step()
         head_word = words[candidate.index]
         head = (
             _uv_requirement_executable_name(head_word.literal)
@@ -1766,14 +1776,18 @@ def _reject_marker_bearing_dispatcher(
         if name in _PLAIN_DISPATCHER_HEADS:
             inline = True
         elif name in _SHELL_DISPATCHER_HEADS:
-            inline = _shell_dispatcher_runs_inline_command(words[candidate.index + 1 :])
+            inline = _shell_dispatcher_runs_inline_command(
+                words, candidate.index + 1, resolution.budget
+            )
         else:
             continue
-        if inline and any(_DISPATCHER_MARKER_RE.search(word.literal) for word in words):
+        if inline:
             raise _ShellScanIncomplete("inline dispatcher command cannot be scanned safely")
 
 
-def _shell_dispatcher_runs_inline_command(argv: list[_ShellWord]) -> bool:
+def _shell_dispatcher_runs_inline_command(
+    words: list[_ShellWord], start: int, budget: _ScanBudget
+) -> bool:
     """Return whether a shell dispatcher argv selects an inline ``-c`` command.
 
     Returns True when the option grammar contains ``-c`` (standalone, inside a short cluster, or
@@ -1783,10 +1797,16 @@ def _shell_dispatcher_runs_inline_command(argv: list[_ShellWord]) -> bool:
     fields (for example ``-o $X``) is equally unresolvable, because the expansion can smuggle a
     later ``-c`` past this walk. Returns False when the options resolve to an operand or ``--``
     terminator, meaning the shell runs an external script file rather than inline source.
+
+    Args:
+        words: The decoded words of the whole simple command.
+        start: The index of the first word following the shell dispatcher head.
+        budget: The shared scan budget to charge for each inspected argv word.
     """
-    index = 0
-    while index < len(argv):
-        word = argv[index]
+    index = start
+    while index < len(words):
+        budget.step()
+        word = words[index]
         if _word_may_change_argv(word):
             return True
         literal = word.literal
@@ -1798,11 +1818,14 @@ def _shell_dispatcher_runs_inline_command(argv: list[_ShellWord]) -> bool:
             # --rcfile also contain the letter but never select -c.
             return True
         if _shell_option_consumes_value(literal):
-            if index + 1 < len(argv) and _word_may_change_option_value_shape(argv[index + 1]):
-                # An unquoted dynamic value such as ``-o $X`` can expand into extra words
-                # (``-o errexit -c``), smuggling -c past this walk, so its presence leaves
-                # the grammar unresolvable.
-                return True
+            value_index = index + 1
+            if value_index < len(words):
+                budget.step()
+                if _word_may_change_option_value_shape(words[value_index]):
+                    # An unquoted dynamic value such as ``-o $X`` can expand into extra words
+                    # (``-o errexit -c``), smuggling -c past this walk, so its presence leaves
+                    # the grammar unresolvable.
+                    return True
             index += 2
         else:
             index += 1

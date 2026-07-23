@@ -11,9 +11,13 @@ from doc_lattice.github_ci.shell_scanner import (
     _DOC_LATTICE_ROOT_OPTIONS,
     _RECONCILE_FLAGS,
     _RECONCILE_OPTIONS_WITH_ARGUMENTS,
+    _ExecutableCandidate,
+    _LauncherResolutionState,
+    _reject_marker_bearing_dispatcher,
     _ScanBudget,
     _ShellScanIncomplete,
     _ShellScanner,
+    _ShellWord,
     direct_doc_lattice_invocations,
     scan_doc_lattice_invocations,
 )
@@ -2010,6 +2014,37 @@ def test_nested_dynamic_uv_resolution_charges_shared_scan_budget():
 
     with pytest.raises(_ShellScanIncomplete, match="step limit exceeded"):
         scanner.scan()
+
+
+def test_marker_free_dispatcher_candidates_consume_one_marker_pass_budget():
+    words = [word for _ in range(6) for word in (_ShellWord("bash"), _ShellWord("-c"))]
+    resolution = _LauncherResolutionState(
+        _ScanBudget(len(words)),
+        executable_positions=[_ExecutableCandidate(index) for index in range(0, len(words), 2)],
+    )
+
+    _reject_marker_bearing_dispatcher(words, resolution)
+
+    assert resolution.budget.remaining_steps == 0
+
+
+def test_marker_bearing_external_shell_candidates_consume_shared_budget():
+    words = [
+        _ShellWord("echo"),
+        _ShellWord("bash"),
+        _ShellWord("--norc"),
+        _ShellWord("-o"),
+        _ShellWord("pipefail"),
+        _ShellWord("doc-lattice-runner.sh"),
+    ]
+    resolution = _LauncherResolutionState(
+        _ScanBudget(12),
+        executable_positions=[_ExecutableCandidate(0), _ExecutableCandidate(1)],
+    )
+
+    _reject_marker_bearing_dispatcher(words, resolution)
+
+    assert resolution.budget.remaining_steps == 0
 
 
 def test_direct_doc_lattice_invocations_prefixes_context_on_incomplete_scan():
