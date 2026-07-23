@@ -22,15 +22,19 @@ The scanner's per-simple-command certification default is INVERTED. Today a mark
 command is certified clean unless its head matches a recognized dispatcher; the dispatcher set is
 an open enumeration of external execution semantics (six shells, restricted variants, `.exe`
 forms, uv requirement and wheel grammar, wrapper programs), so any un-enumerated dispatcher-shaped
-head is a silent false-safe. After this change a marker-bearing simple command is certified only
-when payload resolution proves its effective executable is doc-lattice; every other marker-bearing
-simple command fails closed. Unknown heads refuse by construction rather than certify by omission.
+head is a silent false-safe. After this change the only path that changes is the fallback taken when
+the resolver does NOT classify the executable position as doc-lattice: it refuses any marker-bearing
+simple command instead of only recognized dispatchers. Unknown heads refuse by construction rather
+than certify by omission.
 
-"Effective executable is doc-lattice" is the certification predicate throughout this spec, and it
-is deliberately broader than "an invocation is emitted." A resolved doc-lattice head that produces
-no classified invocation (bare `doc-lattice`, `doc-lattice --help`, `doc-lattice --version`, which
-are pinned certified-empty at `tests/test_github_ci_shell_scanner.py:1425`) still certifies,
-because resolution proved the executable, not because a subcommand ran.
+The certification predicate is "the existing resolver classifies the executable position as
+doc-lattice," which is a basename match (`shell_scanner.py:3596-3599`), not a proof of runtime
+identity or of a `./doc-lattice` file's contents. It is deliberately broader than "an invocation is
+emitted": a classified doc-lattice head that produces no invocation (bare `doc-lattice`,
+`doc-lattice --help`, `doc-lattice --version`, pinned certified-empty at
+`tests/test_github_ci_shell_scanner.py:1425`) still certifies, and a classified head can still be
+refused by the finding path's own post-resolution checks (section 3). Certification here means "not
+newly refused by the inverted fallback," not "guaranteed safe."
 
 The change deletes the dispatcher enumeration as the security boundary. It does not add a
 replacement enumeration. There is NO inert-head / trusted-mention allowlist in this phase: a bare
@@ -81,26 +85,40 @@ this spec. See section 7.
 
 ## 3. Certification model
 
-For each simple command extracted by the existing tokenizer and command splitter:
+The change is deliberately narrow: **only the body of the `executable.index is None` fallback in
+`_invocation_in_simple_command` changes.** Every other code path is untouched, including the finding
+path's own fail-closed behavior both before and after executable resolution.
 
-1. Run the existing invocation finder (`_doc_lattice_command_index` and its payload/launcher
-   resolution). If it resolves the effective executable to doc-lattice, certify the command,
-   whether or not subcommand classification emits an invocation (finding path, unchanged in
-   behavior: an emitted invocation is returned; a resolved-but-non-executing form such as bare
-   `doc-lattice` or `--help`/`--version` returns no invocation and stays certified).
-2. Otherwise, if the simple command bears the ASCII marker (`doc[-_.]+lattice`,
-   `re.ASCII | re.IGNORECASE`, unchanged), raise `_ShellScanIncomplete` with a new reason string:
-   `"marker-bearing command is not a certified doc-lattice invocation"`.
-3. Otherwise (executable not doc-lattice, no marker), return no invocation and stay complete.
-   Marker-free commands are never refused.
+Today, when `_doc_lattice_command_index` returns `executable.index is None`
+(`src/doc_lattice/github_ci/shell_scanner.py:1730-1731`), the fallback refuses only a recognized
+marker-bearing dispatcher and otherwise returns complete. After this change, the fallback refuses
+any marker-bearing simple command (via the section 6 boolean) and otherwise returns complete:
 
-Step 1's "effective executable is doc-lattice" is exactly the condition under which
-`_invocation_in_simple_command` does NOT reach its fallback today: the fallback is called only when
-`_doc_lattice_command_index` returns `executable.index is None`
-(`src/doc_lattice/github_ci/shell_scanner.py:1730-1731`). Resolved-but-non-executing forms take the
-`executable.index is not None` branch and return before the fallback, so the proposed call site
-already draws the line at "effective executable is doc-lattice." No change to that branch is needed;
-only the fallback body changes.
+- If `_doc_lattice_command_index` classifies the executable position as doc-lattice
+  (`executable.index is not None`), the command takes the existing branch and its existing outcome
+  is unchanged. That branch is NOT an unconditional certify: the resolver classifies by basename
+  (`_is_doc_lattice_executable`, `shell_scanner.py:3596-3599`), it does not prove runtime identity or
+  the contents of a `./doc-lattice` file, and post-resolution checks can still refuse
+  (command-position expansion ambiguity and brace/glob subcommand at `shell_scanner.py:1734-1745`,
+  root-option handling). Resolved-but-non-executing forms (bare `doc-lattice`, `--help`,
+  `--version`) return no invocation and stay certified-empty exactly as today.
+- If the executable is not classified as doc-lattice, the new fallback refuses when the command is
+  marker-bearing, raising `_ShellScanIncomplete` with reason
+  `"marker-bearing command is not a certified doc-lattice invocation"`, and otherwise returns
+  complete.
+
+"Marker-free commands are never refused" is NOT claimed: pre-existing fail-closed paths independent
+of markers remain (for example marker-free `env -S 'echo hi'` already returns an incomplete scan).
+The precise statement is that the new fallback adds refusals only for marker-bearing commands; it
+removes no existing refusal and adds no refusal to any command the finding path already resolves or
+already refuses for another reason.
+
+"Marker-bearing" means the marker appears in a RETAINED word of the simple command: an assignment
+prefix word or an argv word (the words `_record_word` accumulates, section 6). Redirection operands
+are parsed and discarded by `_consume_redirection` (`shell_scanner.py:1087-1109`) and never reach
+`_record_word`, so a marker in a redirection target does not refuse (`bash -c 'echo hi' >
+doc-lattice.log` stays certified) - consistent with deferring herestring and heredoc bodies to phase
+2. Comments carry no words after tokenization, so a marker in a comment certifies for free.
 
 Comments carry no words after tokenization, so a marker in a comment certifies for free, unchanged.
 Assignment-prefix words are part of the simple command, so a marker in a leading assignment refuses
@@ -149,17 +167,27 @@ Dispatcher-specific surface, load-bearing only for the old open-enumeration boun
 
 The deleted dispatcher rule gated its charged marker pass behind an uncharged frozenset head test.
 With the head sets gone, the new refusal rule needs an O(1) marker check at command flush. A
-per-word boolean that the fallback then iterates over is still an uncharged linear walk of every
-word and does not meet that bar. The design instead records two facts:
+per-word boolean that the fallback then iterates over is still a linear walk of every word and does
+not meet that bar. The design instead records two facts:
 
 - a decoded-marker boolean on `_ShellWord`, computed once when the word is finalized in
-  `_ShellWordBuilder` from the fully composed decoded literal (proportional to word-building work
-  already charged), and
+  `_ShellWordBuilder` from the fully composed decoded literal, and
 - an aggregate `command_has_marker` boolean on `_CommandScanState`, OR-ed in `_record_word` as each
-  word is appended.
+  word is appended, and reset in `_CommandScanState.reset_command` alongside `words` so marker state
+  cannot leak from one flushed command into the next.
 
-`_reject_marker_bearing_non_invocation` then reads `command_has_marker` in O(1) at flush, and a
-marker-free command consumes no marker-pass cost.
+`_reject_marker_bearing_non_invocation` then reads `command_has_marker` in O(1) at flush.
+
+Budget accounting, stated honestly: the finalized-literal scan is NOT free and is NOT proportional
+to work already charged. Word parsing skips a long single-quoted segment with one `str.find` after a
+single `budget.step()` (`shell_scanner.py:1287-1317`), so a 100,000-character quoted word costs about
+two budget steps today while its decoded literal is still 100,000 characters. Scanning that literal
+for the marker is therefore genuine additional linear work. The design ACCEPTS it as an uncharged
+pass bounded by the source-size cap: the sum of decoded word-literal lengths across a command cannot
+exceed the source length (quote removal and escape decoding never lengthen a word), and the scanner
+already rejects oversized sources, so the total marker-scan work per scan is O(source) and
+cap-bounded. No "already charged" or "zero marker-pass cost" claim is made; if a future measurement
+shows this pass matters, the alternative is to charge one `budget.step()` per finalized word.
 
 Correctness constraint: the marker fact must be exact-regex-equivalent to running
 `_DISPATCHER_MARKER_RE` on the composed word, not a per-fragment search. A `_ShellWord` is built
@@ -184,9 +212,12 @@ limitation text stands until then.
 ## 8. Live expectation rebaseline
 
 Nothing frozen is re-ratified here. The frozen checkpoint (`tests/fixtures/github_ci_checkpoint/`)
-and the `successor-evaluation` corpus are IMMUTABLE per the retain decision record and are neither
-edited nor consulted; no evaluation harness or results artifact is restored. What changes is the
-LIVE scanner expectations in `tests/test_github_ci_shell_scanner.py`. The rows below are the current
+and the `successor-evaluation` corpus are IMMUTABLE per the retain decision record: they are not
+edited, not re-ratified as an oracle, and no evaluation harness or results artifact is restored into
+the tree. They MAY be read for the read-only adversarial battery (section 9) that reruns their
+inputs against the live scanner to check the section 8 outcomes; reading inputs is not consulting
+them as an authority and does not modify them. What changes as production expectation is the LIVE
+scanner test file `tests/test_github_ci_shell_scanner.py`. The rows below are the current
 live cases whose outcome flips, identified by their existing parametrize `id` (or exact source
 string where a case has no distinct id), as the audit trail for the rebaseline.
 
@@ -244,6 +275,11 @@ outcome is unchanged even though the code path differs.
   wrongly certified it.
 - Composed-fragment marker equivalence pins (section 6): `echo doc-"lattice"`, `echo DOC_LATTICE`,
   and `echo doc...lattice` refuse; `echo doc-lattıce` (dotless i) stays certify.
+- Marker-state isolation pin: `doc-lattice --help; echo ok` stays certified-empty (the first command
+  resolves the executable and the marker-free `echo ok` command must not inherit stale marker state),
+  guarding the `reset_command` reset.
+- Redirection-operand scoping pin: `bash -c 'echo hi' > doc-lattice.log` stays certified (the marker
+  is only in a discarded redirection operand, not a retained word).
 - Finding-path pins retained from section 4: `uvx ./dist/doc_lattice-2.0.0-py3-none-any.whl
   reconcile` asserts reconcile; `uvx ./uv-0.8.0-py3-none-any.whl run doc-lattice linear` asserts
   linear; bare `doc-lattice`, `doc-lattice --help`, `doc-lattice --version` stay certified-empty.
